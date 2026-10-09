@@ -2,3 +2,6 @@
 /roto-data
 /.venv-moto
 __pycache__/
+/site/
+/.cache/
+/.venv-docs/
