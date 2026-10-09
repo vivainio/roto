@@ -26,7 +26,8 @@ code and `STATUS.md`.
 ## GitHub Pages
 
 The [Documentation workflow](https://github.com/vivainio/roto/blob/main/.github/workflows/docs.yml)
-builds pull requests and publishes pushes to `main`. It also supports a manual
+builds pull requests and publishes pushes to `main` when `docs/`,
+`zensical.toml`, `requirements-docs.txt`, or the workflow itself changes. It also supports a manual
 run from the Actions tab on `main`. Only the deployment job receives Pages write
 and identity-token permissions.
 
