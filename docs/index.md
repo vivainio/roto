@@ -5,8 +5,30 @@ roto is an AWS simulator written in Rust: a from-scratch rewrite of
 wire protocols on one port, with persistent SQLite state and S3 object bodies
 stored as real files.
 
-Use it to run local application and integration tests with AWS clients pointed
-at a local endpoint. It does not provide moto's in-process `@mock_aws` mode.
+roto is intended as a replacement for **LocalStack** for local AWS development,
+with persistent resources that survive server restarts. Point your AWS clients
+at its local endpoint, create your development environment once, and keep using
+its buckets, queues, tables, and other supported resources across sessions.
+
+## Why persistence comes first
+
+Moto focuses on quick, isolated integration tests with disposable mock state.
+Its [testing documentation](https://docs.getmoto.org/en/latest/docs/getting_started.html)
+describes state being reset between test methods, and the request for
+[server-state persistence](https://github.com/getmoto/moto/issues/9755) was closed
+as not planned. A persistent local AWS environment is outside that focus.
+
+roto takes moto's server-mode API behavior as a compatibility reference and makes
+persistence a core part of the design: SQLite stores service state, and S3 object
+bodies live in real files. The goal is a lightweight local AWS environment you
+can stop and resume, serving the development role often filled by LocalStack.
+LocalStack also [supports persistence](https://docs.localstack.cloud/user-guide/state-management/persistence/);
+roto provides its own persistent implementation in a single Rust binary.
+
+For disposable integration tests, roto also offers `--ephemeral` and reset
+endpoints. It does not provide moto's in-process `@mock_aws` mode. Its current
+service coverage is narrower than LocalStack's; check
+[service coverage](services.md) before migrating a workload.
 
 Start with [Getting started](getting-started.md), check [service coverage](services.md),
 or read [Architecture](architecture.md) to work on the implementation.
