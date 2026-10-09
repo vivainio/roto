@@ -39,25 +39,49 @@ cargo build --release -p roto-server
 
 ## Connect the AWS CLI
 
-Provide local test credentials and a region so the client can sign and route requests:
+With a current AWS CLI v2, add a named profile to `~/.aws/config`:
 
-```sh
-export AWS_ACCESS_KEY_ID=testing
-export AWS_SECRET_ACCESS_KEY=testing
-export AWS_DEFAULT_REGION=us-east-1
-aws --endpoint-url http://localhost:5070 sts get-caller-identity
+```ini
+[profile roto]
+region = us-east-1
+endpoint_url = http://localhost:5070
+aws_access_key_id = testing
+aws_secret_access_key = testing
+output = json
 ```
 
-The default account is `123456789012`. Test credentials need not exist in AWS.
-Set the endpoint explicitly on each AWS command.
+These are local test credentials; they need not exist in AWS. The default roto
+account is `123456789012`. The AWS CLI supports both credentials and the endpoint
+in the [shared config file](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html).
+The profile's endpoint applies to all services.
+
+Select the profile when running AWS commands:
+
+```sh
+aws --profile roto sts get-caller-identity
+aws --profile roto sqs list-queues
+aws --profile roto dynamodb list-tables
+```
+
+For a terminal session, you can also select it with `AWS_PROFILE`:
+
+```sh
+export AWS_PROFILE=roto
+aws sts get-caller-identity
+```
+
+`--profile roto` makes the selected environment explicit in scripts. If endpoint
+overrides such as `AWS_ENDPOINT_URL` are already set in your shell, they take
+precedence over the config file; unset them to use the profile's endpoint.
+See AWS's [endpoint configuration rules](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-endpoints.html).
 
 Try an S3 round trip:
 
 ```sh
-aws --endpoint-url http://localhost:5070 s3 mb s3://demo-bucket
+aws --profile roto s3 mb s3://demo-bucket
 printf 'hello from roto\n' > /tmp/roto-hello.txt
-aws --endpoint-url http://localhost:5070 s3 cp /tmp/roto-hello.txt s3://demo-bucket/hello.txt
-aws --endpoint-url http://localhost:5070 s3 cp s3://demo-bucket/hello.txt -
+aws --profile roto s3 cp /tmp/roto-hello.txt s3://demo-bucket/hello.txt
+aws --profile roto s3 cp s3://demo-bucket/hello.txt -
 ```
 
 ## Connect boto3
