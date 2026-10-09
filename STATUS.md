@@ -11,7 +11,7 @@ is a regression.
 | **STS** | 7 / 8 operations | 24 / 25 | Last failure needs DynamoDB. No `DecodeAuthorizationMessage`. |
 | **SQS** | 19 / 23 | 132 / 139 (6 skipped upstream) | 7 failures need CloudFormation. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
 | **S3** | 66 / 116 | 235 / 368 (59 skipped) | See [S3](#s3) below. |
-| **IAM** | 28 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
+| **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
 | DynamoDB, Lambda, SNS, … | not started | – | See `PLAN.md`. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
@@ -57,7 +57,7 @@ behaviour. `scripts/gen.sh` regenerates; CI fails if generated code is stale.
 
 Working: buckets (create/head/delete/location/list, us-east-1 re-create semantics); objects
 (put/get/head/delete/delete-many/copy, range and conditional requests, metadata, storage class,
-tagging, SSE echo of the requested mode); versioning with delete markers and version-specific
+tagging); versioning with delete markers and version-specific
 reads/deletes; multipart (create, upload part, upload part copy, list parts/uploads, complete with
 ordering/size/etag validation, abort); ACLs for buckets and objects (canned, header grants and
 bodies; stored, not enforced); listing v1/v2/versions with prefix, delimiter, paging and
