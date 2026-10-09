@@ -2,7 +2,8 @@
 
 This guide takes you from installing roto to storing and retrieving an S3 object
 through a local AWS profile. You need two terminals: one for the running server
-and one for AWS commands. The shell examples use macOS or Linux syntax.
+and one for AWS commands. This guide assumes uv and AWS CLI v2 are already
+installed. The shell examples use macOS or Linux syntax.
 
 No AWS account is required. The profile below uses dummy credentials and points
 at your local roto instance.
@@ -26,27 +27,7 @@ To upgrade:
 uv tool upgrade roto-aws
 ```
 
-## 2. Install AWS CLI v2
-
-Install AWS CLI v2 using the
-[official installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html):
-
-| Platform | Installation |
-| --- | --- |
-| macOS | Download and open the [official package](https://awscli.amazonaws.com/AWSCLIV2.pkg) |
-| Linux | Follow the guide's Linux instructions for your CPU architecture |
-| Windows | Use the Windows installer linked in the guide |
-
-In your second terminal, check the version:
-
-```sh
-aws --version
-```
-
-The output should start with `aws-cli/2.`. Python's `awscli` package installs
-CLI v1; use the official v2 installer for this guide.
-
-## 3. Connect the AWS CLI
+## 2. Connect the AWS CLI
 
 Create `~/.aws/` if needed, then add this section to `~/.aws/config`
 (on Windows, `%USERPROFILE%\.aws\config`). Keep any existing profiles:
@@ -94,7 +75,7 @@ overrides such as `AWS_ENDPOINT_URL` are already set in your shell, they take
 precedence over the config file; unset them to use the profile's endpoint.
 See AWS's [endpoint configuration rules](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-endpoints.html).
 
-## 4. Store and retrieve an object
+## 3. Store and retrieve an object
 
 Try an S3 round trip:
 
@@ -107,7 +88,7 @@ aws --profile roto s3 cp s3://demo-bucket/hello.txt -
 
 The download should print `hello from roto`.
 
-## 5. Keep your environment across restarts
+## 4. Keep your environment across restarts
 
 Stop the server with Ctrl+C, then start it again from the same directory:
 
@@ -185,4 +166,3 @@ For a release build:
 cargo build --release -p roto-server
 ./target/release/roto-server --port 5070
 ```
-
