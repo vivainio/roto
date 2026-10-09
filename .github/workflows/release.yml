@@ -3,12 +3,19 @@ name: Release to PyPI
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      artifact-run-id:
+        description: Existing release run whose distributions should be published
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build-wheels:
+    if: github.event_name != 'workflow_dispatch'
     uses: vivainio/actions/.github/workflows/maturin-wheels.yml@02bae930945fc58b2baf78774e8ae14f5d92f13d
     with:
       linux-arm64: true
@@ -16,10 +23,14 @@ jobs:
       maturin-version: v1.15.0
 
   publish-pypi:
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.build-wheels.result == 'success') }}
     needs: build-wheels
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
+      actions: read
     steps:
-      - uses: vivainio/actions/publish-pypi-artifacts@02bae930945fc58b2baf78774e8ae14f5d92f13d
+      - uses: vivainio/actions/publish-pypi-artifacts@51443b0c31ab8be7e8f3fc5787bf473a177cc935
+        with:
+          run-id: ${{ inputs.artifact-run-id }}

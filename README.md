@@ -51,6 +51,11 @@ Release tags should point to commits that pass the existing CI checks.
 Build locally with `uvx maturin build --release --locked --out dist` or
 `uvx maturin sdist --out dist`.
 
+To retry uploading already-built distributions, run the release workflow
+manually and provide the original release run ID in `artifact-run-id`. This
+skips rebuilding and publishes that run's artifacts. Verify the chosen run
+belongs to the release you intend to publish.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
