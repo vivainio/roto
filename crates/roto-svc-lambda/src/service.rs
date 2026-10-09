@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use roto_core::rusqlite::{OptionalExtension, params};
@@ -13,31 +13,32 @@ use crate::executor::{Executors, Job, Outcome, execute};
 use crate::generated::*;
 
 pub struct Lambda {
-    db: Arc<Db>,
-    executors: Executors,
+    pub(crate) db: Arc<Db>,
+    executors: RwLock<Executors>,
+    pub(crate) sqs: Option<Arc<roto_svc_sqs::Sqs>>,
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
 }
-fn invalid(message: impl Into<String>) -> AwsError {
+pub(crate) fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "InvalidParameterValueException", message)
 }
-fn missing(arn: &str) -> AwsError {
+pub(crate) fn missing(arn: &str) -> AwsError {
     AwsError::sender(
         404,
         "ResourceNotFoundException",
         format!("Function not found: {arn}"),
     )
 }
-fn conflict(message: impl Into<String>) -> AwsError {
+pub(crate) fn conflict(message: impl Into<String>) -> AwsError {
     AwsError::sender(409, "ResourceConflictException", message)
 }
 
-fn arn(ctx: &RequestContext, name: &str) -> Result<String, AwsError> {
+pub(crate) fn arn(ctx: &RequestContext, name: &str) -> Result<String, AwsError> {
     if name.starts_with("arn:") {
         let prefix = format!("arn:aws:lambda:{}:{}:function:", ctx.region, ctx.account_id);
         let name = name.strip_prefix(&prefix).ok_or_else(|| missing(name))?;
@@ -106,21 +107,49 @@ impl Lambda {
         let db = store.db("lambda", crate::MIGRATIONS)?;
         db.transaction(|tx| {
             tx.execute(
-                "UPDATE invocations SET state='queued' WHERE state='running'",
+                "UPDATE invocations SET state='queued' WHERE state='running' AND origin='async'",
                 [],
             )?;
             Ok(())
         })?;
-        Ok(Self { db, executors })
+        db.transaction(|tx| {
+            tx.execute("UPDATE invocations SET state='failed', logs='Execution interrupted by server restart' WHERE state='running' AND origin='direct'", [])?;
+            Ok(())
+        })?;
+        Ok(Self {
+            db,
+            executors: RwLock::new(executors),
+            sqs: None,
+        })
+    }
+    pub fn bind_executor(
+        &self,
+        ctx: &RequestContext,
+        name: &str,
+        executor: crate::Executor,
+    ) -> Result<(), AwsError> {
+        executor.validate().map_err(invalid)?;
+        let arn = arn(ctx, name)?;
+        self.executors
+            .write()
+            .unwrap()
+            .functions
+            .insert(arn, executor);
+        Ok(())
+    }
+    pub fn with_sqs(mut self, sqs: Arc<roto_svc_sqs::Sqs>) -> Self {
+        self.sqs = Some(sqs);
+        self
     }
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
+            tx.execute("DELETE FROM event_source_mappings", [])?;
             tx.execute("DELETE FROM functions", [])?;
             tx.execute("DELETE FROM invocations", [])?;
             Ok(())
         })
     }
-    fn load(&self, arn: &str) -> Result<Value, AwsError> {
+    pub(crate) fn load(&self, arn: &str) -> Result<Value, AwsError> {
         self.db.read(|c| {
             let value: Option<String> = c
                 .query_row("SELECT config FROM functions WHERE arn=?1", [arn], |r| {
@@ -144,7 +173,7 @@ impl Lambda {
             Ok(())
         })
     }
-    fn job(
+    pub(crate) fn job(
         &self,
         ctx: &RequestContext,
         name: &str,
@@ -153,12 +182,12 @@ impl Lambda {
     ) -> Result<Job, AwsError> {
         let arn = arn(ctx, name)?;
         let value = self.load(&arn)?;
-        let executor = self
-            .executors
+        let bindings = self.executors.read().unwrap();
+        let executor = bindings
             .functions
             .get(&arn)
             .or_else(|| {
-                self.executors
+                bindings
                     .functions
                     .get(value["FunctionName"].as_str().unwrap())
             })
@@ -188,22 +217,23 @@ impl Lambda {
             client_context,
         })
     }
-    fn record(&self, job: &Job, state: &str) -> Result<(), AwsError> {
+    pub(crate) fn record(&self, job: &Job, state: &str) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             tx.execute(
-                "INSERT INTO invocations (id,arn,job,state,created) VALUES (?1,?2,?3,?4,?5)",
+                "INSERT INTO invocations (id,arn,job,state,created,origin) VALUES (?1,?2,?3,?4,?5,?6)",
                 params![
                     job.request_id,
                     job.arn,
                     serde_json::to_string(job).unwrap(),
                     state,
-                    now()
+                    now(),
+                    if state == "queued" { "async" } else { "direct" }
                 ],
             )?;
             Ok(())
         })
     }
-    fn finish(
+    pub(crate) fn finish(
         &self,
         job: &Job,
         outcome: &Outcome,
@@ -267,6 +297,42 @@ impl Lambda {
 }
 
 impl Service for Lambda {
+    fn create_event_source_mapping(
+        &self,
+        ctx: &RequestContext,
+        i: CreateEventSourceMappingRequest,
+    ) -> Result<EventSourceMappingConfiguration, AwsError> {
+        self.create_mapping(ctx, i)
+    }
+    fn get_event_source_mapping(
+        &self,
+        ctx: &RequestContext,
+        i: GetEventSourceMappingRequest,
+    ) -> Result<EventSourceMappingConfiguration, AwsError> {
+        self.get_mapping(ctx, &i.uuid)
+    }
+    fn delete_event_source_mapping(
+        &self,
+        ctx: &RequestContext,
+        i: DeleteEventSourceMappingRequest,
+    ) -> Result<EventSourceMappingConfiguration, AwsError> {
+        self.delete_mapping(ctx, &i.uuid)
+    }
+    fn update_event_source_mapping(
+        &self,
+        ctx: &RequestContext,
+        i: UpdateEventSourceMappingRequest,
+    ) -> Result<EventSourceMappingConfiguration, AwsError> {
+        self.update_mapping(ctx, i)
+    }
+    fn list_event_source_mappings(
+        &self,
+        ctx: &RequestContext,
+        i: ListEventSourceMappingsRequest,
+    ) -> Result<ListEventSourceMappingsResponse, AwsError> {
+        self.list_mappings(ctx, i)
+    }
+
     fn create_function(
         &self,
         ctx: &RequestContext,

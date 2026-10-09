@@ -33,3 +33,6 @@ jobs:
           scripts/run-moto-tests.sh test_sns
       - name: Lambda executor SDK smoke (command, HTTP, S3 to SQS)
         run: .venv-moto/bin/python scripts/smoke-lambda.py
+
+      - name: Lua setup and SQS pipeline SDK smoke (shell, HTTP, restart)
+        run: .venv-moto/bin/python scripts/smoke-lua.py

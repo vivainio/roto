@@ -21,3 +21,6 @@ roto-svc-sts = { version = "0.0.1", path = "../roto-svc-sts" }
 tokio = { version = "1.53.2", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "serde"] }
+serde_json = "1.0.151"
+roto-protocol = { version = "0.0.1", path = "../roto-protocol" }

@@ -1,3 +1,5 @@
+mod setup;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -35,6 +37,12 @@ struct Args {
     /// JSON bindings from Lambda function names/ARNs to local command or HTTP executors.
     #[arg(long)]
     lambda_executors: Option<PathBuf>,
+    /// Trusted Lua resource setup, run before listening or processing events.
+    #[arg(long)]
+    setup: Option<PathBuf>,
+    /// Region used by the Lua setup script.
+    #[arg(long, default_value = "us-east-1")]
+    setup_region: String,
 }
 
 struct App {
@@ -90,11 +98,12 @@ async fn main() {
             std::process::exit(1);
         })
         .unwrap_or_default();
-    let lambda = roto_svc_lambda::LambdaHandler::new(&store, executors).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let s3 = roto_svc_s3::S3Handler::with_lambda(&store, lambda.0.clone()).unwrap_or_else(|e| {
+    let lambda = roto_svc_lambda::LambdaHandler::unstarted(&store, executors, sqs.0.clone())
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let s3 = roto_svc_s3::S3Handler::new(&store).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -115,16 +124,20 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let setup_sqs = sqs.0.clone();
+    let setup_lambda = lambda.0.clone();
+    let lambda = Arc::new(lambda);
+    let s3 = Arc::new(s3);
     let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
         Arc::new(sts),
         Arc::new(sqs),
         Arc::new(iam),
-        Arc::new(s3),
+        s3.clone(),
         Arc::new(dynamodb),
         Arc::new(ssm),
         Arc::new(secretsmanager),
         Arc::new(sns),
-        Arc::new(lambda),
+        lambda.clone(),
     ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
@@ -132,6 +145,34 @@ async fn main() {
         account_id: args.account_id,
     });
 
+    let endpoint = format!(
+        "http://{}:{}",
+        if args.host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            &args.host
+        },
+        args.port
+    );
+    if let Some(path) = args.setup {
+        let ctx = RequestContext {
+            account_id: app.account_id.clone(),
+            region: args.setup_region,
+            access_key: None,
+            request_id: ids::request_id(),
+            base_url: endpoint.clone(),
+        };
+        let services = app.services.clone();
+        tokio::task::spawn_blocking(move || {
+            setup::run(&path, ctx, setup_sqs, setup_lambda, services).map_err(|e| e.to_string())
+        })
+        .await
+        .expect("setup task failed")
+        .unwrap_or_else(|e| {
+            eprintln!("error in Lua setup: {e}");
+            std::process::exit(1);
+        });
+    }
     let router = Router::new()
         .route("/roto-api/health", get(|| async { "ok" }))
         .route("/roto-api/reset", post(reset))
@@ -149,6 +190,8 @@ async fn main() {
             eprintln!("error: cannot bind {addr}: {e}");
             std::process::exit(1);
         });
+    lambda.start(endpoint);
+    s3.start_notifications(lambda.0.clone());
     tracing::info!(
         "roto listening on http://{addr} ({})",
         if args.ephemeral {

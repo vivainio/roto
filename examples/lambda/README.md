@@ -89,8 +89,10 @@ Reset clears function metadata, queues and invocation history; local executor bi
 
 Code packages are stored as metadata, not unpacked or executed. Only `$LATEST` is supported;
 versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch logging, and automatic
-SQS/Kinesis event-source polling are not implemented. Policies are stored but not enforced.
-Lua is not required for these executors; a Lua setup layer can later use the same operations.
+Kinesis event-source polling is not implemented. Policies are stored but not enforced.
+Standard SQS queues can invoke these executors through event-source mappings.
+Use `--setup setup.lua` for Lua resource setup and executor bindings; see
+[Lua setup and SQS delivery](../lua/README.md) for supported options and retry behavior.
 
 ## Full SDK smoke test
 

@@ -307,3 +307,398 @@ fn metadata_scope_and_executor_configuration_validation() {
         .is_err()
     );
 }
+
+fn sqs_api(sqs: &roto_svc_sqs::Sqs, op: &str, input: Value) -> Value {
+    let r = roto_svc_sqs::dispatch(sqs, &ctx(), op, &input).unwrap();
+    serde_json::from_slice(&r.body).unwrap()
+}
+fn lambda_api(lambda: &Lambda, op: &str, input: Value) -> Value {
+    let r = dispatch(lambda, &ctx(), op, &input).unwrap();
+    serde_json::from_slice(&r.body).unwrap()
+}
+fn queue(sqs: &roto_svc_sqs::Sqs, name: &str) -> String {
+    sqs_api(
+        sqs,
+        "CreateQueue",
+        json!({"QueueName":name,"Attributes":{"VisibilityTimeout":"1"}}),
+    )["QueueUrl"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+fn mapping_for(lambda: &Lambda, name: &str, partial: bool) -> String {
+    lambda_api(lambda,"CreateEventSourceMapping",json!({"FunctionName":"consume","EventSourceArn":format!("arn:aws:sqs:us-east-1:123456789012:{name}"),"FunctionResponseTypes":if partial {vec!["ReportBatchItemFailures"]} else {vec![]}}))["UUID"].as_str().unwrap().into()
+}
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+fn sqs_lambda(store: &Store, executor: Executor) -> (Arc<roto_svc_sqs::Sqs>, LambdaHandler) {
+    let sqs = Arc::new(roto_svc_sqs::Sqs::new(store).unwrap());
+    let handler = LambdaHandler::unstarted(
+        store,
+        Executors {
+            functions: BTreeMap::from([("consume".into(), executor)]),
+        },
+        sqs.clone(),
+    )
+    .unwrap();
+    assert_eq!(create(&handler, "consume", 1).status, 201);
+    (sqs, handler)
+}
+
+#[test]
+fn sqs_success_event_shape_disabled_mapping_and_scoping() {
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["sh", "-c", "cat"]));
+    let url = queue(&sqs, "jobs");
+    let id = mapping_for(&handler.0, "jobs", false);
+    lambda_api(
+        &handler.0,
+        "UpdateEventSourceMapping",
+        json!({"UUID":id,"Enabled":false}),
+    );
+    sqs_api(
+        &sqs,
+        "SendMessage",
+        json!({"QueueUrl":url,"MessageBody":"hello","MessageAttributes":{"label":{"DataType":"String","StringValue":"test"},"binary":{"DataType":"Binary","BinaryValue":"aGk="}}}),
+    );
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    assert_eq!(handler.0.history(&ctx()).unwrap()["invocations"], json!([]));
+    let mut other = ctx();
+    other.account_id = "999999999999".into();
+    assert_eq!(
+        handler.0.get_mapping(&other, &id).unwrap_err().code,
+        "ResourceNotFoundException"
+    );
+    lambda_api(
+        &handler.0,
+        "UpdateEventSourceMapping",
+        json!({"UUID":id,"Enabled":true}),
+    );
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    let history = handler.0.history(&ctx()).unwrap();
+    let record = &history["invocations"][0]["result"]["Records"][0];
+    assert_eq!(record["body"], "hello");
+    assert_eq!(record["eventSource"], "aws:sqs");
+    assert_eq!(record["attributes"]["ApproximateReceiveCount"], "1");
+    assert_eq!(record["messageAttributes"]["label"]["stringValue"], "test");
+    assert_eq!(record["messageAttributes"]["binary"]["binaryValue"], "aGk=");
+    assert!(
+        sqs_api(&sqs, "ReceiveMessage", json!({"QueueUrl":url}))
+            .get("Messages")
+            .is_none()
+    );
+    lambda_api(&handler.0, "DeleteEventSourceMapping", json!({"UUID":id}));
+    assert!(handler.0.get_mapping(&ctx(), &id).is_err());
+}
+
+#[test]
+fn sqs_partial_failure_retries_only_failed_message_and_can_be_cleared() {
+    let code = "import json,sys; e=json.load(sys.stdin); print(json.dumps({'batchItemFailures':[{'itemIdentifier':r['messageId']} for r in e['Records'] if r['body']=='fail']}))";
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["python3", "-c", code]));
+    let url = queue(&sqs, "jobs");
+    let id = mapping_for(&handler.0, "jobs", true);
+    for body in ["ok", "fail"] {
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":body}),
+        );
+    }
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    let received = sqs_api(
+        &sqs,
+        "ReceiveMessage",
+        json!({"QueueUrl":url,"AttributeNames":["All"],"MaxNumberOfMessages":10}),
+    );
+    assert_eq!(received["Messages"].as_array().unwrap().len(), 1);
+    assert_eq!(received["Messages"][0]["Body"], "fail");
+    assert_eq!(
+        received["Messages"][0]["Attributes"]["ApproximateReceiveCount"],
+        "2"
+    );
+    lambda_api(
+        &handler.0,
+        "UpdateEventSourceMapping",
+        json!({"UUID":id,"Enabled":false}),
+    );
+    assert_eq!(
+        handler
+            .0
+            .get_mapping(&ctx(), &id)
+            .unwrap()
+            .function_response_types,
+        vec!["ReportBatchItemFailures"]
+    );
+    let response = request(
+        &handler,
+        "PUT",
+        &format!("/2015-03-31/event-source-mappings/{id}"),
+        br#"{"FunctionResponseTypes":[]}"#,
+        vec![],
+    );
+    assert_eq!(response.status, 202);
+    assert!(
+        handler
+            .0
+            .get_mapping(&ctx(), &id)
+            .unwrap()
+            .function_response_types
+            .is_empty()
+    );
+}
+
+#[test]
+fn sqs_handler_failure_uses_queue_redrive_not_async_lambda_retries() {
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["sh", "-c", "exit 1"]));
+    let url = queue(&sqs, "jobs");
+    let dlq = queue(&sqs, "dead");
+    sqs_api(
+        &sqs,
+        "SetQueueAttributes",
+        json!({"QueueUrl":url,"Attributes":{"RedrivePolicy":json!({"deadLetterTargetArn":"arn:aws:sqs:us-east-1:123456789012:dead","maxReceiveCount":1}).to_string()}}),
+    );
+    let id = mapping_for(&handler.0, "jobs", false);
+    sqs_api(
+        &sqs,
+        "SendMessage",
+        json!({"QueueUrl":url,"MessageBody":"fail"}),
+    );
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    let history = handler.0.history(&ctx()).unwrap();
+    assert_eq!(history["invocations"][0]["state"], "failed");
+    assert_eq!(history["invocations"][0]["attempts"], 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    assert_eq!(
+        handler.0.history(&ctx()).unwrap()["invocations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        sqs_api(&sqs, "ReceiveMessage", json!({"QueueUrl":dlq}))["Messages"][0]["Body"],
+        "fail"
+    );
+}
+
+#[test]
+fn sqs_mapping_and_inflight_message_survive_restart() {
+    let dir =
+        std::env::temp_dir().join(format!("roto-sqs-lambda-{}", roto_core::ids::request_id()));
+    let id;
+    {
+        let store = Store::open(&dir, StoreOptions::default()).unwrap();
+        let (sqs, handler) = sqs_lambda(&store, command(&["sh", "-c", "cat"]));
+        let url = queue(&sqs, "jobs");
+        id = mapping_for(&handler.0, "jobs", false);
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":"persisted"}),
+        );
+        // Simulate a crash after receiving, before invoking/acknowledging.
+        let event = sqs
+            .receive_event_batch(&ctx(), "arn:aws:sqs:us-east-1:123456789012:jobs", 10)
+            .unwrap();
+        assert_eq!(event["Records"].as_array().unwrap().len(), 1);
+        let job = handler.0.job(&ctx(), "consume", event, None).unwrap();
+        handler.0.record(&job, "running").unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(1100));
+    {
+        let store = Store::open(&dir, StoreOptions::default()).unwrap();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let handler = LambdaHandler::unstarted(
+            &store,
+            Executors {
+                functions: BTreeMap::from([("consume".into(), command(&["sh", "-c", "cat"]))]),
+            },
+            sqs,
+        )
+        .unwrap();
+        let interrupted = handler.0.history(&ctx()).unwrap();
+        assert_eq!(interrupted["invocations"][0]["state"], "failed");
+        handler
+            .0
+            .process_sqs_batch(&ctx(), &id, &runtime())
+            .unwrap();
+        let event = handler.0.history(&ctx()).unwrap();
+        assert_eq!(
+            event["invocations"][0]["result"]["Records"][0]["body"],
+            "persisted"
+        );
+        assert_eq!(
+            event["invocations"][0]["result"]["Records"][0]["attributes"]["ApproximateReceiveCount"],
+            "2"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sqs_mapping_rejects_unsupported_settings_and_paginates() {
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["sh", "-c", "cat"]));
+    queue(&sqs, "jobs");
+    queue(&sqs, "jobs2");
+    let source = "arn:aws:sqs:us-east-1:123456789012:jobs";
+    for extra in [
+        json!({"BatchSize":11}),
+        json!({"MaximumBatchingWindowInSeconds":1}),
+        json!({"FilterCriteria":{"Filters":[{"Pattern":"{}"}]}}),
+        json!({"EventSourceArn":"arn:aws:sqs:us-west-2:123456789012:jobs"}),
+    ] {
+        let mut input = json!({"FunctionName":"consume","EventSourceArn":source});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert!(dispatch(&handler.0, &ctx(), "CreateEventSourceMapping", &input).is_err());
+    }
+    let id = mapping_for(&handler.0, "jobs", false);
+    mapping_for(&handler.0, "jobs2", false);
+    assert!(
+        dispatch(
+            &handler.0,
+            &ctx(),
+            "CreateEventSourceMapping",
+            &json!({"FunctionName":"consume","EventSourceArn":source})
+        )
+        .is_err()
+    );
+    let first = lambda_api(&handler.0, "ListEventSourceMappings", json!({"MaxItems":1}));
+    assert_eq!(first["EventSourceMappings"].as_array().unwrap().len(), 1);
+    let second = lambda_api(
+        &handler.0,
+        "ListEventSourceMappings",
+        json!({"MaxItems":1,"Marker":first["NextMarker"]}),
+    );
+    assert_eq!(second["EventSourceMappings"].as_array().unwrap().len(), 1);
+    assert_ne!(
+        first["EventSourceMappings"][0]["UUID"],
+        second["EventSourceMappings"][0]["UUID"]
+    );
+    handler.0.reset().unwrap();
+    assert!(handler.0.get_mapping(&ctx(), &id).is_err());
+}
+
+#[test]
+fn sqs_invalid_partial_response_retries_whole_batch() {
+    let (sqs, handler) = sqs_lambda(
+        &Store::ephemeral(),
+        command(&[
+            "sh",
+            "-c",
+            "cat >/dev/null; printf '%s' '{\"batchItemFailures\":[{\"itemIdentifier\":\"unknown\"}]}'",
+        ]),
+    );
+    let url = queue(&sqs, "jobs");
+    let id = mapping_for(&handler.0, "jobs", true);
+    for body in ["one", "two"] {
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":body}),
+        );
+    }
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    assert!(
+        handler
+            .0
+            .get_mapping(&ctx(), &id)
+            .unwrap()
+            .last_processing_result
+            .unwrap()
+            .contains("Invalid partial batch response")
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+    let received = sqs_api(
+        &sqs,
+        "ReceiveMessage",
+        json!({"QueueUrl":url,"MaxNumberOfMessages":10}),
+    );
+    assert_eq!(received["Messages"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn sqs_event_batch_respects_payload_limit_and_stale_receipts() {
+    let sqs = roto_svc_sqs::Sqs::new(&Store::ephemeral()).unwrap();
+    let url = queue(&sqs, "large");
+    sqs_api(
+        &sqs,
+        "SetQueueAttributes",
+        json!({"QueueUrl":url,"Attributes":{"VisibilityTimeout":"2"}}),
+    );
+    for _ in 0..10 {
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":"\u{001f}".repeat(250_000)}),
+        );
+    }
+    let source = "arn:aws:sqs:us-east-1:123456789012:large";
+    let first = sqs.receive_event_batch(&ctx(), source, 10).unwrap();
+    assert!(serde_json::to_vec(&first).unwrap().len() <= 6 * 1024 * 1024);
+    assert_eq!(first["Records"].as_array().unwrap().len(), 4);
+    assert!(
+        first["Records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["attributes"]["ApproximateReceiveCount"] == "1")
+    );
+    std::thread::sleep(Duration::from_millis(2100));
+    let second = sqs.receive_event_batch(&ctx(), source, 1).unwrap();
+    assert_eq!(
+        first["Records"][0]["messageId"],
+        second["Records"][0]["messageId"]
+    );
+    sqs.acknowledge_event(
+        &ctx(),
+        source,
+        first["Records"][0]["receiptHandle"].as_str().unwrap(),
+    )
+    .unwrap();
+    let attrs = sqs_api(
+        &sqs,
+        "GetQueueAttributes",
+        json!({"QueueUrl":url,"AttributeNames":["ApproximateNumberOfMessages","ApproximateNumberOfMessagesNotVisible"]}),
+    );
+    let visible: usize = attrs["Attributes"]["ApproximateNumberOfMessages"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let hidden: usize = attrs["Attributes"]["ApproximateNumberOfMessagesNotVisible"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        visible + hidden,
+        10,
+        "Stale receipt must not acknowledge a newer delivery"
+    );
+}

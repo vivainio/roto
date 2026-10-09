@@ -1,4 +1,5 @@
 //! Lambda metadata and invocation through locally configured command/HTTP executors.
+mod event_sources;
 mod executor;
 #[allow(clippy::all)]
 mod generated;
@@ -12,9 +13,37 @@ use std::sync::Arc;
 
 pub use executor::{Executor, Executors};
 pub use generated::{OPERATIONS, Service};
+use roto_protocol::{FromJson, ToJson};
+
+pub fn dispatch(
+    svc: &Lambda,
+    ctx: &RequestContext,
+    operation: &str,
+    body: &serde_json::Value,
+) -> Result<RawResponse, AwsError> {
+    if operation == "UpdateEventSourceMapping" {
+        let input = generated::UpdateEventSourceMappingRequest::from_json(body, "")?;
+        let responses = body
+            .get("FunctionResponseTypes")
+            .map(|_| input.function_response_types.clone());
+        let output = svc.update_mapping_input(ctx, input, responses)?;
+        Ok(RawResponse {
+            status: 200,
+            headers: vec![],
+            body: serde_json::to_vec(&output.to_json()).unwrap(),
+        })
+    } else {
+        generated::dispatch(svc, ctx, operation, body)
+    }
+}
 pub use service::Lambda;
 
 pub const IMPLEMENTED: &[&str] = &[
+    "CreateEventSourceMapping",
+    "GetEventSourceMapping",
+    "ListEventSourceMappings",
+    "UpdateEventSourceMapping",
+    "DeleteEventSourceMapping",
     "CreateFunction",
     "GetFunction",
     "GetFunctionConfiguration",
@@ -35,10 +64,24 @@ const MIGRATIONS: &[Migration] = &[Migration { version: 1, sql: "
 CREATE TABLE functions (arn TEXT PRIMARY KEY, config TEXT NOT NULL, code TEXT NOT NULL, tags TEXT NOT NULL, policy TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE invocations (id TEXT PRIMARY KEY, arn TEXT NOT NULL, job TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0, result TEXT, logs TEXT, created INTEGER NOT NULL);
 CREATE INDEX invocation_queue ON invocations(state, due, created);
+" }, Migration { version: 2, sql: "
+ALTER TABLE invocations ADD COLUMN origin TEXT NOT NULL DEFAULT 'async';
+CREATE TABLE event_source_mappings (uuid TEXT PRIMARY KEY, account TEXT NOT NULL, region TEXT NOT NULL, source TEXT NOT NULL, function TEXT NOT NULL, config TEXT NOT NULL, UNIQUE(account,region,source,function));
 " }];
 
 pub struct LambdaHandler(pub Arc<Lambda>);
 impl LambdaHandler {
+    pub fn unstarted(
+        store: &Store,
+        executors: Executors,
+        sqs: Arc<roto_svc_sqs::Sqs>,
+    ) -> Result<Self, AwsError> {
+        Ok(Self(Arc::new(Lambda::new(store, executors)?.with_sqs(sqs))))
+    }
+    pub fn start(&self, endpoint: String) {
+        Lambda::start_worker(&self.0);
+        Lambda::start_sqs_worker(&self.0, endpoint);
+    }
     pub fn new(store: &Store, executors: Executors) -> Result<Self, AwsError> {
         let lambda = Arc::new(Lambda::new(store, executors)?);
         Lambda::start_worker(&lambda);
@@ -62,7 +105,10 @@ impl ServiceHandler for LambdaHandler {
                 body: serde_json::to_vec(&value).unwrap(),
             })
         } else {
-            generated::dispatch_http(&*self.0, ctx, req)
+            roto_protocol::restjson::decode(generated::ROUTES, req).and_then(|(route, body)| {
+                let response = dispatch(&self.0, ctx, route.operation, &body)?;
+                roto_protocol::restjson::encode(route, response)
+            })
         };
         Ok(result.unwrap_or_else(|e| RawResponse {
             status: e.status,

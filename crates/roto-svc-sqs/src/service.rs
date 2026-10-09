@@ -1437,3 +1437,119 @@ impl Sqs {
         })
     }
 }
+
+impl Sqs {
+    /// Validate the supported SQS source and return its visibility timeout.
+    pub fn event_source_visibility(
+        &self,
+        ctx: &RequestContext,
+        source: &str,
+    ) -> Result<i64, AwsError> {
+        let name = self.event_source_name(ctx, source)?;
+        self.db.transaction(|tx| {
+            let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
+                .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
+            if q.is_fifo() {
+                return Err(AwsError::not_implemented("lambda", "FIFO event sources"));
+            }
+            Ok(q.int("VisibilityTimeout"))
+        })
+    }
+    fn event_source_name<'a>(
+        &self,
+        ctx: &RequestContext,
+        source: &'a str,
+    ) -> Result<&'a str, AwsError> {
+        let prefix = format!("arn:aws:sqs:{}:{}:", ctx.region, ctx.account_id);
+        source
+            .strip_prefix(&prefix)
+            .filter(|n| !n.is_empty() && !n.contains(':'))
+            .ok_or_else(|| invalid_value("SQS event source must be in the same account and region"))
+    }
+    /// Claim a batch using the normal receive transaction, including expiry and DLQ redrive.
+    pub fn receive_event_batch(
+        &self,
+        ctx: &RequestContext,
+        source: &str,
+        batch_size: usize,
+    ) -> Result<serde_json::Value, AwsError> {
+        if !(1..=10).contains(&batch_size) {
+            return Err(invalid_value("Event batch size must be between 1 and 10"));
+        }
+        let name = self.event_source_name(ctx, source)?;
+        let mut max = batch_size;
+        loop {
+            let result = self.db.transaction(|tx| {
+                let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
+                    .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
+                if q.is_fifo() {
+                    return Err(AwsError::not_implemented("lambda", "FIFO event sources"));
+                }
+                let messages = receive_once(
+                    tx,
+                    &q,
+                    max,
+                    q.int("VisibilityTimeout"),
+                    &BTreeSet::from(["All".into()]),
+                    &["All".into()],
+                )?;
+                let records: Vec<_> = messages
+                    .into_iter()
+                    .map(|m| event_record(m, source, &ctx.region))
+                    .collect();
+                let event = serde_json::json!({"Records":records});
+                if serde_json::to_vec(&event).unwrap().len() > 6 * 1024 * 1024 {
+                    return Err(invalid_value("EventBatchTooLarge"));
+                }
+                Ok(event)
+            });
+            match result {
+                Err(e) if e.message == "EventBatchTooLarge" && max > 1 => max -= 1,
+                other => return other,
+            }
+        }
+    }
+    pub fn acknowledge_event(
+        &self,
+        ctx: &RequestContext,
+        source: &str,
+        receipt: &str,
+    ) -> Result<(), AwsError> {
+        let name = self.event_source_name(ctx, source)?;
+        self.db.transaction(|tx| {
+            let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
+                .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
+            // A stale execution must not delete a message received again by another consumer.
+            tx.execute(
+                "DELETE FROM messages WHERE queue_id=?1 AND receipt_handle=?2",
+                params![q.id, receipt],
+            )?;
+            Ok(())
+        })
+    }
+}
+
+fn event_record(message: Message, source: &str, region: &str) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+    let attributes: Map<String, Value> = message.message_attributes.into_iter().map(|(name, attr)| {
+        let mut value = json!({
+            "dataType": attr.data_type,
+            "stringListValues": attr.string_list_values,
+            "binaryListValues": attr.binary_list_values.into_iter().map(|b| roto_protocol::base64::encode(&b.0)).collect::<Vec<_>>(),
+        });
+        if let Some(text) = attr.string_value { value["stringValue"] = json!(text); }
+        if let Some(bytes) = attr.binary_value { value["binaryValue"] = json!(roto_protocol::base64::encode(&bytes.0)); }
+        (name, value)
+    }).collect();
+    json!({
+        "messageId": message.message_id,
+        "receiptHandle": message.receipt_handle,
+        "body": message.body,
+        "attributes": message.attributes,
+        "messageAttributes": attributes,
+        "md5OfBody": message.md5_of_body,
+        "eventSource": "aws:sqs",
+        "eventSourceARN": source,
+        "awsRegion": region,
+    })
+}

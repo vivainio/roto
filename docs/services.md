@@ -15,8 +15,9 @@ full AWS compatibility.
 | SSM | Parameter Store, versions, labels, history, hierarchy, tags, SecureString | Documents, commands, maintenance windows, patch baselines, public parameters |
 | Secrets Manager | Secrets, versions, staging labels, deletion/restore, tags, policies, rotation bookkeeping, batch get | Cross-region replication, Lambda rotation execution |
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
+| Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
 
-KMS, Kinesis, and Lambda have not been started.
+KMS and Kinesis have not been started.
 
 ## S3 details
 
@@ -27,7 +28,7 @@ Listings use SQLite metadata. Current object bodies are visible in the
 
 Many bucket sub-resources are stored and returned without executing their
 behavior. For example, storing lifecycle, website, CORS, or notification settings
-does not implement lifecycle execution, website/CORS serving, or notification delivery.
+does not implement lifecycle execution or website/CORS serving. S3 Lambda notifications execute supported object events.
 ACLs and policies are stored without enforcement.
 
 ## Cross-service behavior
