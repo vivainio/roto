@@ -89,6 +89,11 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let secretsmanager = roto_svc_secretsmanager::SecretsManagerHandler::new(&store)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
         Arc::new(sts),
         Arc::new(sqs),
@@ -96,6 +101,7 @@ async fn main() {
         Arc::new(s3),
         Arc::new(dynamodb),
         Arc::new(ssm),
+        Arc::new(secretsmanager),
     ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),

@@ -757,6 +757,7 @@ dependencies = [
  "roto-svc-dynamodb",
  "roto-svc-iam",
  "roto-svc-s3",
+ "roto-svc-secretsmanager",
  "roto-svc-sqs",
  "roto-svc-ssm",
  "roto-svc-sts",
@@ -798,6 +799,16 @@ dependencies = [
  "roxmltree",
  "serde_json",
  "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "roto-svc-secretsmanager"
+version = "0.0.1"
+dependencies = [
+ "roto-core",
+ "roto-protocol",
+ "serde_json",
  "uuid",
 ]
 

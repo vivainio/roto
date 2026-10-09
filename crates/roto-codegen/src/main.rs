@@ -76,6 +76,19 @@ const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
     ("SSM", "UnlabelParameterVersionResult", "InvalidLabels"),
     ("SSM", "UnlabelParameterVersionResult", "RemovedLabels"),
     ("SSM", "ListTagsForResourceResult", "TagList"),
+    ("Secrets Manager", "ListSecretsResponse", "SecretList"),
+    (
+        "Secrets Manager",
+        "BatchGetSecretValueResponse",
+        "SecretValues",
+    ),
+    ("Secrets Manager", "DescribeSecretResponse", "Tags"),
+    ("Secrets Manager", "SecretListEntry", "Tags"),
+    (
+        "Secrets Manager",
+        "ListSecretVersionIdsResponse",
+        "Versions",
+    ),
 ];
 
 /// operation -> (input shape, output shape, result wrapper)
