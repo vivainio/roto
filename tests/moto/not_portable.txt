@@ -1,3 +1,7 @@
+test_s3/test_multiple_accounts_server.py
+test_s3/test_s3_bucket_policy.py
+test_s3/test_s3_lambda_integration.py
+test_s3/test_server.py
 test_sqs/test_server.py
 test_sqs/test_sqs_integration.py
 test_sts/test_server.py

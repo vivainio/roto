@@ -13,8 +13,19 @@ impl XmlWriter {
     }
 
     pub fn open(&mut self, name: &str) {
+        self.open_raw(name, &[]);
+    }
+
+    pub(crate) fn open_raw(&mut self, name: &str, attrs: &[(&str, &str)]) {
         self.buf.push('<');
         self.buf.push_str(name);
+        for (k, v) in attrs {
+            self.buf.push(' ');
+            self.buf.push_str(k);
+            self.buf.push_str("=\"");
+            escape_into(&mut self.buf, v);
+            self.buf.push('"');
+        }
         self.buf.push('>');
     }
 
@@ -71,6 +82,12 @@ macro_rules! display_xml {
     )*};
 }
 display_xml!(i32, i64, bool, f64);
+
+impl XmlValue for crate::json::Blob {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.element(name, &crate::base64::encode(&self.0));
+    }
+}
 
 impl XmlValue for Timestamp {
     fn write(&self, w: &mut XmlWriter, name: &str) {

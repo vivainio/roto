@@ -23,7 +23,9 @@ echo "$MOTO_TAG" > "$top/MOTO_VERSION"
 : >"$top/not_portable.txt"
 for svc in "$@"; do
   (cd "$dest" && {
-    grep -rlE 'create_backend_app|moto\.server|_backends|backends\[|moto_server|ThreadedMotoServer' --include='*.py' "$svc" || true
+    # Only modules that import the in-process server are unusable as a whole; single tests that poke
+    # at backends fail individually and are tracked in expected_failures.
+    grep -rlE '^(from|import) moto(\.server| import server)|create_backend_app|ThreadedMotoServer' --include='*.py' "$svc" || true
     grep -rE "^(from|import) tests\.test_" --include='*.py' "$svc" | grep -vE "tests\.${svc}\b" | cut -d: -f1 || true
   }) >>"$top/not_portable.txt"
 done

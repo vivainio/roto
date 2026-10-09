@@ -32,7 +32,7 @@ if [[ "${UPDATE_EXPECTED:-}" == 1 ]]; then
   # Re-baseline: record every currently failing test as an expected failure.
   mkdir -p "$(dirname "$xf")"
   out="$(TEST_SERVER_MODE=true TEST_SERVER_MODE_ENDPOINT="http://localhost:$port" AWS_ACCESS_KEY_ID=testing \
-    AWS_SECRET_ACCESS_KEY=testing "$venv/bin/python" -m pytest "tests/$svc" -q -p no:cacheprovider \
+    AWS_SECRET_ACCESS_KEY=testing "$venv/bin/python" -m pytest "tests/$svc" -q -p no:cacheprovider --timeout="${TEST_TIMEOUT:-30}" \
     --tb=no -rfE "${ignore[@]}" || true)"
   { echo "# Known failures for $svc (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh $svc)"
     sed -nE 's/^(FAILED|ERROR) (\S+).*/\2/p' <<<"$out" | sed 's/^tests\///' | sed 's/^/tests\//' | sort -u; } >"$xf"
@@ -40,4 +40,4 @@ if [[ "${UPDATE_EXPECTED:-}" == 1 ]]; then
 fi
 TEST_SERVER_MODE=true TEST_SERVER_MODE_ENDPOINT="http://localhost:$port" \
   AWS_ACCESS_KEY_ID=testing AWS_SECRET_ACCESS_KEY=testing \
-  "$venv/bin/python" -m pytest "tests/$svc" -q -p no:cacheprovider "${deselect[@]}" "${ignore[@]}" "$@"
+  "$venv/bin/python" -m pytest "tests/$svc" -q -p no:cacheprovider --timeout="${TEST_TIMEOUT:-30}" "${deselect[@]}" "${ignore[@]}" "$@"

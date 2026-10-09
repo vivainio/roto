@@ -26,6 +26,8 @@ pub struct StoreOptions {
 
 pub struct Store {
     dir: Option<PathBuf>,
+    /// Lazily created scratch directory for blobs in ephemeral mode; removed on drop.
+    scratch: Mutex<Option<PathBuf>>,
     options: StoreOptions,
     dbs: Mutex<HashMap<String, Arc<Db>>>,
 }
@@ -37,6 +39,7 @@ impl Store {
             AwsError::internal(format!("cannot create data dir {}: {e}", dir.display()))
         })?;
         Ok(Self {
+            scratch: Mutex::default(),
             dir: Some(dir),
             options,
             dbs: Mutex::default(),
@@ -45,10 +48,35 @@ impl Store {
 
     pub fn ephemeral() -> Self {
         Self {
+            scratch: Mutex::default(),
             dir: None,
             options: StoreOptions::default(),
             dbs: Mutex::default(),
         }
+    }
+
+    /// A directory for large blobs (object bodies, code packages). Persistent under the data
+    /// directory, or a process-private temporary directory in ephemeral mode.
+    pub fn blob_dir(&self, name: &str) -> Result<PathBuf, AwsError> {
+        let base = match &self.dir {
+            Some(d) => d.clone(),
+            None => {
+                let mut scratch = self.scratch.lock().unwrap();
+                scratch
+                    .get_or_insert_with(|| {
+                        std::env::temp_dir().join(format!(
+                            "roto-{}-{}",
+                            std::process::id(),
+                            crate::ids::request_id()
+                        ))
+                    })
+                    .clone()
+            }
+        };
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AwsError::internal(format!("cannot create {}: {e}", dir.display())))?;
+        Ok(dir)
     }
 
     pub fn data_dir(&self) -> Option<&Path> {
@@ -135,6 +163,14 @@ impl Db {
         f: impl FnOnce(&Connection) -> Result<T, AwsError>,
     ) -> Result<T, AwsError> {
         f(&self.conn.lock().unwrap())
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        if let Some(dir) = self.scratch.lock().unwrap().take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 

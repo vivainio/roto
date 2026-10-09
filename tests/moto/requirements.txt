@@ -4,3 +4,4 @@ pytest
 pytest-order
 freezegun
 requests
+pytest-timeout

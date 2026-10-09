@@ -690,6 +690,7 @@ name = "roto-protocol"
 version = "0.0.1"
 dependencies = [
  "roto-core",
+ "roxmltree",
  "serde_json",
 ]
 
@@ -701,6 +702,7 @@ dependencies = [
  "clap",
  "roto-core",
  "roto-svc-iam",
+ "roto-svc-s3",
  "roto-svc-sqs",
  "roto-svc-sts",
  "tokio",
@@ -714,6 +716,20 @@ version = "0.0.1"
 dependencies = [
  "roto-core",
  "roto-protocol",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "roto-svc-s3"
+version = "0.0.1"
+dependencies = [
+ "hex",
+ "md-5",
+ "roto-core",
+ "roto-protocol",
+ "roxmltree",
  "serde_json",
  "sha2",
  "uuid",

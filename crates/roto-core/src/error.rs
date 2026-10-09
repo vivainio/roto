@@ -8,6 +8,8 @@ pub struct AwsError {
     pub message: String,
     /// `true` for client faults (`Sender`), `false` for service faults (`Receiver`).
     pub sender: bool,
+    /// Additional elements for protocols that carry them (S3's `<BucketName>`, `<Key>`, …).
+    pub extra: Vec<(String, String)>,
 }
 
 impl AwsError {
@@ -17,6 +19,7 @@ impl AwsError {
             code: code.into(),
             message: message.into(),
             sender: true,
+            extra: Vec::new(),
         }
     }
 
@@ -26,7 +29,13 @@ impl AwsError {
             code: code.into(),
             message: message.into(),
             sender: false,
+            extra: Vec::new(),
         }
+    }
+
+    pub fn with(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.extra.push((key.to_string(), value.into()));
+        self
     }
 
     pub fn invalid_action(action: &str) -> Self {

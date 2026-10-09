@@ -77,7 +77,12 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let handlers: Vec<Arc<dyn ServiceHandler>> = vec![Arc::new(sts), Arc::new(sqs), Arc::new(iam)];
+    let s3 = roto_svc_s3::S3Handler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let handlers: Vec<Arc<dyn ServiceHandler>> =
+        vec![Arc::new(sts), Arc::new(sqs), Arc::new(iam), Arc::new(s3)];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
         store,
