@@ -58,7 +58,7 @@ $ROTO_DATA_DIR/s3/
 
 ## Testing
 1. Differential tests: same boto3 scripts vs moto_server and roto; diff normalised responses (mask IDs/timestamps/ordering).
-2. **Moto's own test suite, vendored unmodified** (`tests/moto/tests/<service>`, pinned by `MOTO_VERSION`, Apache-2.0, see NOTICE) and run in moto's `TEST_SERVER_MODE` against roto on port 5000 (roto also serves `POST /moto-api/reset`).
+2. **Moto's own test suite, vendored unmodified** (`tests/moto/tests/<service>`, pinned by `MOTO_VERSION`, Apache-2.0, see NOTICE) and run in moto's `TEST_SERVER_MODE` against roto on port 5070 (roto also serves `POST /moto-api/reset`).
    - `scripts/sync-moto-tests.sh <test_dir>...` vendors services; `scripts/run-moto-tests.sh <test_dir>` runs them.
    - Tests that drive moto internals in-process (Flask test client, backends) cannot target another server; the sync script lists them in `tests/moto/not_portable.txt` and they are ignored. Their intent gets re-implemented as native Rust tests instead.
    - `tests/moto/expected_failures/<service>.txt` is the baseline of known failures (deselected). Goal per service: empty list. CI fails on regressions; `UPDATE_EXPECTED=1` re-baselines after progress.

@@ -19,8 +19,8 @@ use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandle
 struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    /// Same default as moto_server, so moto's server-mode tests work unchanged.
-    #[arg(long, default_value_t = 5000)]
+    /// Port for the local AWS simulator.
+    #[arg(long, default_value_t = 5070)]
     port: u16,
     #[arg(long, default_value = "roto-data", env = "ROTO_DATA_DIR")]
     data_dir: PathBuf,
@@ -196,7 +196,7 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         base_url: raw
             .header("host")
             .map(|h| format!("http://{h}"))
-            .unwrap_or_else(|| "http://localhost:5000".into()),
+            .unwrap_or_else(|| "http://localhost:5070".into()),
     };
 
     let handler = service

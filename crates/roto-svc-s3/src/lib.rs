@@ -172,7 +172,7 @@ impl S3Handler {
     }
 }
 
-/// `bucket.s3.amazonaws.com`, `bucket.s3.localhost:5000`, `bucket.localhost` → `bucket`.
+/// `bucket.s3.amazonaws.com`, `bucket.s3.localhost:5070`, `bucket.localhost` → `bucket`.
 fn virtual_host_bucket(host: &str) -> Option<String> {
     let host = host.split(':').next()?;
     if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
@@ -255,11 +255,11 @@ mod tests {
             Some("my.bucket")
         );
         assert_eq!(
-            virtual_host_bucket("photos.localhost:5000").as_deref(),
+            virtual_host_bucket("photos.localhost:5070").as_deref(),
             Some("photos")
         );
-        assert_eq!(virtual_host_bucket("localhost:5000"), None);
-        assert_eq!(virtual_host_bucket("127.0.0.1:5000"), None);
+        assert_eq!(virtual_host_bucket("localhost:5070"), None);
+        assert_eq!(virtual_host_bucket("127.0.0.1:5070"), None);
         assert_eq!(virtual_host_bucket("s3.amazonaws.com"), None);
     }
 }

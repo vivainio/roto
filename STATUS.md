@@ -23,7 +23,7 @@ evaluation, bucket policies, ACL checks or trust-policy checks. This is delibera
 
 ## How requests are handled
 
-* One binary, one port (default 5000, same as `moto_server`). `--ephemeral` keeps everything in
+* One binary, one port (default 5070). `--ephemeral` keeps everything in
   memory/temp files; otherwise state persists under `--data-dir` (default `./roto-data`).
 * Requests are routed by the SigV4 credential scope (service + region + access key), falling back
   to the host name, then to a service "claiming" an unsigned request (STS web-identity / SAML).
@@ -81,7 +81,7 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 * `cargo test` - unit tests (codecs, key paths, blob store, chunked decoding, ACLs, store).
 * `scripts/run-moto-tests.sh <test_dir>` - moto's tests against roto; `TARGET=moto` runs them
   against real moto to separate upstream quirks from roto gaps; `UPDATE_EXPECTED=1` re-baselines.
-  Moto's tests hardcode `localhost:5000`, so run on the default port.
+  The runner adapts upstream's hardcoded port 5000 URLs in a temporary copy of the tests.
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,

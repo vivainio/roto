@@ -152,7 +152,7 @@ mod tests {
             region: "us-east-1".into(),
             access_key: None,
             request_id: "rid".into(),
-            base_url: "http://localhost:5000".into(),
+            base_url: "http://localhost:5070".into(),
         }
     }
 
@@ -177,7 +177,7 @@ mod tests {
         let (s, q) = call(&h, "CreateQueue", json!({"QueueName": "q"}));
         assert_eq!(s, 200);
         let url = q["QueueUrl"].as_str().unwrap().to_string();
-        assert_eq!(url, "http://localhost:5000/123456789012/q");
+        assert_eq!(url, "http://localhost:5070/123456789012/q");
 
         let (_, sent) = call(
             &h,

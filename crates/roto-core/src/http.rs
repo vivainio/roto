@@ -35,7 +35,7 @@ pub struct RequestContext {
     pub region: String,
     pub access_key: Option<String>,
     pub request_id: String,
-    /// Scheme and authority the caller used, e.g. `http://localhost:5000`; used to build URLs.
+    /// Scheme and authority the caller used, e.g. `http://localhost:5070`; used to build URLs.
     pub base_url: String,
 }
 

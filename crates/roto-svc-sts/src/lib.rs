@@ -464,7 +464,7 @@ mod tests {
             region: "us-east-1".into(),
             access_key: None,
             request_id: "rid".into(),
-            base_url: "http://localhost:5000".into(),
+            base_url: "http://localhost:5070".into(),
         }
     }
 
