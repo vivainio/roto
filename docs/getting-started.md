@@ -1,6 +1,13 @@
 # Getting started
 
-## Install and start
+This guide takes you from installing roto to storing and retrieving an S3 object
+through a local AWS profile. You need two terminals: one for the running server
+and one for AWS commands. The shell examples use macOS or Linux syntax.
+
+No AWS account is required. The profile below uses dummy credentials and points
+at your local roto instance.
+
+## 1. Install and start roto
 
 With [uv](https://docs.astral.sh/uv/) installed, install roto as a command-line tool:
 
@@ -19,27 +26,31 @@ To upgrade:
 uv tool upgrade roto-aws
 ```
 
-## Build from source
+## 2. Install AWS CLI v2
 
-For development, install a current stable Rust toolchain supporting edition 2024,
-then clone the repository:
+Install AWS CLI v2 using the
+[official installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html):
+
+| Platform | Installation |
+| --- | --- |
+| macOS | Download and open the [official package](https://awscli.amazonaws.com/AWSCLIV2.pkg) |
+| Linux | Follow the guide's Linux instructions for your CPU architecture |
+| Windows | Use the Windows installer linked in the guide |
+
+In your second terminal, check the version:
 
 ```sh
-git clone https://github.com/vivainio/roto.git
-cd roto
-cargo run -p roto-server -- --port 5070
+aws --version
 ```
 
-For a release build:
+The output should start with `aws-cli/2.`. Python's `awscli` package installs
+CLI v1; use the official v2 installer for this guide.
 
-```sh
-cargo build --release -p roto-server
-./target/release/roto-server --port 5070
-```
+## 3. Connect the AWS CLI
 
-## Connect the AWS CLI
+Create `~/.aws/` if needed, then add this section to `~/.aws/config`
+(on Windows, `%USERPROFILE%\.aws\config`). Keep any existing profiles:
 
-With a current AWS CLI v2, add a named profile to `~/.aws/config`:
 
 ```ini
 [profile roto]
@@ -59,9 +70,17 @@ Select the profile when running AWS commands:
 
 ```sh
 aws --profile roto sts get-caller-identity
+```
+
+The response should include `"Account": "123456789012"`. This confirms the CLI
+can reach roto with the profile. You can also inspect other services:
+
+```sh
 aws --profile roto sqs list-queues
 aws --profile roto dynamodb list-tables
 ```
+
+A fresh instance has no queues or tables; an empty response is expected.
 
 For a terminal session, you can also select it with `AWS_PROFILE`:
 
@@ -75,6 +94,8 @@ overrides such as `AWS_ENDPOINT_URL` are already set in your shell, they take
 precedence over the config file; unset them to use the profile's endpoint.
 See AWS's [endpoint configuration rules](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-endpoints.html).
 
+## 4. Store and retrieve an object
+
 Try an S3 round trip:
 
 ```sh
@@ -83,6 +104,39 @@ printf 'hello from roto\n' > /tmp/roto-hello.txt
 aws --profile roto s3 cp /tmp/roto-hello.txt s3://demo-bucket/hello.txt
 aws --profile roto s3 cp s3://demo-bucket/hello.txt -
 ```
+
+The download should print `hello from roto`.
+
+## 5. Keep your environment across restarts
+
+Stop the server with Ctrl+C, then start it again from the same directory:
+
+```sh
+roto-server --port 5070
+```
+
+In the second terminal, retrieve the same object again:
+
+```sh
+aws --profile roto s3 cp s3://demo-bucket/hello.txt -
+```
+
+The bucket and object remain in `./roto-data`. To keep the same environment
+regardless of your working directory, use `--data-dir /path/to/roto-data` on
+each start. See [Storage](storage.md) for how the data is stored.
+
+## If something goes wrong
+
+| Symptom | Check |
+| --- | --- |
+| `roto-server` is not found | Run `uv tool update-shell`, then open a new terminal |
+| Connection refused | Start roto and check that the profile port matches `--port` |
+| Profile not found | Use `[profile roto]` in the config file, then `--profile roto` |
+| Requests go to AWS or report invalid credentials | Check for `aws-cli/2.`, the profile's `endpoint_url`, and endpoint environment overrides |
+| Bucket already exists | The example was run before; reuse the bucket and continue with the upload |
+
+The profile commands and S3 round trip were verified with `roto-aws` 0.0.1 and
+AWS CLI 2.37.11 on macOS.
 
 ## Connect boto3
 
@@ -113,3 +167,22 @@ curl --fail http://localhost:5070/roto-api/health
 Ephemeral mode uses in-memory databases and temporary files. Restarting discards
 state. To clear all services on a running instance, use the
 [reset endpoint](server.md#administrative-endpoints).
+
+## Build from source
+
+For development, install a current stable Rust toolchain supporting edition 2024,
+then clone the repository:
+
+```sh
+git clone https://github.com/vivainio/roto.git
+cd roto
+cargo run -p roto-server -- --port 5070
+```
+
+For a release build:
+
+```sh
+cargo build --release -p roto-server
+./target/release/roto-server --port 5070
+```
+
