@@ -62,6 +62,20 @@ const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
     ("DynamoDB", "BatchWriteItemOutput", "UnprocessedItems"),
     ("DynamoDB", "TransactGetItemsOutput", "Responses"),
     ("DynamoDB", "ListBackupsOutput", "BackupSummaries"),
+    ("SSM", "GetParametersResult", "Parameters"),
+    ("SSM", "GetParametersResult", "InvalidParameters"),
+    ("SSM", "GetParametersByPathResult", "Parameters"),
+    ("SSM", "DeleteParametersResult", "DeletedParameters"),
+    ("SSM", "DeleteParametersResult", "InvalidParameters"),
+    ("SSM", "DescribeParametersResult", "Parameters"),
+    ("SSM", "GetParameterHistoryResult", "Parameters"),
+    ("SSM", "ParameterHistory", "Labels"),
+    ("SSM", "ParameterMetadata", "Policies"),
+    ("SSM", "ParameterHistory", "Policies"),
+    ("SSM", "LabelParameterVersionResult", "InvalidLabels"),
+    ("SSM", "UnlabelParameterVersionResult", "InvalidLabels"),
+    ("SSM", "UnlabelParameterVersionResult", "RemovedLabels"),
+    ("SSM", "ListTagsForResourceResult", "TagList"),
 ];
 
 /// operation -> (input shape, output shape, result wrapper)

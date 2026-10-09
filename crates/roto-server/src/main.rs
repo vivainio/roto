@@ -85,12 +85,17 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let ssm = roto_svc_ssm::SsmHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
         Arc::new(sts),
         Arc::new(sqs),
         Arc::new(iam),
         Arc::new(s3),
         Arc::new(dynamodb),
+        Arc::new(ssm),
     ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),

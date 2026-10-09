@@ -28,3 +28,4 @@ jobs:
           scripts/run-moto-tests.sh test_s3
           scripts/run-moto-tests.sh test_iam
           scripts/run-moto-tests.sh test_dynamodb
+          scripts/run-moto-tests.sh test_ssm
