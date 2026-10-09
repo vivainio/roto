@@ -8,7 +8,8 @@ One static binary, AWS wire-protocol compatible, persistent by default (SQLite +
 **Documentation:** [The roto book](https://vivainio.github.io/roto/) ([sources](docs/index.md)).
 
 ```sh
-cargo run -p roto-server -- --port 5070        # persistent: ./roto-data ; add --ephemeral for in-memory
+uv tool install roto-aws
+roto-server --port 5070                      # persistent: ./roto-data ; add --ephemeral for in-memory
 aws --endpoint-url http://localhost:5070 sts get-caller-identity
 scripts/run-moto-tests.sh test_sts              # moto's own tests, run against roto
 ```
@@ -27,9 +28,9 @@ Set the repository's Pages source to **GitHub Actions**. See
 
 ## Python package releases
 
-The maturin package `roto-aws` installs the `roto-server` command. After the
-first PyPI release, install it with `pip install roto-aws` or run
-`uvx --from roto-aws roto-server --ephemeral`.
+Install with `uv tool install roto-aws`; the package provides the `roto-server`
+command. Upgrade with `uv tool upgrade roto-aws`. For development from source,
+run `cargo run -p roto-server -- --port 5070`.
 
 Push a Cargo-compatible version tag such as `v0.0.1` to trigger
 `.github/workflows/release.yml`. The shared workflow sets the workspace version

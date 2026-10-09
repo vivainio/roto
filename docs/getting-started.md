@@ -1,8 +1,28 @@
 # Getting started
 
-## Build and start
+## Install and start
 
-Install a current stable Rust toolchain supporting edition 2024, then clone the repository:
+With [uv](https://docs.astral.sh/uv/) installed, install roto as a command-line tool:
+
+```sh
+uv tool install roto-aws
+roto-server --port 5070
+```
+
+The package is named `roto-aws`; the installed command is `roto-server`.
+The server listens on `127.0.0.1:5070` and persists state under `./roto-data`.
+Leave it running and use another terminal for client commands.
+
+To upgrade:
+
+```sh
+uv tool upgrade roto-aws
+```
+
+## Build from source
+
+For development, install a current stable Rust toolchain supporting edition 2024,
+then clone the repository:
 
 ```sh
 git clone https://github.com/vivainio/roto.git
@@ -10,8 +30,7 @@ cd roto
 cargo run -p roto-server -- --port 5070
 ```
 
-The server listens on `127.0.0.1:5070` and persists state under `./roto-data`.
-Leave it running and use another terminal for client commands. For a release build:
+For a release build:
 
 ```sh
 cargo build --release -p roto-server
@@ -63,7 +82,7 @@ print(sqs.receive_message(QueueUrl=queue["QueueUrl"]))
 ## Disposable test state
 
 ```sh
-cargo run -p roto-server -- --ephemeral
+roto-server --ephemeral
 curl --fail http://localhost:5070/roto-api/health
 ```
 

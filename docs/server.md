@@ -1,9 +1,9 @@
 # Server reference
 
-Arguments follow the Cargo separator when using `cargo run`:
+Pass options to the installed `roto-server` command:
 
 ```sh
-cargo run -p roto-server -- --data-dir ./test-data --durable
+roto-server --data-dir ./test-data --durable
 ```
 
 | Option | Default | Behavior |
@@ -18,7 +18,7 @@ cargo run -p roto-server -- --data-dir ./test-data --durable
 Use `--help` for the executable's current options. `RUST_LOG` controls tracing output:
 
 ```sh
-RUST_LOG=debug cargo run -p roto-server -- --ephemeral
+RUST_LOG=debug roto-server --ephemeral
 ```
 
 ## Administrative endpoints
