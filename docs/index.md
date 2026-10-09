@@ -31,6 +31,10 @@ in monetization. There is no plan for paid tiers, license fees, or a commercial
 edition. The MIT license lets you use, modify, and redistribute the code,
 including in commercial projects.
 
+roto is maintained with AI assistance, with the aim of keeping maintenance costs
+effectively zero. That supports keeping the project free without a revenue
+model. Changes are still checked through Rust tests and moto compatibility suites.
+
 ## Why persistence comes first
 
 Moto focuses on quick, isolated integration tests with disposable mock state.
