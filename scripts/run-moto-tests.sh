@@ -13,10 +13,15 @@ if [[ ! -x "$venv/bin/python" ]]; then
 fi
 cargo build -q --manifest-path "$root/Cargo.toml" -p roto-server
 data="$(mktemp -d)"
-"$root/target/debug/roto-server" --port "$port" --ephemeral >"$data/server.log" 2>&1 &
+if [[ "${TARGET:-roto}" == moto ]]; then
+  # Reference run: the same tests against real moto, to tell upstream quirks from roto gaps.
+  "$venv/bin/moto_server" -p "$port" >"$data/server.log" 2>&1 &
+else
+  "$root/target/debug/roto-server" --port "$port" --ephemeral >"$data/server.log" 2>&1 &
+fi
 pid=$!
 trap 'kill $pid 2>/dev/null; rm -rf "$data"' EXIT
-for _ in $(seq 50); do curl -fs "http://localhost:$port/roto-api/health" >/dev/null && break; sleep 0.1; done
+for _ in $(seq 100); do curl -s -o /dev/null "http://localhost:$port/" && break; sleep 0.1; done
 deselect=()
 xf="$root/tests/moto/expected_failures/$svc.txt"
 [[ -f "$xf" ]] && while IFS= read -r l; do [[ -n "$l" && "$l" != \#* ]] && deselect+=(--deselect "$l"); done <"$xf"

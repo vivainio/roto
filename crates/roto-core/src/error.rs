@@ -41,7 +41,7 @@ impl AwsError {
         Self::sender(
             400,
             "MissingParameter",
-            format!("The request must contain the parameter {name}"),
+            format!("The request must contain the parameter {name}."),
         )
     }
 

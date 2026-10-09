@@ -83,4 +83,7 @@ $ROTO_DATA_DIR/s3/
 
 ## Status
 - Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.
-- Not yet: json/rest-json/rest-xml/ec2 codecs, state-backed services using the store, reset of persisted state, coverage-matrix report.
+- Phase 1 started: JSON 1.0/1.1 codec + codegen (maps, blobs, required members as plain values); **SQS** service on SQLite (queues, messages, receipt-handle history, DLQ redrive, FIFO + dedup, long polling, batch ops, permissions, tags) - 131/139 of moto's `test_sqs` pass against roto; the 8 failures need CloudFormation (7) and STS AssumeRole (1) and are in `tests/moto/expected_failures/test_sqs.txt`.
+- `TARGET=moto scripts/run-moto-tests.sh <dir>` runs the same suite against real moto, to separate upstream quirks from roto gaps (moto itself is the oracle for ambiguous behaviour).
+- Planned: a second codegen input, AWS's Smithy models (`aws/api-models-aws`), for typed errors (`awsQueryError`, `httpError`) and protocol test cases.
+- Not yet: rest-json/rest-xml/ec2 codecs, state-backed services using the store, reset of persisted state, coverage-matrix report.

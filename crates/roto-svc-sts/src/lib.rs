@@ -124,6 +124,6 @@ mod tests {
     fn required_parameter_is_enforced() {
         let (status, body) = call("Action=GetAccessKeyInfo");
         assert_eq!(status, 400);
-        assert!(body.contains("The request must contain the parameter AccessKeyId"));
+        assert!(body.contains("The request must contain the parameter AccessKeyId."));
     }
 }

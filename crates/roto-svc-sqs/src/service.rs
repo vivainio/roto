@@ -7,14 +7,27 @@ use roto_core::rusqlite::{OptionalExtension, Transaction, params};
 use roto_core::store::{Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{FromJson, ToJson};
+use sha2::Sha256;
 
 use crate::MIGRATIONS;
 use crate::generated::*;
 
 const NO_QUEUE: &str = "AWS.SimpleQueueService.NonExistentQueue";
+const NO_QUEUE_MSG: &str = "The specified queue does not exist for this wsdl version.";
+const ALLOWED_PERMISSIONS: &[&str] = &[
+    "*",
+    "ChangeMessageVisibility",
+    "DeleteMessage",
+    "GetQueueAttributes",
+    "GetQueueUrl",
+    "ListDeadLetterSourceQueues",
+    "PurgeQueue",
+    "ReceiveMessage",
+    "SendMessage",
+];
 const DEFAULTS: &[(&str, &str)] = &[
     ("VisibilityTimeout", "30"),
-    ("MaximumMessageSize", "1048576"),
+    ("MaximumMessageSize", "262144"),
     ("MessageRetentionPeriod", "345600"),
     ("DelaySeconds", "0"),
     ("ReceiveMessageWaitTimeSeconds", "0"),
@@ -22,8 +35,8 @@ const DEFAULTS: &[(&str, &str)] = &[
 /// name -> inclusive range for integer attributes.
 const RANGES: &[(&str, i64, i64)] = &[
     ("VisibilityTimeout", 0, 43_200),
-    ("MaximumMessageSize", 1024, 1_048_576),
-    ("MessageRetentionPeriod", 60, 1_209_600),
+    ("MaximumMessageSize", 1024, 262_144),
+    ("MessageRetentionPeriod", 1, 1_209_600),
     ("DelaySeconds", 0, 900),
     ("ReceiveMessageWaitTimeSeconds", 0, 20),
     ("KmsDataKeyReusePeriodSeconds", 60, 86_400),
@@ -177,26 +190,166 @@ fn queue_from_url(tx: &Transaction, ctx: &RequestContext, url: &str) -> Result<Q
         .next()
         .filter(|a| a.len() == 12 && a.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or(&ctx.account_id);
-    load_queue(tx, account, &ctx.region, name)?
-        .ok_or_else(|| err(NO_QUEUE, "The specified queue does not exist."))
+    load_queue(tx, account, &ctx.region, name)?.ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))
 }
 
-fn validate_attributes(attrs: &BTreeMap<String, String>) -> Result<(), AwsError> {
+/// Serialises like Python's `json.dumps` (`", "` and `": "` separators); clients compare
+/// attribute strings that moto produced that way.
+fn py_json(v: &serde_json::Value) -> String {
+    use serde::Serialize;
+    use serde_json::ser::Formatter;
+    use std::io;
+    struct PyFormat;
+    impl Formatter for PyFormat {
+        fn begin_array_value<W: ?Sized + io::Write>(
+            &mut self,
+            w: &mut W,
+            first: bool,
+        ) -> io::Result<()> {
+            if first { Ok(()) } else { w.write_all(b", ") }
+        }
+        fn begin_object_key<W: ?Sized + io::Write>(
+            &mut self,
+            w: &mut W,
+            first: bool,
+        ) -> io::Result<()> {
+            if first { Ok(()) } else { w.write_all(b", ") }
+        }
+        fn begin_object_value<W: ?Sized + io::Write>(&mut self, w: &mut W) -> io::Result<()> {
+            w.write_all(b": ")
+        }
+    }
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, PyFormat);
+    let _ = v.serialize(&mut ser);
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+fn invalid_attr_value(name: &str) -> AwsError {
+    err(
+        "InvalidAttributeValue",
+        format!("Invalid value for the parameter {name}."),
+    )
+}
+
+/// Validates attributes given to CreateQueue/SetQueueAttributes. Like moto, unknown names are
+/// ignored. Returns the attributes to store; an empty `Policy`/`RedrivePolicy` removes the
+/// attribute, which is signalled by an empty value.
+fn normalize_attributes(
+    tx: &Transaction,
+    fifo: bool,
+    attrs: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, AwsError> {
+    let mut out = BTreeMap::new();
     for (k, v) in attrs {
+        let k = &k.trim().to_string(); // moto normalises names, so "VisibilityTimeout " works
         if let Some((_, lo, hi)) = RANGES.iter().find(|(n, ..)| n == k) {
             match v.parse::<i64>() {
                 Ok(n) if (*lo..=*hi).contains(&n) => {}
-                _ => {
-                    return Err(invalid_value(format!(
-                        "Invalid value for the parameter {k}. Reason: {k} must be an integer between {lo} and {hi}."
-                    )));
-                }
+                _ => return Err(invalid_attr_value(k)),
             }
-        } else if !OTHER_ATTRS.contains(&k.as_str()) {
-            return Err(err(
-                "InvalidAttributeName",
-                format!("Unknown Attribute {k}."),
+            out.insert(k.clone(), v.clone());
+        } else if k == "RedrivePolicy" {
+            out.insert(
+                k.clone(),
+                normalize_redrive(tx, fifo, v)?.unwrap_or_default(),
+            );
+        } else if OTHER_ATTRS.contains(&k.as_str()) {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// `Ok(None)` for an empty policy (meaning "remove").
+fn normalize_redrive(tx: &Transaction, fifo: bool, raw: &str) -> Result<Option<String>, AwsError> {
+    let bad = || invalid_value("Redrive policy is not a dict or valid json");
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| bad())?;
+    let serde_json::Value::Object(mut obj) = value else {
+        return Err(bad());
+    };
+    if obj.is_empty() {
+        return Ok(None);
+    }
+    let arn = obj
+        .get("deadLetterTargetArn")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| invalid_value("Redrive policy does not contain deadLetterTargetArn"))?
+        .to_string();
+    let max = match obj.get("maxReceiveCount") {
+        Some(serde_json::Value::String(s)) => s.parse::<i64>().map_err(|_| bad())?,
+        Some(v) => v.as_i64().ok_or_else(bad)?,
+        None => {
+            return Err(invalid_value(
+                "Redrive policy does not contain maxReceiveCount",
             ));
+        }
+    };
+    obj.insert("maxReceiveCount".into(), max.into());
+    let parts: Vec<&str> = arn.split(':').collect();
+    let dlq = match parts.as_slice() {
+        [_, _, "sqs", region, account, name] => load_queue(tx, account, region, name)?,
+        _ => None,
+    };
+    let dlq = dlq.ok_or_else(|| err(NO_QUEUE, format!("Could not find DLQ for {arn}")))?;
+    if fifo && !dlq.is_fifo() {
+        return Err(err(
+            "InvalidParameterCombination",
+            "Fifo queues cannot use non fifo dead letter queues",
+        ));
+    }
+    Ok(Some(py_json(&serde_json::Value::Object(obj))))
+}
+
+/// Stored attributes with empty values dropped (the "remove" signal).
+fn merge_attributes(stored: &mut BTreeMap<String, String>, new: BTreeMap<String, String>) {
+    for (k, v) in new {
+        if v.is_empty() && matches!(k.as_str(), "Policy" | "RedrivePolicy") {
+            stored.remove(&k);
+        } else {
+            stored.insert(k, v);
+        }
+    }
+}
+
+fn validate_message_attributes(
+    attrs: &BTreeMap<String, MessageAttributeValue>,
+) -> Result<(), AwsError> {
+    let invalid = |m: String| err("MessageAttributesInvalid", m);
+    for (name, v) in attrs {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+        {
+            return Err(invalid(format!(
+                "The message attribute name '{name}' is invalid. Attribute name can contain A-Z, a-z, 0-9, underscore (_), hyphen (-), and period (.) characters."
+            )));
+        }
+        if v.data_type.is_empty() {
+            return Err(invalid(format!(
+                "The message attribute '{name}' must contain non-empty message attribute value."
+            )));
+        }
+        let prefix = v.data_type.split('.').next().unwrap_or_default();
+        if !matches!(prefix, "String" | "Binary" | "Number") {
+            return Err(invalid(format!(
+                "The message attribute '{name}' has an invalid message attribute type, the set of supported type prefixes is Binary, Number, and String."
+            )));
+        }
+        let missing = if prefix == "Binary" {
+            v.binary_value.is_none()
+        } else {
+            v.string_value.is_none()
+        };
+        if missing {
+            return Err(invalid(format!(
+                "The message attribute '{name}' must contain non-empty message attribute value for message attribute type '{}'.",
+                v.data_type
+            )));
         }
     }
     Ok(())
@@ -286,6 +439,7 @@ struct NewMessage {
     attrs: BTreeMap<String, MessageAttributeValue>,
     group: Option<String>,
     dedup: Option<String>,
+    trace_header: Option<String>,
 }
 
 struct Sent {
@@ -295,41 +449,64 @@ struct Sent {
     sequence: Option<String>,
 }
 
-fn put_message(
-    tx: &Transaction,
-    ctx: &RequestContext,
-    q: &Queue,
-    m: NewMessage,
-) -> Result<Sent, AwsError> {
+/// Checks that do not depend on the position in a batch (moto's `_validate_message`).
+fn validate_new_message(q: &Queue, m: &NewMessage) -> Result<(), AwsError> {
+    validate_message_attributes(&m.attrs)?;
+    if q.is_fifo() {
+        let content_based = q.get("ContentBasedDeduplication") == Some("true");
+        if !content_based && m.group.is_none() {
+            return Err(AwsError::missing_parameter("MessageGroupId"));
+        }
+        if !content_based && m.dedup.is_none() {
+            return Err(invalid_value(
+                "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
+            ));
+        }
+        if m.delay.unwrap_or(0) > 0 {
+            return Err(invalid_value(format!(
+                "Value {} for parameter DelaySeconds is invalid. Reason: The request include parameter that is not valid for this queue type.",
+                m.delay.unwrap_or(0)
+            )));
+        }
+    }
     let max = q.int("MaximumMessageSize");
     if m.body.len() as i64 > max {
         return Err(invalid_value(format!(
             "One or more parameters are invalid. Reason: Message must be shorter than {max} bytes."
         )));
     }
+    match (&m.group, q.is_fifo()) {
+        (None, true) => Err(AwsError::missing_parameter("MessageGroupId")),
+        (Some(g), false) => Err(invalid_value(format!(
+            "Value {g} for parameter MessageGroupId is invalid. Reason: The request include parameter that is not valid for this queue type."
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn put_message(
+    tx: &Transaction,
+    ctx: &RequestContext,
+    q: &Queue,
+    m: NewMessage,
+) -> Result<Sent, AwsError> {
+    validate_new_message(q, &m)?;
     let md5 = md5_hex(m.body.as_bytes());
     let md5_attrs = md5_of_attributes(&m.attrs);
     let now = now_ms();
 
-    let mut dedup = None;
+    let mut dedup = m.dedup.clone(); // reported back on receive, even for standard queues
     if q.is_fifo() {
-        if m.group.is_none() {
-            return Err(AwsError::missing_parameter("MessageGroupId"));
-        }
-        dedup = m
-            .dedup
-            .clone()
-            .or_else(|| (q.get("ContentBasedDeduplication") == Some("true")).then(|| md5.clone()));
-        let Some(d) = &dedup else {
-            return Err(invalid_value(
-                "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
-            ));
-        };
+        let id = m.dedup.clone().unwrap_or_else(|| {
+            let mut h = Sha256::new();
+            h.update(m.body.as_bytes());
+            hex::encode(h.finalize())
+        });
         // 5 minute deduplication window.
         let existing: Option<(String, i64)> = tx
             .query_row(
                 "SELECT message_id, seq FROM messages WHERE queue_id = ?1 AND dedup_id = ?2 AND sent_at > ?3",
-                params![q.id, d, now - 300_000],
+                params![q.id, id, now - 300_000],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -341,6 +518,7 @@ fn put_message(
                 sequence: Some(format!("{seq:018}")),
             });
         }
+        dedup = Some(id);
     }
 
     let delay = i64::from(m.delay.unwrap_or(q.int("DelaySeconds") as i32));
@@ -352,8 +530,8 @@ fn put_message(
     let message_id = new_id();
     tx.execute(
         "INSERT INTO messages (queue_id, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at,
-                               group_id, dedup_id, sender_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                               group_id, dedup_id, sender_id, trace_header)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             q.id,
             message_id,
@@ -365,7 +543,8 @@ fn put_message(
             now + delay * 1000,
             m.group,
             dedup,
-            ctx.account_id
+            ctx.account_id,
+            m.trace_header
         ],
     )?;
     let sequence = q
@@ -392,6 +571,7 @@ struct Row {
     group_id: Option<String>,
     dedup_id: Option<String>,
     sender_id: String,
+    trace_header: Option<String>,
 }
 
 fn receive_once(
@@ -407,7 +587,7 @@ fn receive_once(
     let rows: Vec<Row> = {
         let mut stmt = tx.prepare(
             "SELECT seq, message_id, body, md5, attrs, md5_attrs, sent_at, receive_count, first_received_at,
-                    group_id, dedup_id, sender_id
+                    group_id, dedup_id, sender_id, trace_header
              FROM messages m
              WHERE queue_id = ?1 AND visible_at <= ?2
                AND (group_id IS NULL OR NOT EXISTS (
@@ -429,6 +609,7 @@ fn receive_once(
                 group_id: r.get(9)?,
                 dedup_id: r.get(10)?,
                 sender_id: r.get(11)?,
+                trace_header: r.get(12)?,
             })
         })?
         .collect::<Result<_, _>>()?
@@ -462,9 +643,16 @@ fn receive_once(
                                  first_received_at = ?3 WHERE seq = ?4",
             params![handle, now + visibility * 1000, first, row.seq],
         )?;
+        tx.execute(
+            "INSERT INTO receipts (handle, queue_id, seq) VALUES (?1, ?2, ?3)",
+            params![handle, q.id, row.seq],
+        )?;
 
         let all = want_attrs.contains("All");
         let mut attributes = BTreeMap::new();
+        if let Some(t) = &row.trace_header {
+            attributes.insert("AWSTraceHeader".to_string(), t.clone());
+        }
         let mut add = |k: &str, v: String| {
             if all || want_attrs.contains(k) {
                 attributes.insert(k.to_string(), v);
@@ -477,13 +665,13 @@ fn receive_once(
             (row.receive_count + 1).to_string(),
         );
         add("ApproximateFirstReceiveTimestamp", first.to_string());
+        if let Some(g) = &row.group_id {
+            add("MessageGroupId", g.clone());
+        }
+        if let Some(d) = &row.dedup_id {
+            add("MessageDeduplicationId", d.clone());
+        }
         if q.is_fifo() {
-            if let Some(g) = &row.group_id {
-                add("MessageGroupId", g.clone());
-            }
-            if let Some(d) = &row.dedup_id {
-                add("MessageDeduplicationId", d.clone());
-            }
             add("SequenceNumber", format!("{:018}", row.seq));
         }
 
@@ -517,7 +705,7 @@ fn receive_once(
 }
 
 fn check_batch(op: &str, ids: &[&str]) -> Result<(), AwsError> {
-    const P: &str = "AWS.SimpleQueueService.";
+    const P: &str = "";
     if ids.is_empty() {
         return Err(err(
             &format!("{P}EmptyBatchRequest"),
@@ -584,7 +772,6 @@ impl Service for Sqs {
                 "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length",
             ));
         }
-        validate_attributes(&input.attributes)?;
         let fifo_attr = input.attributes.get("FifoQueue").map(String::as_str) == Some("true");
         if fifo_attr != name.ends_with(".fifo") {
             return Err(invalid_value(
@@ -592,8 +779,9 @@ impl Service for Sqs {
             ));
         }
         self.db.transaction(|tx| {
+            let attrs = normalize_attributes(tx, fifo_attr, &input.attributes)?;
             if let Some(q) = load_queue(tx, &ctx.account_id, &ctx.region, name)? {
-                for (k, v) in &input.attributes {
+                for (k, v) in &attrs {
                     if q.get(k) != Some(v.as_str()) {
                         return Err(err(
                             "QueueAlreadyExists",
@@ -603,11 +791,13 @@ impl Service for Sqs {
                 }
                 return Ok(CreateQueueResult { queue_url: Some(q.url(ctx)) });
             }
+            let mut stored = BTreeMap::new();
+            merge_attributes(&mut stored, attrs);
             let now = now_ms() / 1000;
             tx.execute(
                 "INSERT INTO queues (account_id, region, name, attributes, tags, created_at, modified_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                params![ctx.account_id, ctx.region, name, json_string(&input.attributes), json_string(&input.tags), now],
+                params![ctx.account_id, ctx.region, name, json_string(&stored), json_string(&input.tags), now],
             )?;
             Ok(CreateQueueResult { queue_url: Some(format!("{}/{}/{}", ctx.base_url, ctx.account_id, name)) })
         })
@@ -636,7 +826,7 @@ impl Service for Sqs {
                 .as_deref()
                 .unwrap_or(&ctx.account_id);
             let q = load_queue(tx, account, &ctx.region, &input.queue_name)?
-                .ok_or_else(|| err(NO_QUEUE, "The specified queue does not exist."))?;
+                .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
             Ok(GetQueueUrlResult {
                 queue_url: Some(q.url(ctx)),
             })
@@ -689,33 +879,27 @@ impl Service for Sqs {
         self.db.transaction(|tx| {
             let q = queue_from_url(tx, ctx, &input.queue_url)?;
             let all = queue_attributes(tx, &q)?;
-            let attributes = if input.attribute_names.is_empty() {
-                BTreeMap::new()
-            } else if input.attribute_names.iter().any(|n| n == "All") {
-                all
-            } else {
-                let mut out = BTreeMap::new();
-                for n in &input.attribute_names {
-                    let known = RANGES.iter().any(|(k, ..)| k == n)
-                        || OTHER_ATTRS.contains(&n.as_str())
-                        || n.starts_with("Approximate")
-                        || matches!(
-                            n.as_str(),
-                            "QueueArn" | "CreatedTimestamp" | "LastModifiedTimestamp"
-                        );
-                    if !known {
-                        return Err(err(
-                            "InvalidAttributeName",
-                            format!("Unknown Attribute {n}."),
-                        ));
-                    }
-                    if let Some(v) = all.get(n) {
-                        out.insert(n.clone(), v.clone());
-                    }
+            let names: Vec<&str> = input.attribute_names.iter().map(String::as_str).collect();
+            let mut out = BTreeMap::new();
+            for n in names {
+                if n == "All" {
+                    return Ok(GetQueueAttributesResult { attributes: all });
                 }
-                out
-            };
-            Ok(GetQueueAttributesResult { attributes })
+                let known = RANGES.iter().any(|(k, ..)| *k == n)
+                    || OTHER_ATTRS.contains(&n)
+                    || n.starts_with("Approximate")
+                    || matches!(n, "QueueArn" | "CreatedTimestamp" | "LastModifiedTimestamp");
+                if !known {
+                    return Err(err(
+                        "InvalidAttributeName",
+                        format!("Unknown Attribute {n}."),
+                    ));
+                }
+                if let Some(v) = all.get(n) {
+                    out.insert(n.to_string(), v.clone());
+                }
+            }
+            Ok(GetQueueAttributesResult { attributes: out })
         })
     }
 
@@ -724,10 +908,10 @@ impl Service for Sqs {
         ctx: &RequestContext,
         input: SetQueueAttributesRequest,
     ) -> Result<(), AwsError> {
-        validate_attributes(&input.attributes)?;
         self.db.transaction(|tx| {
             let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
-            q.attrs.extend(input.attributes.clone());
+            let attrs = normalize_attributes(tx, q.is_fifo(), &input.attributes)?;
+            merge_attributes(&mut q.attrs, attrs);
             tx.execute(
                 "UPDATE queues SET attributes = ?1, modified_at = ?2 WHERE id = ?3",
                 params![json_string(&q.attrs), now_ms() / 1000, q.id],
@@ -753,6 +937,10 @@ impl Service for Sqs {
                     attrs: input.message_attributes.clone(),
                     group: input.message_group_id.clone(),
                     dedup: input.message_deduplication_id.clone(),
+                    trace_header: input
+                        .message_system_attributes
+                        .get("AWSTraceHeader")
+                        .and_then(|v| v.string_value.clone()),
                 },
             )?;
             Ok(SendMessageResult {
@@ -774,21 +962,31 @@ impl Service for Sqs {
             let q = queue_from_url(tx, ctx, &input.queue_url)?;
             let ids: Vec<&str> = input.entries.iter().map(|e| e.id.as_str()).collect();
             check_batch("SendMessageBatch", &ids)?;
+            let total: usize = input.entries.iter().map(|e| e.message_body.len()).sum();
+            if total > 262_144 {
+                return Err(err(
+                    "BatchRequestTooLong",
+                    format!("Batch requests cannot be longer than 262144 bytes. You have sent {total} bytes."),
+                ));
+            }
+            let new = |e: &SendMessageBatchRequestEntry| NewMessage {
+                body: e.message_body.clone(),
+                delay: e.delay_seconds,
+                attrs: e.message_attributes.clone(),
+                group: e.message_group_id.clone(),
+                dedup: e.message_deduplication_id.clone(),
+                trace_header: e
+                    .message_system_attributes
+                    .get("AWSTraceHeader")
+                    .and_then(|v| v.string_value.clone()),
+            };
+            // Validate every message before sending any.
+            for e in &input.entries {
+                validate_new_message(&q, &new(e))?;
+            }
             let mut result = SendMessageBatchResult::default();
             for e in &input.entries {
-                let sent = put_message(
-                    tx,
-                    ctx,
-                    &q,
-                    NewMessage {
-                        body: e.message_body.clone(),
-                        delay: e.delay_seconds,
-                        attrs: e.message_attributes.clone(),
-                        group: e.message_group_id.clone(),
-                        dedup: e.message_deduplication_id.clone(),
-                    },
-                );
-                match sent {
+                match put_message(tx, ctx, &q, new(e)) {
                     Ok(s) => result.successful.push(SendMessageBatchResultEntry {
                         id: e.id.clone(),
                         md5_of_message_body: s.md5,
@@ -797,12 +995,15 @@ impl Service for Sqs {
                         message_id: s.message_id,
                         sequence_number: s.sequence,
                     }),
-                    Err(error) => result.failed.push(BatchResultErrorEntry {
-                        id: e.id.clone(),
-                        code: error.code,
-                        message: Some(error.message),
-                        sender_fault: error.sender,
-                    }),
+                    Err(error) if error.message.contains("DelaySeconds is invalid") => {
+                        result.failed.push(BatchResultErrorEntry {
+                            id: e.id.clone(),
+                            code: error.code,
+                            message: Some(error.message),
+                            sender_fault: true,
+                        })
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             Ok(result)
@@ -870,11 +1071,7 @@ impl Service for Sqs {
     ) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             let q = queue_from_url(tx, ctx, &input.queue_url)?;
-            tx.execute(
-                "DELETE FROM messages WHERE queue_id = ?1 AND receipt_handle = ?2",
-                params![q.id, input.receipt_handle],
-            )?;
-            Ok(())
+            delete_by_receipt(tx, &q, &input.receipt_handle)
         })
     }
 
@@ -889,13 +1086,14 @@ impl Service for Sqs {
             check_batch("DeleteMessageBatch", &ids)?;
             let mut result = DeleteMessageBatchResult::default();
             for e in &input.entries {
-                tx.execute(
-                    "DELETE FROM messages WHERE queue_id = ?1 AND receipt_handle = ?2",
-                    params![q.id, e.receipt_handle],
-                )?;
-                result
-                    .successful
-                    .push(DeleteMessageBatchResultEntry { id: e.id.clone() });
+                match delete_by_receipt(tx, &q, &e.receipt_handle) {
+                    Ok(()) => result
+                        .successful
+                        .push(DeleteMessageBatchResultEntry { id: e.id.clone() }),
+                    Err(_) => result
+                        .failed
+                        .push(invalid_receipt_entry(&e.id, &e.receipt_handle)),
+                }
             }
             Ok(result)
         })
@@ -924,20 +1122,24 @@ impl Service for Sqs {
             check_batch("ChangeMessageVisibilityBatch", &ids)?;
             let mut result = ChangeMessageVisibilityBatchResult::default();
             for e in &input.entries {
-                let outcome =
-                    validate_visibility(e.visibility_timeout.unwrap_or(0)).and_then(|()| {
-                        set_visibility(tx, &q, &e.receipt_handle, e.visibility_timeout.unwrap_or(0))
+                let seconds = e.visibility_timeout.unwrap_or(0);
+                if validate_visibility(seconds).is_err() {
+                    result.failed.push(BatchResultErrorEntry {
+                        id: e.id.clone(),
+                        code: "InvalidParameterValue".into(),
+                        message: Some("Visibility timeout invalid".into()),
+                        sender_fault: true,
                     });
-                match outcome {
+                    continue;
+                }
+                match set_visibility(tx, &q, &e.receipt_handle, seconds) {
                     Ok(()) => result
                         .successful
                         .push(ChangeMessageVisibilityBatchResultEntry { id: e.id.clone() }),
-                    Err(error) => result.failed.push(BatchResultErrorEntry {
-                        id: e.id.clone(),
-                        code: error.code,
-                        message: Some(error.message),
-                        sender_fault: error.sender,
-                    }),
+                    Err(error) if error.code == "ReceiptHandleIsInvalid" => result
+                        .failed
+                        .push(invalid_receipt_entry(&e.id, &e.receipt_handle)),
+                    Err(error) => return Err(error),
                 }
             }
             Ok(result)
@@ -955,6 +1157,15 @@ impl Service for Sqs {
     fn tag_queue(&self, ctx: &RequestContext, input: TagQueueRequest) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
+            if input.tags.is_empty() {
+                return Err(AwsError::missing_parameter("Tags"));
+            }
+            if input.tags.len() > 50 {
+                return Err(invalid_value(format!(
+                    "Too many tags added for queue {}.",
+                    q.name
+                )));
+            }
             q.tags.extend(input.tags.clone());
             tx.execute(
                 "UPDATE queues SET tags = ?1 WHERE id = ?2",
@@ -967,6 +1178,11 @@ impl Service for Sqs {
     fn untag_queue(&self, ctx: &RequestContext, input: UntagQueueRequest) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
+            if input.tag_keys.is_empty() {
+                return Err(invalid_value(
+                    "Tag keys must be between 1 and 128 characters in length.",
+                ));
+            }
             for k in &input.tag_keys {
                 q.tags.remove(k);
             }
@@ -988,32 +1204,166 @@ impl Service for Sqs {
             Ok(ListQueueTagsResult { tags: q.tags })
         })
     }
+
+    fn add_permission(
+        &self,
+        ctx: &RequestContext,
+        input: AddPermissionRequest,
+    ) -> Result<(), AwsError> {
+        self.db.transaction(|tx| {
+            let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
+            if input.actions.is_empty() {
+                return Err(AwsError::missing_parameter("Actions"));
+            }
+            if input.aws_account_ids.is_empty() {
+                return Err(invalid_value("Value [] for parameter PrincipalId is invalid. Reason: Unable to verify."));
+            }
+            if input.actions.len() > 7 {
+                return Err(AwsError::sender(
+                    403,
+                    "OverLimit",
+                    format!("{} Actions were found, maximum allowed is 7.", input.actions.len()),
+                ));
+            }
+            if let Some(bad) = input.actions.iter().find(|a| !ALLOWED_PERMISSIONS.contains(&a.as_str())) {
+                return Err(invalid_value(format!(
+                    "Value SQS:{bad} for parameter ActionName is invalid. Reason: Only the queue owner is allowed to invoke this action."
+                )));
+            }
+            let mut policy = policy_json(&q);
+            let statements = policy["Statement"].as_array_mut().ok_or_else(|| AwsError::internal("bad policy"))?;
+            if statements.iter().any(|s| s["Sid"] == input.label) {
+                return Err(invalid_value(format!(
+                    "Value {} for parameter Label is invalid. Reason: Already exists.",
+                    input.label
+                )));
+            }
+            let one_or_many = |items: Vec<String>| match items.len() {
+                1 => serde_json::Value::String(items.into_iter().next().unwrap_or_default()),
+                _ => serde_json::json!(items),
+            };
+            statements.push(serde_json::json!({
+                "Sid": input.label,
+                "Effect": "Allow",
+                "Principal": {"AWS": one_or_many(
+                    input.aws_account_ids.iter().map(|a| format!("arn:aws:iam::{a}:root")).collect())},
+                "Action": one_or_many(input.actions.iter().map(|a| format!("SQS:{a}")).collect()),
+                "Resource": q.arn(),
+            }));
+            q.attrs.insert("Policy".into(), policy.to_string());
+            tx.execute(
+                "UPDATE queues SET attributes = ?1 WHERE id = ?2",
+                params![json_string(&q.attrs), q.id],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn remove_permission(
+        &self,
+        ctx: &RequestContext,
+        input: RemovePermissionRequest,
+    ) -> Result<(), AwsError> {
+        self.db.transaction(|tx| {
+            let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
+            let mut policy = policy_json(&q);
+            let statements = policy["Statement"].as_array_mut().ok_or_else(|| AwsError::internal("bad policy"))?;
+            let before = statements.len();
+            statements.retain(|s| s["Sid"] != input.label);
+            if statements.len() == before {
+                return Err(invalid_value(format!(
+                    "Value {} for parameter Label is invalid. Reason: can't find label on existing policy.",
+                    input.label
+                )));
+            }
+            q.attrs.insert("Policy".into(), policy.to_string());
+            tx.execute(
+                "UPDATE queues SET attributes = ?1 WHERE id = ?2",
+                params![json_string(&q.attrs), q.id],
+            )?;
+            Ok(())
+        })
+    }
 }
 
-fn set_visibility(tx: &Transaction, q: &Queue, handle: &str, seconds: i32) -> Result<(), AwsError> {
-    let now = now_ms();
-    let visible_at: Option<i64> = tx
+fn policy_json(q: &Queue) -> serde_json::Value {
+    q.attrs
+        .get("Policy")
+        .and_then(|p| serde_json::from_str(p).ok())
+        .filter(|p: &serde_json::Value| p["Statement"].is_array())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "Version": "2012-10-17",
+                "Id": format!("{}/SQSDefaultPolicy", q.arn()),
+                "Statement": [],
+            })
+        })
+}
+
+fn invalid_receipt_entry(id: &str, handle: &str) -> BatchResultErrorEntry {
+    BatchResultErrorEntry {
+        id: id.to_string(),
+        code: "ReceiptHandleIsInvalid".into(),
+        message: Some(format!(
+            "The input receipt handle \"{handle}\" is not a valid receipt handle."
+        )),
+        sender_fault: true,
+    }
+}
+
+fn invalid_receipt() -> AwsError {
+    err(
+        "ReceiptHandleIsInvalid",
+        "The input receipt handle is invalid.",
+    )
+}
+
+/// `Some(Some(seq))` live message, `Some(None)` message since deleted, `None` unknown handle.
+fn lookup_receipt(
+    tx: &Transaction,
+    q: &Queue,
+    handle: &str,
+) -> Result<Option<Option<i64>>, AwsError> {
+    Ok(tx
         .query_row(
-            "SELECT visible_at FROM messages WHERE queue_id = ?1 AND receipt_handle = ?2",
+            "SELECT seq FROM receipts WHERE queue_id = ?1 AND handle = ?2",
             params![q.id, handle],
-            |r| r.get(0),
+            |r| r.get::<_, Option<i64>>(0),
         )
-        .optional()?;
-    match visible_at {
-        None => Err(err(
-            "ReceiptHandleIsInvalid",
-            format!("The input receipt handle \"{handle}\" is not a valid receipt handle."),
-        )),
-        Some(v) if v <= now => Err(err(
-            "MessageNotInflight",
-            "The message referred to is not in flight.",
-        )),
-        Some(_) => {
-            tx.execute(
-                "UPDATE messages SET visible_at = ?1 WHERE queue_id = ?2 AND receipt_handle = ?3",
-                params![now + i64::from(seconds) * 1000, q.id, handle],
-            )?;
+        .optional()?)
+}
+
+/// Any receipt handle ever issued for a message deletes it; deleting again is a no-op.
+fn delete_by_receipt(tx: &Transaction, q: &Queue, handle: &str) -> Result<(), AwsError> {
+    match lookup_receipt(tx, q, handle)? {
+        None => Err(invalid_receipt()),
+        Some(None) => Ok(()),
+        Some(Some(seq)) => {
+            tx.execute("DELETE FROM messages WHERE seq = ?1", params![seq])?;
             Ok(())
         }
     }
+}
+
+fn set_visibility(tx: &Transaction, q: &Queue, handle: &str, seconds: i32) -> Result<(), AwsError> {
+    let Some(Some(seq)) = lookup_receipt(tx, q, handle)? else {
+        return Err(invalid_receipt());
+    };
+    let now = now_ms();
+    let sent_at: i64 = tx.query_row(
+        "SELECT sent_at FROM messages WHERE seq = ?1",
+        params![seq],
+        |r| r.get(0),
+    )?;
+    let visible_at = now + i64::from(seconds) * 1000;
+    if visible_at - sent_at > 43_200_000 {
+        return Err(invalid_value(format!(
+            "Value {seconds} for parameter VisibilityTimeout is invalid. Reason: Total VisibilityTimeout for the message is beyond the limit [43200 seconds]"
+        )));
+    }
+    tx.execute(
+        "UPDATE messages SET visible_at = ?1 WHERE seq = ?2",
+        params![visible_at, seq],
+    )?;
+    Ok(())
 }

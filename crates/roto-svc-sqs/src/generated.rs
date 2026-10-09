@@ -51,18 +51,14 @@ impl FromJson for AddPermissionRequest {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            aws_account_ids: member(o, "AWSAccountIds", path)?.unwrap_or_default(),
-            actions: member(o, "Actions", path)?.unwrap_or_default(),
+            aws_account_ids: member(o, "AWSAccountIds", path)?
+                .ok_or_else(|| AwsError::missing_parameter("AWSAccountIds"))?,
+            actions: member(o, "Actions", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Actions"))?,
             label: member(o, "Label", path)?.ok_or_else(|| AwsError::missing_parameter("Label"))?,
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
         };
-        if s.aws_account_ids.is_empty() {
-            return Err(AwsError::missing_parameter("AWSAccountIds"));
-        }
-        if s.actions.is_empty() {
-            return Err(AwsError::missing_parameter("Actions"));
-        }
         Ok(s)
     }
 }
@@ -180,13 +176,11 @@ impl FromJson for ChangeMessageVisibilityBatchRequest {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            entries: member(o, "Entries", path)?.unwrap_or_default(),
+            entries: member(o, "Entries", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Entries"))?,
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
         };
-        if s.entries.is_empty() {
-            return Err(AwsError::missing_parameter("Entries"));
-        }
         Ok(s)
     }
 }
@@ -244,15 +238,11 @@ impl FromJson for ChangeMessageVisibilityBatchResult {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            failed: member(o, "Failed", path)?.unwrap_or_default(),
-            successful: member(o, "Successful", path)?.unwrap_or_default(),
+            failed: member(o, "Failed", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Failed"))?,
+            successful: member(o, "Successful", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Successful"))?,
         };
-        if s.failed.is_empty() {
-            return Err(AwsError::missing_parameter("Failed"));
-        }
-        if s.successful.is_empty() {
-            return Err(AwsError::missing_parameter("Successful"));
-        }
         Ok(s)
     }
 }
@@ -397,13 +387,11 @@ impl FromJson for DeleteMessageBatchRequest {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            entries: member(o, "Entries", path)?.unwrap_or_default(),
+            entries: member(o, "Entries", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Entries"))?,
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
         };
-        if s.entries.is_empty() {
-            return Err(AwsError::missing_parameter("Entries"));
-        }
         Ok(s)
     }
 }
@@ -456,15 +444,11 @@ impl FromJson for DeleteMessageBatchResult {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            failed: member(o, "Failed", path)?.unwrap_or_default(),
-            successful: member(o, "Successful", path)?.unwrap_or_default(),
+            failed: member(o, "Failed", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Failed"))?,
+            successful: member(o, "Successful", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Successful"))?,
         };
-        if s.failed.is_empty() {
-            return Err(AwsError::missing_parameter("Failed"));
-        }
-        if s.successful.is_empty() {
-            return Err(AwsError::missing_parameter("Successful"));
-        }
         Ok(s)
     }
 }
@@ -710,11 +694,9 @@ impl FromJson for ListDeadLetterSourceQueuesResult {
         let o = as_object(v, path)?;
         let s = Self {
             next_token: member(o, "NextToken", path)?,
-            queue_urls: member(o, "queueUrls", path)?.unwrap_or_default(),
+            queue_urls: member(o, "queueUrls", path)?
+                .ok_or_else(|| AwsError::missing_parameter("queueUrls"))?,
         };
-        if s.queue_urls.is_empty() {
-            return Err(AwsError::missing_parameter("queueUrls"));
-        }
         Ok(s)
     }
 }
@@ -1271,13 +1253,11 @@ impl FromJson for SendMessageBatchRequest {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            entries: member(o, "Entries", path)?.unwrap_or_default(),
+            entries: member(o, "Entries", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Entries"))?,
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
         };
-        if s.entries.is_empty() {
-            return Err(AwsError::missing_parameter("Entries"));
-        }
         Ok(s)
     }
 }
@@ -1362,15 +1342,11 @@ impl FromJson for SendMessageBatchResult {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            failed: member(o, "Failed", path)?.unwrap_or_default(),
-            successful: member(o, "Successful", path)?.unwrap_or_default(),
+            failed: member(o, "Failed", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Failed"))?,
+            successful: member(o, "Successful", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Successful"))?,
         };
-        if s.failed.is_empty() {
-            return Err(AwsError::missing_parameter("Failed"));
-        }
-        if s.successful.is_empty() {
-            return Err(AwsError::missing_parameter("Successful"));
-        }
         Ok(s)
     }
 }
@@ -1552,13 +1528,11 @@ impl FromJson for SetQueueAttributesRequest {
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {
         let o = as_object(v, path)?;
         let s = Self {
-            attributes: member(o, "Attributes", path)?.unwrap_or_default(),
+            attributes: member(o, "Attributes", path)?
+                .ok_or_else(|| AwsError::missing_parameter("Attributes"))?,
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
         };
-        if s.attributes.is_empty() {
-            return Err(AwsError::missing_parameter("Attributes"));
-        }
         Ok(s)
     }
 }
@@ -1645,11 +1619,8 @@ impl FromJson for TagQueueRequest {
         let s = Self {
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
-            tags: member(o, "Tags", path)?.unwrap_or_default(),
+            tags: member(o, "Tags", path)?.ok_or_else(|| AwsError::missing_parameter("Tags"))?,
         };
-        if s.tags.is_empty() {
-            return Err(AwsError::missing_parameter("Tags"));
-        }
         Ok(s)
     }
 }
@@ -1677,11 +1648,9 @@ impl FromJson for UntagQueueRequest {
         let s = Self {
             queue_url: member(o, "QueueUrl", path)?
                 .ok_or_else(|| AwsError::missing_parameter("QueueUrl"))?,
-            tag_keys: member(o, "TagKeys", path)?.unwrap_or_default(),
+            tag_keys: member(o, "TagKeys", path)?
+                .ok_or_else(|| AwsError::missing_parameter("TagKeys"))?,
         };
-        if s.tag_keys.is_empty() {
-            return Err(AwsError::missing_parameter("TagKeys"));
-        }
         Ok(s)
     }
 }

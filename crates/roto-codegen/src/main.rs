@@ -429,7 +429,7 @@ impl Generator<'_> {
         out.push_str("    fn from_json(v: &Value, path: &str) -> Result<Self, AwsError> {\n");
         out.push_str("        let o = as_object(v, path)?;\n        let s = Self {\n");
         for (m, wire, k, req) in members {
-            let tail = if coll(k) {
+            let tail = if coll(k) && !*req {
                 ".unwrap_or_default()".to_string()
             } else if *req {
                 format!(".ok_or_else(|| AwsError::missing_parameter({wire:?}))?")
@@ -443,15 +443,6 @@ impl Generator<'_> {
             );
         }
         out.push_str("        };\n");
-        for (m, wire, k, req) in members {
-            if *req && coll(k) {
-                let _ = writeln!(
-                    out,
-                    "        if s.{}.is_empty() {{ return Err(AwsError::missing_parameter({wire:?})); }}",
-                    field(m)
-                );
-            }
-        }
         out.push_str("        Ok(s)\n    }\n}\n\n");
         let _ = writeln!(out, "impl ToJson for {name} {{");
         out.push_str("    fn to_json(&self) -> Value {\n        let mut o = Map::new();\n");

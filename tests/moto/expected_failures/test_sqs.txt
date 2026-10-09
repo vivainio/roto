@@ -1,0 +1,9 @@
+# Known failures for test_sqs (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_sqs)
+tests/test_sqs/test_sqs_cloudformation.py::test_create_from_cloudformation_json_with_tags
+tests/test_sqs/test_sqs_cloudformation.py::test_create_queue_passing_integer_as_name
+tests/test_sqs/test_sqs_cloudformation.py::test_describe_stack_subresources
+tests/test_sqs/test_sqs_cloudformation.py::test_list_stack_resources
+tests/test_sqs/test_sqs_cloudformation.py::test_update_stack
+tests/test_sqs/test_sqs_cloudformation.py::test_update_stack_and_add_resource
+tests/test_sqs/test_sqs_cloudformation.py::test_update_stack_and_remove_resource
+tests/test_sqs/test_sqs_multiaccount.py::TestStsAssumeRole::test_list_queues_in_different_account

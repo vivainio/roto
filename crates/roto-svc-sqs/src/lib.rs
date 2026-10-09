@@ -15,9 +15,10 @@ use serde_json::Value;
 pub use generated::{OPERATIONS, Service, dispatch};
 pub use service::Sqs;
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: "
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "
 CREATE TABLE queues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id TEXT NOT NULL,
@@ -49,7 +50,21 @@ CREATE TABLE messages (
 CREATE INDEX messages_visible ON messages (queue_id, visible_at);
 CREATE INDEX messages_receipt ON messages (queue_id, receipt_handle);
 ",
-}];
+    },
+    Migration {
+        version: 2,
+        sql: "
+ALTER TABLE messages ADD COLUMN trace_header TEXT;
+-- Every receipt handle ever issued, so old handles keep working and deleted messages stay 'known'.
+CREATE TABLE receipts (
+    handle TEXT PRIMARY KEY,
+    queue_id INTEGER NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+    seq INTEGER REFERENCES messages(seq) ON DELETE SET NULL
+);
+CREATE INDEX receipts_seq ON receipts (seq);
+",
+    },
+];
 
 /// Operations with real behaviour; the rest answer `NotImplemented`. Feeds the coverage matrix.
 pub const IMPLEMENTED: &[&str] = &[
@@ -70,6 +85,8 @@ pub const IMPLEMENTED: &[&str] = &[
     "TagQueue",
     "UntagQueue",
     "ListQueueTags",
+    "AddPermission",
+    "RemovePermission",
 ];
 
 pub struct SqsHandler(pub Arc<Sqs>);
@@ -109,6 +126,12 @@ impl ServiceHandler for SqsHandler {
                 }
             }
         };
+        let mut body = body;
+        // moto distinguishes `AttributeNames: []` (error naming an empty attribute) from the
+        // parameter being absent (no attributes returned); the generated types cannot.
+        if operation == "GetQueueAttributes" && body["AttributeNames"] == serde_json::json!([]) {
+            body["AttributeNames"] = serde_json::json!([""]);
+        }
         Ok(dispatch(&*self.0, ctx, operation, &body).unwrap_or_else(fail))
     }
 
@@ -300,10 +323,7 @@ mod tests {
             json!({"QueueUrl": url, "Entries": [
             {"Id": "a", "MessageBody": "1"}, {"Id": "a", "MessageBody": "2"}]}),
         );
-        assert_eq!(
-            e["__type"],
-            "AWS.SimpleQueueService.BatchEntryIdsNotDistinct"
-        );
+        assert_eq!(e["__type"], "BatchEntryIdsNotDistinct");
         let (s, ok) = call(
             &h,
             "SendMessageBatch",
