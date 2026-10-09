@@ -3,7 +3,7 @@
 
 use roto_core::{AwsError, RawResponse, RequestContext};
 use roto_protocol::json::{as_object, member};
-use roto_protocol::{Blob, FromJson, Timestamp, ToJson, json_response};
+use roto_protocol::{Blob, FromJson, JsonValue, Timestamp, ToJson, json_response};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 

@@ -1,0 +1,13 @@
+[package]
+name = "roto-svc-dynamodb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bigdecimal = "0.4.11"
+roto-core = { version = "0.0.1", path = "../roto-core" }
+roto-protocol = { version = "0.0.1", path = "../roto-protocol" }
+serde_json = "1.0.151"
+uuid = { version = "1.27.0", features = ["v4"] }

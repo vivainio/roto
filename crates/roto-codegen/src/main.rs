@@ -37,6 +37,8 @@ enum Kind {
     Blob,
     Struct(String),
     Map(Box<Kind>),
+    /// Kept as raw JSON (see `RAW_SHAPES`).
+    Raw,
     List {
         item: Box<Kind>,
         item_name: String,
@@ -44,6 +46,9 @@ enum Kind {
     },
     Unsupported(String),
 }
+
+/// `(serviceId, shape)` pairs carried as raw JSON instead of a generated struct.
+const RAW_SHAPES: &[(&str, &str)] = &[("DynamoDB", "AttributeValue")];
 
 /// operation -> (input shape, output shape, result wrapper)
 type Ops = BTreeMap<String, (Option<String>, Option<String>, Option<String>)>;
@@ -73,6 +78,10 @@ impl<'a> Generator<'a> {
     }
 
     fn kind(&self, shape_name: &str) -> Kind {
+        let service_id = self.model["metadata"]["serviceId"].as_str().unwrap_or("");
+        if RAW_SHAPES.contains(&(service_id, shape_name)) {
+            return Kind::Raw;
+        }
         let s = self.shape(shape_name);
         if s["eventstream"].as_bool().unwrap_or(false) {
             return Kind::Unsupported(format!("event stream {shape_name}"));
@@ -145,6 +154,7 @@ impl<'a> Generator<'a> {
             Kind::Time => "Timestamp".into(),
             Kind::Struct(n) => pascal(n),
             Kind::Blob => "Blob".into(),
+            Kind::Raw => "JsonValue".into(),
             Kind::List { item, .. } => format!("Vec<{}>", self.rust_type(item)),
             Kind::Map(v) => format!("BTreeMap<String, {}>", self.rust_type(v)),
             Kind::Unsupported(_) => unreachable!(),
@@ -165,7 +175,7 @@ impl<'a> Generator<'a> {
         if self.json {
             out.push_str("use roto_protocol::json::{as_object, member};\n");
             out.push_str(
-                "use roto_protocol::{Blob, FromJson, Timestamp, ToJson, json_response};\n",
+                "use roto_protocol::{Blob, FromJson, JsonValue, Timestamp, ToJson, json_response};\n",
             );
             out.push_str("use serde_json::{Map, Value};\nuse std::collections::BTreeMap;\n\n");
             let _ = writeln!(

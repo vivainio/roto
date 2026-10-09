@@ -81,8 +81,17 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let handlers: Vec<Arc<dyn ServiceHandler>> =
-        vec![Arc::new(sts), Arc::new(sqs), Arc::new(iam), Arc::new(s3)];
+    let dynamodb = roto_svc_dynamodb::DynamoDbHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
+        Arc::new(sts),
+        Arc::new(sqs),
+        Arc::new(iam),
+        Arc::new(s3),
+        Arc::new(dynamodb),
+    ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
         store,

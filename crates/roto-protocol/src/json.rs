@@ -10,6 +10,23 @@ use crate::timestamp::Timestamp;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Blob(pub Vec<u8>);
 
+/// A member kept as raw JSON (for shapes whose own model cannot express every value, e.g.
+/// DynamoDB's `AttributeValue`, where `{"L": []}` and `{}` must stay distinct).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct JsonValue(pub Value);
+
+impl FromJson for JsonValue {
+    fn from_json(v: &Value, _path: &str) -> Result<Self, AwsError> {
+        Ok(Self(v.clone()))
+    }
+}
+
+impl ToJson for JsonValue {
+    fn to_json(&self) -> Value {
+        self.0.clone()
+    }
+}
+
 pub trait FromJson: Sized {
     /// `path` is the dotted location, used in validation messages.
     fn from_json(v: &Value, path: &str) -> Result<Self, AwsError>;
@@ -198,7 +215,16 @@ pub fn json_error(
         let kind = if err.sender { "Sender" } else { "Receiver" };
         headers.push(("x-amzn-query-error".into(), format!("{};{kind}", err.code)));
     }
-    let body = serde_json::json!({ "__type": err.code, "message": err.message });
+    let mut body = serde_json::json!({ "__type": err.code, "message": err.message });
+    for (k, v) in &err.extra {
+        // Structured extras (`CancellationReasons`, `Item`) are carried as JSON text.
+        let parsed = if v.starts_with('[') || v.starts_with('{') {
+            serde_json::from_str(v).ok()
+        } else {
+            None
+        };
+        body[k] = parsed.unwrap_or_else(|| serde_json::Value::String(v.clone()));
+    }
     RawResponse {
         status: err.status,
         headers,
