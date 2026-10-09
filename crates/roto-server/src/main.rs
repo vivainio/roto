@@ -69,8 +69,15 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let handlers: Vec<Arc<dyn ServiceHandler>> =
-        vec![Arc::new(roto_svc_sts::StsHandler::default()), Arc::new(sqs)];
+    let iam = roto_svc_iam::IamHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let sts = roto_svc_sts::StsHandler::new(&store, iam.0.clone()).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let handlers: Vec<Arc<dyn ServiceHandler>> = vec![Arc::new(sts), Arc::new(sqs), Arc::new(iam)];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
         store,
@@ -142,13 +149,19 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         .as_ref()
         .map(|s| s.service.clone())
         .or_else(|| host_service(&raw));
+    let access_key = scope.as_ref().map(|s| s.access_key.clone());
+    let account_id = access_key
+        .as_deref()
+        .and_then(|k| app.services.values().find_map(|svc| svc.resolve_account(k)))
+        .unwrap_or_else(|| app.account_id.clone());
     let ctx = RequestContext {
-        account_id: app.account_id.clone(),
+        account_id,
         region: scope
             .as_ref()
             .map(|s| s.region.clone())
+            .or_else(|| region_from_user_agent(&raw))
             .unwrap_or_else(|| "us-east-1".into()),
-        access_key: scope.map(|s| s.access_key),
+        access_key,
         request_id: request_id.clone(),
         base_url: raw
             .header("host")
@@ -156,11 +169,22 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .unwrap_or_else(|| "http://localhost:5000".into()),
     };
 
-    let Some(handler) = service
+    let handler = service
         .as_deref()
         .and_then(|s| app.services.get(s))
         .cloned()
-    else {
+        .or_else(|| {
+            // Unsigned requests carry no credential scope; let a service claim them.
+            (ctx.access_key.is_none())
+                .then(|| {
+                    app.services
+                        .values()
+                        .find(|h| h.claims_unsigned(&raw))
+                        .cloned()
+                })
+                .flatten()
+        });
+    let Some(handler) = handler else {
         let msg = format!(
             "roto cannot route this request to a service ({} {})",
             raw.method, raw.path
@@ -226,4 +250,16 @@ fn into_response(r: RawResponse) -> Response {
         }
     }
     resp
+}
+
+/// Unsigned requests have no credential scope; moto's server-mode harness (and some SDK setups)
+/// advertise the region as `region/<name>` in the user agent.
+fn region_from_user_agent(req: &RawRequest) -> Option<String> {
+    let ua = req.header("user-agent")?;
+    let rest = ua.split("region/").nth(1)?;
+    let region: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    (!region.is_empty()).then_some(region)
 }

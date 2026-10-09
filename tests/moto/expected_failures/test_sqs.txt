@@ -6,4 +6,3 @@ tests/test_sqs/test_sqs_cloudformation.py::test_list_stack_resources
 tests/test_sqs/test_sqs_cloudformation.py::test_update_stack
 tests/test_sqs/test_sqs_cloudformation.py::test_update_stack_and_add_resource
 tests/test_sqs/test_sqs_cloudformation.py::test_update_stack_and_remove_resource
-tests/test_sqs/test_sqs_multiaccount.py::TestStsAssumeRole::test_list_queues_in_different_account

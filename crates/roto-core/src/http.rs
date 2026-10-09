@@ -47,6 +47,18 @@ pub trait ServiceHandler: Send + Sync {
     fn service(&self) -> &'static str;
     fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError>;
 
+    /// Whether this service should handle an unsigned request that carries no credential scope
+    /// (for example STS `AssumeRoleWithWebIdentity`).
+    fn claims_unsigned(&self, _req: &RawRequest) -> bool {
+        false
+    }
+
+    /// The account an access key belongs to, if this service issued it (IAM users, STS sessions).
+    /// Lets the server route multi-account requests; unknown keys use the default account.
+    fn resolve_account(&self, _access_key: &str) -> Option<String> {
+        None
+    }
+
     /// Drops all state (`POST /roto-api/reset`). Stateless services keep the default.
     fn reset(&self) -> Result<(), AwsError> {
         Ok(())
