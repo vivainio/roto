@@ -26,6 +26,11 @@ that makes LocalStack an impractical choice. roto is intended to offer an
 MIT-licensed alternative that runs locally without a vendor account, license
 key, or subscription.
 
+**roto will be free forever.** This project has no revenue goal and no interest
+in monetization. There is no plan for paid tiers, license fees, or a commercial
+edition. The MIT license lets you use, modify, and redistribute the code,
+including in commercial projects.
+
 ## Why persistence comes first
 
 Moto focuses on quick, isolated integration tests with disposable mock state.
