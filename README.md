@@ -16,7 +16,9 @@ scripts/run-moto-tests.sh test_sts              # moto's own tests, run against 
 
 Lambda functions can execute local commands or POST events to an HTTP API. Configure bindings
 with `--lambda-executors`; see the [runnable example and contracts](examples/lambda/README.md).
-S3 bucket notifications invoke those same executors.
+S3 notifications and SQS event-source mappings invoke those same executors.
+Use `--setup setup.lua` to declare queues, functions, and wiring with embedded Lua; see the
+[Lua setup example](examples/lua/README.md).
 
 ## Documentation
 

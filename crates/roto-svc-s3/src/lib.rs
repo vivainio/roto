@@ -175,6 +175,9 @@ impl S3Handler {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self(Arc::new(S3::new(store)?)))
     }
+    pub fn start_notifications(&self, lambda: Arc<roto_svc_lambda::Lambda>) {
+        notifications::start_worker(&self.0, lambda);
+    }
     pub fn with_lambda(
         store: &Store,
         lambda: Arc<roto_svc_lambda::Lambda>,

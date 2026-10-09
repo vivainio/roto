@@ -86,8 +86,8 @@ $ROTO_DATA_DIR/s3/
 Everything else in moto is out of scope. Order after DynamoDB: **SNS, SSM, Secrets Manager, KMS, Kinesis**, then
 **IAM completion** (managed policies, groups, instance profiles). Lambda now has a local execution
 backend: command argv or HTTP POST bindings, configured separately from AWS function metadata,
-with synchronous/asynchronous Invoke and S3 notifications. Lua can later provide resource setup
-over the same service operations; packaged runtimes and event-source polling remain future work.
+with synchronous/asynchronous Invoke and S3 notifications. Embedded Lua (`mlua`) provides startup resource setup over the same service operations, including
+standard SQS event-source mappings. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
 ## Status

@@ -13,6 +13,9 @@ roto-server --data-dir ./test-data --durable
 | `--data-dir` | `roto-data` | Persistent storage directory; also `ROTO_DATA_DIR` |
 | `--ephemeral` | Off | In-memory databases and temporary S3 files |
 | `--durable` | Off | SQLite `synchronous=FULL`, syncing each commit |
+| `--lambda-executors` | None | JSON bindings to local command or HTTP Lambda executors |
+| `--setup` | None | Lua resource setup and executor bindings before listening or processing events |
+| `--setup-region` | `us-east-1` | Region used by Lua setup |
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
 
 Use `--help` for the executable's current options. `RUST_LOG` controls tracing output:
@@ -47,3 +50,12 @@ IAM user access keys and STS sessions resolve to their owning account. Assuming
 a role in another account switches the request account. Unknown keys use the
 default account. These mechanisms route requests; they do not verify signatures
 or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
+
+## Lua setup
+
+Lua can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
+event-source mappings. See the [setup reference and runnable example](https://github.com/vivainio/roto/tree/main/examples/lua).
+
+```sh
+roto-server --ephemeral --setup examples/lua/setup.lua
+```
