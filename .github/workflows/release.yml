@@ -33,4 +33,4 @@ jobs:
     steps:
       - uses: vivainio/actions/publish-pypi-artifacts@51443b0c31ab8be7e8f3fc5787bf473a177cc935
         with:
-          run-id: ${{ inputs.artifact-run-id }}
+          run-id: ${{ inputs.artifact-run-id || github.run_id }}
