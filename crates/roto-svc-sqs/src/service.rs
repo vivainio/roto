@@ -1024,12 +1024,12 @@ impl Service for Sqs {
         if let Some(v) = input.visibility_timeout {
             validate_visibility(v)?;
         }
-        if let Some(w) = input.wait_time_seconds {
-            if !(0..=20).contains(&w) {
-                return Err(invalid_value(format!(
-                    "Value {w} for parameter WaitTimeSeconds is invalid. Reason: Must be >= 0 and <= 20, if provided."
-                )));
-            }
+        if let Some(w) = input.wait_time_seconds
+            && !(0..=20).contains(&w)
+        {
+            return Err(invalid_value(format!(
+                "Value {w} for parameter WaitTimeSeconds is invalid. Reason: Must be >= 0 and <= 20, if provided."
+            )));
         }
         let want_attrs: BTreeSet<String> = input
             .attribute_names
