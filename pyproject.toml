@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.12.4,<2"]
+build-backend = "maturin"
+
+[project]
+name = "roto-aws"
+description = "An AWS wire-protocol compatible simulator written in Rust"
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/vivainio/roto"
+Issues = "https://github.com/vivainio/roto/issues"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/roto-server/Cargo.toml"

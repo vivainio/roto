@@ -11,6 +11,32 @@ aws --endpoint-url http://localhost:5070 sts get-caller-identity
 scripts/run-moto-tests.sh test_sts              # moto's own tests, run against roto
 ```
 
+## Python package releases
+
+The maturin package `roto-aws` installs the `roto-server` command. After the
+first PyPI release, install it with `pip install roto-aws` or run
+`uvx --from roto-aws roto-server --ephemeral`.
+
+Push a Cargo-compatible version tag such as `v0.0.1` to trigger
+`.github/workflows/release.yml`. The shared workflow sets the workspace version
+from the tag, builds Linux x64/ARM64, Windows x64, macOS Intel/ARM64 wheels and a
+source distribution, then the local publishing job uploads them to PyPI.
+The shared components are pinned to a commit in `vivainio/actions`.
+
+Before the first release, create the GitHub environment `pypi` and configure a
+PyPI Trusted Publisher (or pending publisher for a new project) with:
+
+- Project: `roto-aws`
+- Owner: `vivainio`
+- Repository: `roto`
+- Workflow filename: `release.yml`
+- Environment: `pypi`
+
+Release tags should point to commits that pass the existing CI checks.
+
+Build locally with `uvx maturin build --release --locked --out dist` or
+`uvx maturin sdist --out dist`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
