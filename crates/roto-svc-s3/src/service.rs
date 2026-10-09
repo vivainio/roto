@@ -40,6 +40,7 @@ impl S3 {
         }
         self.db.transaction(|tx| {
             tx.execute("DELETE FROM buckets", [])?;
+            tx.execute("DELETE FROM notification_outbox", [])?;
             Ok(())
         })
     }
@@ -912,7 +913,7 @@ impl Service for S3 {
                 }
             }
             let o = self.store_object(tx, &b, &i.key, &data, etag.clone(), attrs.clone())?;
-            let _ = ctx;
+            crate::notifications::record(tx, ctx, &b, &i.key, "ObjectCreated:Put", Some(&o))?;
             Ok(PutObjectOutput {
                 e_tag: Some(etag_quoted(&etag)),
                 version_id: (o.version_id != "null").then(|| o.version_id),
@@ -999,12 +1000,32 @@ impl Service for S3 {
 
     fn delete_object(
         &self,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
         i: DeleteObjectRequest,
     ) -> Result<DeleteObjectOutput, AwsError> {
         self.db.transaction(|tx| {
             let b = load_bucket(tx, &i.bucket)?;
+            let before = find_obj(tx, &i.bucket, &i.key, i.version_id.as_deref())?;
             let (marker, version_id) = self.delete_one(tx, &b, &i.key, i.version_id.as_deref())?;
+            let removed = if marker {
+                latest_obj(tx, &i.bucket, &i.key)?
+            } else {
+                before
+            };
+            if removed.is_some() {
+                crate::notifications::record(
+                    tx,
+                    ctx,
+                    &b,
+                    &i.key,
+                    if marker {
+                        "ObjectRemoved:DeleteMarkerCreated"
+                    } else {
+                        "ObjectRemoved:Delete"
+                    },
+                    removed.as_ref(),
+                )?;
+            }
             Ok(DeleteObjectOutput {
                 delete_marker: marker.then_some(true),
                 version_id,
@@ -1015,7 +1036,7 @@ impl Service for S3 {
 
     fn delete_objects(
         &self,
-        _ctx: &RequestContext,
+        ctx: &RequestContext,
         i: DeleteObjectsRequest,
     ) -> Result<DeleteObjectsOutput, AwsError> {
         if i.delete.objects.is_empty() {
@@ -1037,8 +1058,28 @@ impl Service for S3 {
             let quiet = i.delete.quiet.unwrap_or(false);
             let mut out = DeleteObjectsOutput::default();
             for o in &i.delete.objects {
+                let before = find_obj(tx, &i.bucket, &o.key, o.version_id.as_deref())?;
                 let (marker, version_id) =
                     self.delete_one(tx, &b, &o.key, o.version_id.as_deref())?;
+                let removed = if marker {
+                    latest_obj(tx, &i.bucket, &o.key)?
+                } else {
+                    before
+                };
+                if removed.is_some() {
+                    crate::notifications::record(
+                        tx,
+                        ctx,
+                        &b,
+                        &o.key,
+                        if marker {
+                            "ObjectRemoved:DeleteMarkerCreated"
+                        } else {
+                            "ObjectRemoved:Delete"
+                        },
+                        removed.as_ref(),
+                    )?;
+                }
                 if !quiet {
                     out.deleted.push(DeletedObject {
                         key: Some(o.key.clone()),
@@ -1133,7 +1174,7 @@ impl Service for S3 {
                 };
             }
             let n = self.store_object(tx, &dst, &i.key, &data, o.etag.clone(), attrs)?;
-            let _ = ctx;
+            crate::notifications::record(tx, ctx, &dst, &i.key, "ObjectCreated:Copy", Some(&n))?;
             Ok(CopyObjectOutput {
                 copy_object_result: Some(CopyObjectResult {
                     e_tag: Some(etag_quoted(&n.etag)),

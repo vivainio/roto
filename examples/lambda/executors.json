@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "process-upload": {
+      "command": ["python3", "handler.py"],
+      "cwd": ".",
+      "env": {"LOCAL_MODE": "true"}
+    },
+    "http-handler": {
+      "url": "http://localhost:8080/invoke",
+      "headers": {"Authorization": "Bearer dev-token"}
+    }
+  }
+}

@@ -17,6 +17,7 @@ mod chunked;
 mod config;
 mod keypath;
 mod multipart;
+mod notifications;
 mod service;
 
 use std::sync::Arc;
@@ -91,6 +92,10 @@ CREATE TABLE parts (
     Migration {
         version: 3,
         sql: "ALTER TABLE objects ADD COLUMN acl TEXT;",
+    },
+    Migration {
+        version: 4,
+        sql: "CREATE TABLE notification_outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, target TEXT NOT NULL, context TEXT NOT NULL, event TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, due INTEGER NOT NULL DEFAULT 0, error TEXT);",
     },
 ];
 
@@ -170,6 +175,14 @@ impl S3Handler {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self(Arc::new(S3::new(store)?)))
     }
+    pub fn with_lambda(
+        store: &Store,
+        lambda: Arc<roto_svc_lambda::Lambda>,
+    ) -> Result<Self, AwsError> {
+        let handler = Self::new(store)?;
+        notifications::start_worker(&handler.0, lambda);
+        Ok(handler)
+    }
 }
 
 /// `bucket.s3.amazonaws.com`, `bucket.s3.localhost:5070`, `bucket.localhost` → `bucket`.
@@ -192,8 +205,14 @@ impl ServiceHandler for S3Handler {
     fn service(&self) -> &'static str {
         "s3"
     }
+    fn claims_unsigned(&self, req: &RawRequest) -> bool {
+        req.path == "/roto-api/s3/notifications"
+    }
 
     fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError> {
+        if req.method == "GET" && req.path == "/roto-api/s3/notifications" {
+            return notifications::history(&self.0, ctx);
+        }
         let mut req = req.clone();
         if let Some(bucket) = req.header("host").and_then(virtual_host_bucket) {
             req.path = format!("/{bucket}{}", req.path);

@@ -16,7 +16,8 @@ is a regression.
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 136 | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
 | **SNS** | 19 / 42 | 120 / 185 | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
-| KMS, Kinesis, Lambda | not started | – | The rest of the target set: `s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam`. |
+| **Lambda** | 14 / 85 | not yet baselined | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications supported. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution or event-source polling. |
+| KMS, Kinesis | not started | – | Remaining untouched services in the target set. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -39,7 +40,8 @@ evaluation, bucket policies, ACL checks or trust-policy checks. This is delibera
 | `query` (form request, XML response; lists, maps, blobs) | done | STS, IAM, SNS |
 | `json` 1.0 / 1.1 with query-compatible errors | done | SQS |
 | `rest-xml` (URI/query/header/payload bindings, XML bodies, route table) | done | S3 |
-| `rest-json`, `ec2` query | not started | Lambda, API Gateway, EC2, … |
+| `rest-json` | initial model-generated bindings | Lambda (JSON, URI/query/header, raw payload and status bindings) |
+| `ec2` query | not started | EC2, … |
 
 Types, (de)serialisation, routing tables and operation lists are **generated from botocore's
 service models** (`models/*/service-2.json`) by `roto-codegen`, so a service crate contains only
@@ -68,11 +70,12 @@ bodies; stored, not enforced); listing v1/v2/versions with prefix, delimiter, pa
 url-encoding; `GetObjectAttributes`; bucket sub-resources stored and returned verbatim (CORS,
 lifecycle, website, encryption, replication, ownership controls, public-access-block, logging,
 notification, accelerate, request-payment, tagging, policy); path-style and virtual-host
-addressing; `aws-chunked` uploads.
+addressing; `aws-chunked` uploads. S3 → Lambda notifications for Put/Copy/multipart completion
+and single/batch delete, with prefix/suffix filters and a persistent transactional outbox.
 
 Not working yet (the bulk of the 133 known failures): object lock / retention / legal hold,
 `RestoreObject`, `SelectObjectContent`, response checksums (CRC32/SHA1/SHA256), KMS/SSE details,
-inventory/analytics/metrics configurations, event notifications (EventBridge/SNS/SQS/Lambda),
+inventory/analytics/metrics configurations, event notifications to EventBridge/SNS/SQS,
 server access logging delivery, lifecycle execution, website/CORS serving, and anything that
 depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 
@@ -85,8 +88,17 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,
-  and the STS/SQS/S3 moto suites.
+  vendored moto suites, and `scripts/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
+
+## Local Lambda execution
+
+`--lambda-executors <file.json>` binds function names or full ARNs to command argv arrays or
+HTTP URLs. AWS APIs create/update the function metadata; local bindings select execution.
+See [examples/lambda/README.md](examples/lambda/README.md) for configuration and contracts.
+Async jobs retry up to three attempts and persist across restart. Invocation history is at
+`GET /roto-api/lambda/invocations`; pending/failed S3 handoffs at `GET /roto-api/s3/notifications`.
+Delivery is at least once. Commands run with roto's OS permissions, without container isolation.
 
 ## Next
 
-SNS, SSM, Secrets Manager, KMS, Kinesis, then IAM managed policies/groups and Lambda. See `PLAN.md`.
+KMS, Kinesis, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.
