@@ -1,1 +1,3 @@
+test_sqs/test_server.py
+test_sqs/test_sqs_integration.py
 test_sts/test_server.py

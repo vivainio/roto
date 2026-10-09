@@ -65,8 +65,12 @@ async fn main() {
         })
     });
 
+    let sqs = roto_svc_sqs::SqsHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let handlers: Vec<Arc<dyn ServiceHandler>> =
-        vec![Arc::new(roto_svc_sts::StsHandler::default())];
+        vec![Arc::new(roto_svc_sts::StsHandler::default()), Arc::new(sqs)];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
         store,
@@ -146,6 +150,10 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .unwrap_or_else(|| "us-east-1".into()),
         access_key: scope.map(|s| s.access_key),
         request_id: request_id.clone(),
+        base_url: raw
+            .header("host")
+            .map(|h| format!("http://{h}"))
+            .unwrap_or_else(|| "http://localhost:5000".into()),
     };
 
     let Some(handler) = service

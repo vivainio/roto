@@ -1,10 +1,12 @@
-//! Wire-protocol codecs. Phase 0 implements the AWS `query` protocol (form-encoded request,
-//! XML response), which STS, IAM, SQS (query), SNS and others use.
+//! Wire-protocol codecs: AWS `query` (form request, XML response) and `json` 1.0/1.1.
 
+pub mod base64;
+pub mod json;
 pub mod query;
 pub mod timestamp;
 pub mod xml;
 
+pub use json::{Blob, FromJson, ToJson, json_error, json_response};
 pub use query::{QueryParams, QueryValue, query_error, query_response};
 pub use timestamp::Timestamp;
 pub use xml::{XmlValue, XmlWriter};

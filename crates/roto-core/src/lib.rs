@@ -9,3 +9,4 @@ pub mod store;
 
 pub use error::AwsError;
 pub use http::{RawRequest, RawResponse, RequestContext, ServiceHandler};
+pub use rusqlite;

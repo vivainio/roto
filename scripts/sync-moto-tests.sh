@@ -18,7 +18,14 @@ for svc in "$@"; do
   find "$dest/$svc" -name __pycache__ -prune -exec rm -rf {} +
 done
 echo "$MOTO_TAG" > "$top/MOTO_VERSION"
-# Tests that drive moto's Python internals in-process cannot target a different server.
-(cd "$dest" && grep -rlE 'create_backend_app|moto\.server|_backends|backends\[|moto_server|ThreadedMotoServer' --include='*.py' "$@" 2>/dev/null | sort) \
-  > "$top/not_portable.txt" || true
+# Tests that drive moto's Python internals in-process, or import another service's tests,
+# cannot be run against a different server.
+: >"$top/not_portable.txt"
+for svc in "$@"; do
+  (cd "$dest" && {
+    grep -rlE 'create_backend_app|moto\.server|_backends|backends\[|moto_server|ThreadedMotoServer' --include='*.py' "$svc" || true
+    grep -rE "^(from|import) tests\.test_" --include='*.py' "$svc" | grep -vE "tests\.${svc}\b" | cut -d: -f1 || true
+  }) >>"$top/not_portable.txt"
+done
+sort -u "$top/not_portable.txt" -o "$top/not_portable.txt"
 echo "synced: $* (moto $MOTO_TAG)"
