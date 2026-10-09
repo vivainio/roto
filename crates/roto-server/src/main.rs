@@ -94,6 +94,10 @@ async fn main() {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
+    let sns = roto_svc_sns::SnsHandler::new(&store, sqs.0.clone()).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
         Arc::new(sts),
         Arc::new(sqs),
@@ -102,6 +106,7 @@ async fn main() {
         Arc::new(dynamodb),
         Arc::new(ssm),
         Arc::new(secretsmanager),
+        Arc::new(sns),
     ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),

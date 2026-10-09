@@ -15,7 +15,8 @@ is a regression.
 | **DynamoDB** | 47 / 57 | 411 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 136 | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
-| SNS, KMS, Kinesis, Lambda | not started | – | The rest of the target set: `s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam`. |
+| **SNS** | 19 / 42 | 120 / 185 | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
+| KMS, Kinesis, Lambda | not started | – | The rest of the target set: `s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam`. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -35,7 +36,7 @@ evaluation, bucket policies, ACL checks or trust-policy checks. This is delibera
 
 | Protocol | Status | Used by |
 |---|---|---|
-| `query` (form request, XML response) | done | STS, IAM |
+| `query` (form request, XML response; lists, maps, blobs) | done | STS, IAM, SNS |
 | `json` 1.0 / 1.1 with query-compatible errors | done | SQS |
 | `rest-xml` (URI/query/header/payload bindings, XML bodies, route table) | done | S3 |
 | `rest-json`, `ec2` query | not started | Lambda, API Gateway, EC2, … |

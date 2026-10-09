@@ -68,6 +68,36 @@ impl QueryParams {
     }
 }
 
+impl QueryParams {
+    /// Reads a map: `prefix.name.entry.N.key` / `.value` (or `prefix.name.N.key` when flattened).
+    pub fn map<V: QueryValue>(
+        &self,
+        prefix: &str,
+        name: &str,
+        key_name: &str,
+        value_name: &str,
+        flattened: bool,
+    ) -> Result<std::collections::BTreeMap<String, V>, AwsError> {
+        let base = join_key(prefix, name);
+        let base = if flattened {
+            base
+        } else {
+            join_key(&base, "entry")
+        };
+        let mut out = std::collections::BTreeMap::new();
+        for n in 1.. {
+            let Some(key) = self.get(&format!("{base}.{n}.{key_name}")) else {
+                break;
+            };
+            let value_key = format!("{base}.{n}.{value_name}");
+            let value = V::read(self, &value_key)?
+                .ok_or_else(|| AwsError::missing_parameter(&value_key))?;
+            out.insert(key.to_string(), value);
+        }
+        Ok(out)
+    }
+}
+
 pub fn join_key(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
         name.to_string()
@@ -110,6 +140,21 @@ impl QueryValue for bool {
             Some(v) => Err(AwsError::invalid_parameter_value(format!(
                 "Value '{v}' at '{key}' must be true or false"
             ))),
+        }
+    }
+}
+
+impl QueryValue for crate::json::Blob {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        match p.get(key) {
+            None => Ok(None),
+            Some(v) => crate::base64::decode(v)
+                .map(|b| Some(Self(b)))
+                .ok_or_else(|| {
+                    AwsError::invalid_parameter_value(format!(
+                        "Value at '{key}' is not valid base64"
+                    ))
+                }),
         }
     }
 }

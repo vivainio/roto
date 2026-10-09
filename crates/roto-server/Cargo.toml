@@ -13,6 +13,7 @@ roto-svc-dynamodb = { version = "0.0.1", path = "../roto-svc-dynamodb" }
 roto-svc-iam = { version = "0.0.1", path = "../roto-svc-iam" }
 roto-svc-s3 = { version = "0.0.1", path = "../roto-svc-s3" }
 roto-svc-secretsmanager = { version = "0.0.1", path = "../roto-svc-secretsmanager" }
+roto-svc-sns = { version = "0.0.1", path = "../roto-svc-sns" }
 roto-svc-sqs = { version = "0.0.1", path = "../roto-svc-sqs" }
 roto-svc-ssm = { version = "0.0.1", path = "../roto-svc-ssm" }
 roto-svc-sts = { version = "0.0.1", path = "../roto-svc-sts" }

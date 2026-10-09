@@ -30,3 +30,4 @@ jobs:
           scripts/run-moto-tests.sh test_dynamodb
           scripts/run-moto-tests.sh test_ssm
           scripts/run-moto-tests.sh test_secretsmanager
+          scripts/run-moto-tests.sh test_sns

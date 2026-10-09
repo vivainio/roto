@@ -1367,3 +1367,73 @@ fn set_visibility(tx: &Transaction, q: &Queue, handle: &str, seconds: i32) -> Re
     )?;
     Ok(())
 }
+
+/// A message attribute handed over by another service (SNS fan-out).
+pub struct ExternalAttribute {
+    pub data_type: String,
+    pub string_value: Option<String>,
+    pub binary_value: Option<Vec<u8>>,
+}
+
+impl Sqs {
+    /// Delivers a message from another service to the queue with ARN `queue_arn`.
+    /// Returns `Ok(false)` when the queue does not exist (publishers skip such subscriptions).
+    pub fn deliver(
+        &self,
+        queue_arn: &str,
+        body: &str,
+        attributes: &BTreeMap<String, ExternalAttribute>,
+        group_id: Option<String>,
+        dedup_id: Option<String>,
+    ) -> Result<bool, AwsError> {
+        let parts: Vec<&str> = queue_arn.split(':').collect();
+        let [_, _, "sqs", region, account, name] = parts.as_slice() else {
+            return Ok(false);
+        };
+        let ctx = RequestContext {
+            account_id: account.to_string(),
+            region: region.to_string(),
+            access_key: None,
+            request_id: new_id(),
+            base_url: String::new(),
+        };
+        self.db.transaction(|tx| {
+            let Some(q) = load_queue(tx, account, region, name)? else {
+                return Ok(false);
+            };
+            let attrs = attributes
+                .iter()
+                .map(|(k, a)| {
+                    (
+                        k.clone(),
+                        MessageAttributeValue {
+                            data_type: a.data_type.clone(),
+                            string_value: a.string_value.clone(),
+                            binary_value: a.binary_value.clone().map(roto_protocol::Blob),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            let group = if q.is_fifo() {
+                group_id.or_else(|| Some("default".into()))
+            } else {
+                None
+            };
+            put_message(
+                tx,
+                &ctx,
+                &q,
+                NewMessage {
+                    body: body.to_string(),
+                    delay: None,
+                    attrs,
+                    group,
+                    dedup: dedup_id,
+                    trace_header: None,
+                },
+            )?;
+            Ok(true)
+        })
+    }
+}

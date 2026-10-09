@@ -13,7 +13,7 @@ use roto_protocol::json_error;
 use serde_json::Value;
 
 pub use generated::{OPERATIONS, Service, dispatch};
-pub use service::Sqs;
+pub use service::{ExternalAttribute, Sqs};
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {

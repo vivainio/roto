@@ -96,6 +96,30 @@ impl XmlValue for Timestamp {
 }
 
 impl XmlWriter {
+    /// Writes a map as `<name><entry><key/><value/></entry>…</name>` (or repeated `<name>` when flattened).
+    pub fn map<V: XmlValue>(
+        &mut self,
+        name: &str,
+        flattened: bool,
+        key_name: &str,
+        value_name: &str,
+        entries: &std::collections::BTreeMap<String, V>,
+    ) {
+        if !flattened {
+            self.open(name);
+        }
+        for (k, v) in entries {
+            let entry = if flattened { name } else { "entry" };
+            self.open(entry);
+            self.element(key_name, k);
+            v.write(self, value_name);
+            self.close(entry);
+        }
+        if !flattened {
+            self.close(name);
+        }
+    }
+
     /// Writes a list. Flattened lists repeat `name`; otherwise items sit in `<name><item/>…</name>`.
     pub fn list<T: XmlValue>(&mut self, name: &str, item: &str, flattened: bool, items: &[T]) {
         if flattened {

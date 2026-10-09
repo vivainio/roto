@@ -3,7 +3,10 @@
 
 use roto_core::{AwsError, RawResponse, RequestContext};
 use roto_protocol::query::join_key;
-use roto_protocol::{QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response};
+use roto_protocol::{
+    Blob, QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response,
+};
+use std::collections::BTreeMap;
 
 pub const NAMESPACE: &str = "https://iam.amazonaws.com/doc/2010-05-08/";
 pub const API_VERSION: &str = "2010-05-08";
@@ -11,7 +14,7 @@ pub const API_VERSION: &str = "2010-05-08";
 /// (operation, supported by the generated codec)
 pub const OPERATIONS: &[(&str, bool)] = &[
     ("AcceptDelegationRequest", true),
-    ("AcquireRole", false),
+    ("AcquireRole", true),
     ("AddClientIDToOpenIDConnectProvider", true),
     ("AddRoleToInstanceProfile", true),
     ("AddUserToGroup", true),
@@ -34,7 +37,7 @@ pub const OPERATIONS: &[(&str, bool)] = &[
     ("CreateServiceLinkedRole", true),
     ("CreateServiceSpecificCredential", true),
     ("CreateUser", true),
-    ("CreateVirtualMFADevice", false),
+    ("CreateVirtualMFADevice", true),
     ("DeactivateMFADevice", true),
     ("DeleteAccessKey", true),
     ("DeleteAccountAlias", true),
@@ -75,18 +78,18 @@ pub const OPERATIONS: &[(&str, bool)] = &[
     ("GetAccessKeyLastUsed", true),
     ("GetAccountAuthorizationDetails", true),
     ("GetAccountPasswordPolicy", true),
-    ("GetAccountProperties", false),
-    ("GetAccountSummary", false),
+    ("GetAccountProperties", true),
+    ("GetAccountSummary", true),
     ("GetContextKeysForCustomPolicy", true),
     ("GetContextKeysForPrincipalPolicy", true),
-    ("GetCredentialReport", false),
+    ("GetCredentialReport", true),
     ("GetDelegationRequest", true),
     ("GetGroup", true),
     ("GetGroupPolicy", true),
     ("GetHumanReadableSummary", true),
     ("GetInstanceProfile", true),
     ("GetLoginProfile", true),
-    ("GetMFADevice", false),
+    ("GetMFADevice", true),
     ("GetOpenIDConnectProvider", true),
     ("GetOrganizationsAccessReport", true),
     ("GetOutboundWebIdentityFederationInfo", true),
@@ -138,8 +141,8 @@ pub const OPERATIONS: &[(&str, bool)] = &[
     ("ListUserPolicies", true),
     ("ListUserTags", true),
     ("ListUsers", true),
-    ("ListVirtualMFADevices", false),
-    ("PutAccountProperties", false),
+    ("ListVirtualMFADevices", true),
+    ("PutAccountProperties", true),
     ("PutGroupPolicy", true),
     ("PutRolePermissionsBoundary", true),
     ("PutRolePolicy", true),
@@ -154,8 +157,8 @@ pub const OPERATIONS: &[(&str, bool)] = &[
     ("SendDelegationToken", true),
     ("SetDefaultPolicyVersion", true),
     ("SetSecurityTokenServicePreferences", true),
-    ("SimulateCustomPolicy", false),
-    ("SimulatePrincipalPolicy", false),
+    ("SimulateCustomPolicy", true),
+    ("SimulatePrincipalPolicy", true),
     ("TagInstanceProfile", true),
     ("TagMFADevice", true),
     ("TagOpenIDConnectProvider", true),
@@ -444,6 +447,96 @@ impl AccessKeyMetadata {
         if let Some(v) = &self.user_name {
             v.write(w, "UserName");
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AcquireRoleRequest {
+    pub replacement_values: BTreeMap<String, ReplacementValueEntry>,
+    pub template_arn: String,
+    pub template_minor_version: Option<i32>,
+}
+
+impl QueryValue for AcquireRoleRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for AcquireRoleRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl AcquireRoleRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            replacement_values: p.map(prefix, "ReplacementValues", "key", "value", false)?,
+            template_arn: p
+                .value(prefix, "TemplateArn")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "TemplateArn")))?,
+            template_minor_version: p.value(prefix, "TemplateMinorVersion")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.replacement_values.is_empty() {
+            w.map(
+                "ReplacementValues",
+                false,
+                "key",
+                "value",
+                &self.replacement_values,
+            );
+        }
+        self.template_arn.write(w, "TemplateArn");
+        if let Some(v) = &self.template_minor_version {
+            v.write(w, "TemplateMinorVersion");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AcquireRoleResponse {
+    pub role: Role,
+}
+
+impl QueryValue for AcquireRoleResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for AcquireRoleResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl AcquireRoleResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            role: p
+                .value(prefix, "Role")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "Role")))?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        self.role.write(w, "Role");
     }
 }
 
@@ -860,6 +953,56 @@ impl ChangePasswordRequest {
     pub fn write_members(&self, w: &mut XmlWriter) {
         self.new_password.write(w, "NewPassword");
         self.old_password.write(w, "OldPassword");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContextEntry {
+    pub context_key_name: Option<String>,
+    pub context_key_type: Option<String>,
+    pub context_key_values: Vec<String>,
+}
+
+impl QueryValue for ContextEntry {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for ContextEntry {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl ContextEntry {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            context_key_name: p.value(prefix, "ContextKeyName")?,
+            context_key_type: p.value(prefix, "ContextKeyType")?,
+            context_key_values: p.list(prefix, "ContextKeyValues", "member", false)?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.context_key_name {
+            v.write(w, "ContextKeyName");
+        }
+        if let Some(v) = &self.context_key_type {
+            v.write(w, "ContextKeyType");
+        }
+        w.list(
+            "ContextKeyValues",
+            "member",
+            false,
+            &self.context_key_values,
+        );
     }
 }
 
@@ -2050,6 +2193,89 @@ impl CreateUserResponse {
         if let Some(v) = &self.user {
             v.write(w, "User");
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CreateVirtualMFADeviceRequest {
+    pub path: Option<String>,
+    pub tags: Vec<Tag>,
+    pub virtual_mfa_device_name: String,
+}
+
+impl QueryValue for CreateVirtualMFADeviceRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for CreateVirtualMFADeviceRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl CreateVirtualMFADeviceRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            path: p.value(prefix, "Path")?,
+            tags: p.list(prefix, "Tags", "member", false)?,
+            virtual_mfa_device_name: p.value(prefix, "VirtualMFADeviceName")?.ok_or_else(|| {
+                AwsError::missing_parameter(&join_key(prefix, "VirtualMFADeviceName"))
+            })?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.path {
+            v.write(w, "Path");
+        }
+        w.list("Tags", "member", false, &self.tags);
+        self.virtual_mfa_device_name
+            .write(w, "VirtualMFADeviceName");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CreateVirtualMFADeviceResponse {
+    pub virtual_mfa_device: VirtualMFADevice,
+}
+
+impl QueryValue for CreateVirtualMFADeviceResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for CreateVirtualMFADeviceResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl CreateVirtualMFADeviceResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            virtual_mfa_device: p.value(prefix, "VirtualMFADevice")?.ok_or_else(|| {
+                AwsError::missing_parameter(&join_key(prefix, "VirtualMFADevice"))
+            })?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        self.virtual_mfa_device.write(w, "VirtualMFADevice");
     }
 }
 
@@ -3844,6 +4070,104 @@ impl ErrorDetails {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct EvaluationResult {
+    pub eval_action_name: String,
+    pub eval_decision: String,
+    pub eval_decision_details: BTreeMap<String, String>,
+    pub eval_resource_name: Option<String>,
+    pub matched_statements: Vec<Statement>,
+    pub missing_context_values: Vec<String>,
+    pub organizations_decision_detail: Option<OrganizationsDecisionDetail>,
+    pub permissions_boundary_decision_detail: Option<PermissionsBoundaryDecisionDetail>,
+    pub resource_specific_results: Vec<ResourceSpecificResult>,
+}
+
+impl QueryValue for EvaluationResult {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for EvaluationResult {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl EvaluationResult {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            eval_action_name: p
+                .value(prefix, "EvalActionName")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "EvalActionName")))?,
+            eval_decision: p
+                .value(prefix, "EvalDecision")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "EvalDecision")))?,
+            eval_decision_details: p.map(prefix, "EvalDecisionDetails", "key", "value", false)?,
+            eval_resource_name: p.value(prefix, "EvalResourceName")?,
+            matched_statements: p.list(prefix, "MatchedStatements", "member", false)?,
+            missing_context_values: p.list(prefix, "MissingContextValues", "member", false)?,
+            organizations_decision_detail: p.value(prefix, "OrganizationsDecisionDetail")?,
+            permissions_boundary_decision_detail: p
+                .value(prefix, "PermissionsBoundaryDecisionDetail")?,
+            resource_specific_results: p.list(
+                prefix,
+                "ResourceSpecificResults",
+                "member",
+                false,
+            )?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        self.eval_action_name.write(w, "EvalActionName");
+        self.eval_decision.write(w, "EvalDecision");
+        if !self.eval_decision_details.is_empty() {
+            w.map(
+                "EvalDecisionDetails",
+                false,
+                "key",
+                "value",
+                &self.eval_decision_details,
+            );
+        }
+        if let Some(v) = &self.eval_resource_name {
+            v.write(w, "EvalResourceName");
+        }
+        w.list(
+            "MatchedStatements",
+            "member",
+            false,
+            &self.matched_statements,
+        );
+        w.list(
+            "MissingContextValues",
+            "member",
+            false,
+            &self.missing_context_values,
+        );
+        if let Some(v) = &self.organizations_decision_detail {
+            v.write(w, "OrganizationsDecisionDetail");
+        }
+        if let Some(v) = &self.permissions_boundary_decision_detail {
+            v.write(w, "PermissionsBoundaryDecisionDetail");
+        }
+        w.list(
+            "ResourceSpecificResults",
+            "member",
+            false,
+            &self.resource_specific_results,
+        );
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GenerateCredentialReportResponse {
     pub description: Option<String>,
     pub state: Option<String>,
@@ -4259,6 +4583,109 @@ impl GetAccountPasswordPolicyResponse {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetAccountPropertiesRequest {}
+
+impl QueryValue for GetAccountPropertiesRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetAccountPropertiesRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetAccountPropertiesRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {};
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {}
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetAccountPropertiesResponse {
+    pub properties: BTreeMap<String, String>,
+}
+
+impl QueryValue for GetAccountPropertiesResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetAccountPropertiesResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetAccountPropertiesResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            properties: p.map(prefix, "Properties", "key", "value", false)?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.properties.is_empty() {
+            w.map("Properties", false, "key", "value", &self.properties);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetAccountSummaryResponse {
+    pub summary_map: BTreeMap<String, i32>,
+}
+
+impl QueryValue for GetAccountSummaryResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetAccountSummaryResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetAccountSummaryResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            summary_map: p.map(prefix, "SummaryMap", "key", "value", false)?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.summary_map.is_empty() {
+            w.map("SummaryMap", false, "key", "value", &self.summary_map);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GetContextKeysForCustomPolicyRequest {
     pub policy_input_list: Vec<String>,
 }
@@ -4371,6 +4798,53 @@ impl GetContextKeysForPrincipalPolicyRequest {
     pub fn write_members(&self, w: &mut XmlWriter) {
         w.list("PolicyInputList", "member", false, &self.policy_input_list);
         self.policy_source_arn.write(w, "PolicySourceArn");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetCredentialReportResponse {
+    pub content: Option<Blob>,
+    pub generated_time: Option<Timestamp>,
+    pub report_format: Option<String>,
+}
+
+impl QueryValue for GetCredentialReportResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetCredentialReportResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetCredentialReportResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            content: p.value(prefix, "Content")?,
+            generated_time: p.value(prefix, "GeneratedTime")?,
+            report_format: p.value(prefix, "ReportFormat")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.content {
+            v.write(w, "Content");
+        }
+        if let Some(v) = &self.generated_time {
+            v.write(w, "GeneratedTime");
+        }
+        if let Some(v) = &self.report_format {
+            v.write(w, "ReportFormat");
+        }
     }
 }
 
@@ -4886,6 +5360,106 @@ impl GetLoginProfileResponse {
 
     pub fn write_members(&self, w: &mut XmlWriter) {
         self.login_profile.write(w, "LoginProfile");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetMFADeviceRequest {
+    pub serial_number: String,
+    pub user_name: Option<String>,
+}
+
+impl QueryValue for GetMFADeviceRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetMFADeviceRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetMFADeviceRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            serial_number: p
+                .value(prefix, "SerialNumber")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "SerialNumber")))?,
+            user_name: p.value(prefix, "UserName")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        self.serial_number.write(w, "SerialNumber");
+        if let Some(v) = &self.user_name {
+            v.write(w, "UserName");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GetMFADeviceResponse {
+    pub certifications: BTreeMap<String, String>,
+    pub enable_date: Option<Timestamp>,
+    pub serial_number: String,
+    pub user_name: Option<String>,
+}
+
+impl QueryValue for GetMFADeviceResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for GetMFADeviceResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl GetMFADeviceResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            certifications: p.map(prefix, "Certifications", "key", "value", false)?,
+            enable_date: p.value(prefix, "EnableDate")?,
+            serial_number: p
+                .value(prefix, "SerialNumber")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "SerialNumber")))?,
+            user_name: p.value(prefix, "UserName")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.certifications.is_empty() {
+            w.map(
+                "Certifications",
+                false,
+                "key",
+                "value",
+                &self.certifications,
+            );
+        }
+        if let Some(v) = &self.enable_date {
+            v.write(w, "EnableDate");
+        }
+        self.serial_number.write(w, "SerialNumber");
+        if let Some(v) = &self.user_name {
+            v.write(w, "UserName");
+        }
     }
 }
 
@@ -6467,6 +7041,53 @@ impl InlinePolicy {
 
     pub fn write_members(&self, w: &mut XmlWriter) {
         self.policy_document.write(w, "PolicyDocument");
+        self.policy_name.write(w, "PolicyName");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InlinePolicyIdentifierType {
+    pub attachment_name: String,
+    pub attachment_type: String,
+    pub policy_name: String,
+}
+
+impl QueryValue for InlinePolicyIdentifierType {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for InlinePolicyIdentifierType {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl InlinePolicyIdentifierType {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            attachment_name: p
+                .value(prefix, "AttachmentName")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "AttachmentName")))?,
+            attachment_type: p
+                .value(prefix, "AttachmentType")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "AttachmentType")))?,
+            policy_name: p
+                .value(prefix, "PolicyName")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "PolicyName")))?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        self.attachment_name.write(w, "AttachmentName");
+        self.attachment_type.write(w, "AttachmentType");
         self.policy_name.write(w, "PolicyName");
     }
 }
@@ -9940,6 +10561,109 @@ impl ListUsersResponse {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListVirtualMFADevicesRequest {
+    pub assignment_status: Option<String>,
+    pub marker: Option<String>,
+    pub max_items: Option<i32>,
+}
+
+impl QueryValue for ListVirtualMFADevicesRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for ListVirtualMFADevicesRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl ListVirtualMFADevicesRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            assignment_status: p.value(prefix, "AssignmentStatus")?,
+            marker: p.value(prefix, "Marker")?,
+            max_items: p.value(prefix, "MaxItems")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.assignment_status {
+            v.write(w, "AssignmentStatus");
+        }
+        if let Some(v) = &self.marker {
+            v.write(w, "Marker");
+        }
+        if let Some(v) = &self.max_items {
+            v.write(w, "MaxItems");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListVirtualMFADevicesResponse {
+    pub is_truncated: Option<bool>,
+    pub marker: Option<String>,
+    pub virtual_mfa_devices: Vec<VirtualMFADevice>,
+}
+
+impl QueryValue for ListVirtualMFADevicesResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for ListVirtualMFADevicesResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl ListVirtualMFADevicesResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            is_truncated: p.value(prefix, "IsTruncated")?,
+            marker: p.value(prefix, "Marker")?,
+            virtual_mfa_devices: p.list(prefix, "VirtualMFADevices", "member", false)?,
+        };
+        if s.virtual_mfa_devices.is_empty() {
+            return Err(AwsError::missing_parameter(&join_key(
+                prefix,
+                "VirtualMFADevices",
+            )));
+        }
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.is_truncated {
+            v.write(w, "IsTruncated");
+        }
+        if let Some(v) = &self.marker {
+            v.write(w, "Marker");
+        }
+        w.list(
+            "VirtualMFADevices",
+            "member",
+            false,
+            &self.virtual_mfa_devices,
+        );
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct LoginProfile {
     pub create_date: Timestamp,
     pub password_reset_required: Option<bool>,
@@ -10166,6 +10890,88 @@ impl OpenIDConnectProviderListEntry {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrderedOrganizationPolicyType {
+    pub service_control_policy_input_list: Vec<String>,
+}
+
+impl QueryValue for OrderedOrganizationPolicyType {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for OrderedOrganizationPolicyType {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl OrderedOrganizationPolicyType {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            service_control_policy_input_list: p.list(
+                prefix,
+                "ServiceControlPolicyInputList",
+                "member",
+                false,
+            )?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        w.list(
+            "ServiceControlPolicyInputList",
+            "member",
+            false,
+            &self.service_control_policy_input_list,
+        );
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrganizationsDecisionDetail {
+    pub allowed_by_organizations: Option<bool>,
+}
+
+impl QueryValue for OrganizationsDecisionDetail {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for OrganizationsDecisionDetail {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl OrganizationsDecisionDetail {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            allowed_by_organizations: p.value(prefix, "AllowedByOrganizations")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.allowed_by_organizations {
+            v.write(w, "AllowedByOrganizations");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParameterDefinition {
     pub default_value: Option<String>,
     pub description: Option<String>,
@@ -10310,6 +11116,43 @@ impl PasswordPolicy {
         }
         if let Some(v) = &self.require_uppercase_characters {
             v.write(w, "RequireUppercaseCharacters");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PermissionsBoundaryDecisionDetail {
+    pub allowed_by_permissions_boundary: Option<bool>,
+}
+
+impl QueryValue for PermissionsBoundaryDecisionDetail {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for PermissionsBoundaryDecisionDetail {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl PermissionsBoundaryDecisionDetail {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            allowed_by_permissions_boundary: p.value(prefix, "AllowedByPermissionsBoundary")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.allowed_by_permissions_boundary {
+            v.write(w, "AllowedByPermissionsBoundary");
         }
     }
 }
@@ -10546,6 +11389,53 @@ impl PolicyGroup {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct PolicyIdentifier {
+    pub inline_policy_identifier: Option<InlinePolicyIdentifierType>,
+    pub policy_arn: Option<String>,
+    pub policy_type: Option<String>,
+}
+
+impl QueryValue for PolicyIdentifier {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for PolicyIdentifier {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl PolicyIdentifier {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            inline_policy_identifier: p.value(prefix, "InlinePolicyIdentifier")?,
+            policy_arn: p.value(prefix, "PolicyArn")?,
+            policy_type: p.value(prefix, "PolicyType")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.inline_policy_identifier {
+            v.write(w, "InlinePolicyIdentifier");
+        }
+        if let Some(v) = &self.policy_arn {
+            v.write(w, "PolicyArn");
+        }
+        if let Some(v) = &self.policy_type {
+            v.write(w, "PolicyType");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PolicyParameter {
     pub name: Option<String>,
     pub r#type: Option<String>,
@@ -10724,6 +11614,114 @@ impl PolicyVersion {
             v.write(w, "VersionId");
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Position {
+    pub column: Option<i32>,
+    pub line: Option<i32>,
+}
+
+impl QueryValue for Position {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for Position {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl Position {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            column: p.value(prefix, "Column")?,
+            line: p.value(prefix, "Line")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.column {
+            v.write(w, "Column");
+        }
+        if let Some(v) = &self.line {
+            v.write(w, "Line");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PutAccountPropertiesRequest {
+    pub properties: BTreeMap<String, String>,
+}
+
+impl QueryValue for PutAccountPropertiesRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for PutAccountPropertiesRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl PutAccountPropertiesRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            properties: p.map(prefix, "Properties", "key", "value", false)?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.properties.is_empty() {
+            w.map("Properties", false, "key", "value", &self.properties);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PutAccountPropertiesResponse {}
+
+impl QueryValue for PutAccountPropertiesResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for PutAccountPropertiesResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl PutAccountPropertiesResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {};
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {}
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -11121,6 +12119,44 @@ impl RemoveUserFromGroupRequest {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReplacementValueEntry {
+    pub values: Vec<String>,
+}
+
+impl QueryValue for ReplacementValueEntry {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for ReplacementValueEntry {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl ReplacementValueEntry {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            values: p.list(prefix, "Values", "member", false)?,
+        };
+        if s.values.is_empty() {
+            return Err(AwsError::missing_parameter(&join_key(prefix, "Values")));
+        }
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        w.list("Values", "member", false, &self.values);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResetServiceSpecificCredentialRequest {
     pub service_specific_credential_id: String,
     pub user_name: Option<String>,
@@ -11198,6 +12234,81 @@ impl ResetServiceSpecificCredentialResponse {
     pub fn write_members(&self, w: &mut XmlWriter) {
         if let Some(v) = &self.service_specific_credential {
             v.write(w, "ServiceSpecificCredential");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResourceSpecificResult {
+    pub eval_decision_details: BTreeMap<String, String>,
+    pub eval_resource_decision: String,
+    pub eval_resource_name: String,
+    pub matched_statements: Vec<Statement>,
+    pub missing_context_values: Vec<String>,
+    pub permissions_boundary_decision_detail: Option<PermissionsBoundaryDecisionDetail>,
+}
+
+impl QueryValue for ResourceSpecificResult {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for ResourceSpecificResult {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl ResourceSpecificResult {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            eval_decision_details: p.map(prefix, "EvalDecisionDetails", "key", "value", false)?,
+            eval_resource_decision: p.value(prefix, "EvalResourceDecision")?.ok_or_else(|| {
+                AwsError::missing_parameter(&join_key(prefix, "EvalResourceDecision"))
+            })?,
+            eval_resource_name: p.value(prefix, "EvalResourceName")?.ok_or_else(|| {
+                AwsError::missing_parameter(&join_key(prefix, "EvalResourceName"))
+            })?,
+            matched_statements: p.list(prefix, "MatchedStatements", "member", false)?,
+            missing_context_values: p.list(prefix, "MissingContextValues", "member", false)?,
+            permissions_boundary_decision_detail: p
+                .value(prefix, "PermissionsBoundaryDecisionDetail")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if !self.eval_decision_details.is_empty() {
+            w.map(
+                "EvalDecisionDetails",
+                false,
+                "key",
+                "value",
+                &self.eval_decision_details,
+            );
+        }
+        self.eval_resource_decision.write(w, "EvalResourceDecision");
+        self.eval_resource_name.write(w, "EvalResourceName");
+        w.list(
+            "MatchedStatements",
+            "member",
+            false,
+            &self.matched_statements,
+        );
+        w.list(
+            "MissingContextValues",
+            "member",
+            false,
+            &self.missing_context_values,
+        );
+        if let Some(v) = &self.permissions_boundary_decision_detail {
+            v.write(w, "PermissionsBoundaryDecisionDetail");
         }
     }
 }
@@ -12414,6 +13525,274 @@ impl SigningCertificate {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimulateCustomPolicyRequest {
+    pub action_names: Vec<String>,
+    pub caller_arn: Option<String>,
+    pub context_entries: Vec<ContextEntry>,
+    pub marker: Option<String>,
+    pub max_items: Option<i32>,
+    pub ordered_organization_policy_input_list: Vec<OrderedOrganizationPolicyType>,
+    pub permissions_boundary_policy_input_list: Vec<String>,
+    pub policy_input_list: Vec<String>,
+    pub resource_arns: Vec<String>,
+    pub resource_handling_option: Option<String>,
+    pub resource_owner: Option<String>,
+    pub resource_policy: Option<String>,
+}
+
+impl QueryValue for SimulateCustomPolicyRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for SimulateCustomPolicyRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl SimulateCustomPolicyRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            action_names: p.list(prefix, "ActionNames", "member", false)?,
+            caller_arn: p.value(prefix, "CallerArn")?,
+            context_entries: p.list(prefix, "ContextEntries", "member", false)?,
+            marker: p.value(prefix, "Marker")?,
+            max_items: p.value(prefix, "MaxItems")?,
+            ordered_organization_policy_input_list: p.list(
+                prefix,
+                "OrderedOrganizationPolicyInputList",
+                "member",
+                false,
+            )?,
+            permissions_boundary_policy_input_list: p.list(
+                prefix,
+                "PermissionsBoundaryPolicyInputList",
+                "member",
+                false,
+            )?,
+            policy_input_list: p.list(prefix, "PolicyInputList", "member", false)?,
+            resource_arns: p.list(prefix, "ResourceArns", "member", false)?,
+            resource_handling_option: p.value(prefix, "ResourceHandlingOption")?,
+            resource_owner: p.value(prefix, "ResourceOwner")?,
+            resource_policy: p.value(prefix, "ResourcePolicy")?,
+        };
+        if s.action_names.is_empty() {
+            return Err(AwsError::missing_parameter(&join_key(
+                prefix,
+                "ActionNames",
+            )));
+        }
+        if s.policy_input_list.is_empty() {
+            return Err(AwsError::missing_parameter(&join_key(
+                prefix,
+                "PolicyInputList",
+            )));
+        }
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        w.list("ActionNames", "member", false, &self.action_names);
+        if let Some(v) = &self.caller_arn {
+            v.write(w, "CallerArn");
+        }
+        w.list("ContextEntries", "member", false, &self.context_entries);
+        if let Some(v) = &self.marker {
+            v.write(w, "Marker");
+        }
+        if let Some(v) = &self.max_items {
+            v.write(w, "MaxItems");
+        }
+        w.list(
+            "OrderedOrganizationPolicyInputList",
+            "member",
+            false,
+            &self.ordered_organization_policy_input_list,
+        );
+        w.list(
+            "PermissionsBoundaryPolicyInputList",
+            "member",
+            false,
+            &self.permissions_boundary_policy_input_list,
+        );
+        w.list("PolicyInputList", "member", false, &self.policy_input_list);
+        w.list("ResourceArns", "member", false, &self.resource_arns);
+        if let Some(v) = &self.resource_handling_option {
+            v.write(w, "ResourceHandlingOption");
+        }
+        if let Some(v) = &self.resource_owner {
+            v.write(w, "ResourceOwner");
+        }
+        if let Some(v) = &self.resource_policy {
+            v.write(w, "ResourcePolicy");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimulatePolicyResponse {
+    pub evaluation_results: Vec<EvaluationResult>,
+    pub is_truncated: Option<bool>,
+    pub marker: Option<String>,
+}
+
+impl QueryValue for SimulatePolicyResponse {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for SimulatePolicyResponse {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl SimulatePolicyResponse {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            evaluation_results: p.list(prefix, "EvaluationResults", "member", false)?,
+            is_truncated: p.value(prefix, "IsTruncated")?,
+            marker: p.value(prefix, "Marker")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        w.list(
+            "EvaluationResults",
+            "member",
+            false,
+            &self.evaluation_results,
+        );
+        if let Some(v) = &self.is_truncated {
+            v.write(w, "IsTruncated");
+        }
+        if let Some(v) = &self.marker {
+            v.write(w, "Marker");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimulatePrincipalPolicyRequest {
+    pub action_names: Vec<String>,
+    pub caller_arn: Option<String>,
+    pub context_entries: Vec<ContextEntry>,
+    pub marker: Option<String>,
+    pub max_items: Option<i32>,
+    pub permissions_boundary_policy_input_list: Vec<String>,
+    pub policy_exclusion_list: Vec<PolicyIdentifier>,
+    pub policy_input_list: Vec<String>,
+    pub policy_source_arn: String,
+    pub resource_arns: Vec<String>,
+    pub resource_handling_option: Option<String>,
+    pub resource_owner: Option<String>,
+    pub resource_policy: Option<String>,
+}
+
+impl QueryValue for SimulatePrincipalPolicyRequest {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for SimulatePrincipalPolicyRequest {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl SimulatePrincipalPolicyRequest {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            action_names: p.list(prefix, "ActionNames", "member", false)?,
+            caller_arn: p.value(prefix, "CallerArn")?,
+            context_entries: p.list(prefix, "ContextEntries", "member", false)?,
+            marker: p.value(prefix, "Marker")?,
+            max_items: p.value(prefix, "MaxItems")?,
+            permissions_boundary_policy_input_list: p.list(
+                prefix,
+                "PermissionsBoundaryPolicyInputList",
+                "member",
+                false,
+            )?,
+            policy_exclusion_list: p.list(prefix, "PolicyExclusionList", "member", false)?,
+            policy_input_list: p.list(prefix, "PolicyInputList", "member", false)?,
+            policy_source_arn: p
+                .value(prefix, "PolicySourceArn")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "PolicySourceArn")))?,
+            resource_arns: p.list(prefix, "ResourceArns", "member", false)?,
+            resource_handling_option: p.value(prefix, "ResourceHandlingOption")?,
+            resource_owner: p.value(prefix, "ResourceOwner")?,
+            resource_policy: p.value(prefix, "ResourcePolicy")?,
+        };
+        if s.action_names.is_empty() {
+            return Err(AwsError::missing_parameter(&join_key(
+                prefix,
+                "ActionNames",
+            )));
+        }
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        w.list("ActionNames", "member", false, &self.action_names);
+        if let Some(v) = &self.caller_arn {
+            v.write(w, "CallerArn");
+        }
+        w.list("ContextEntries", "member", false, &self.context_entries);
+        if let Some(v) = &self.marker {
+            v.write(w, "Marker");
+        }
+        if let Some(v) = &self.max_items {
+            v.write(w, "MaxItems");
+        }
+        w.list(
+            "PermissionsBoundaryPolicyInputList",
+            "member",
+            false,
+            &self.permissions_boundary_policy_input_list,
+        );
+        w.list(
+            "PolicyExclusionList",
+            "member",
+            false,
+            &self.policy_exclusion_list,
+        );
+        w.list("PolicyInputList", "member", false, &self.policy_input_list);
+        self.policy_source_arn.write(w, "PolicySourceArn");
+        w.list("ResourceArns", "member", false, &self.resource_arns);
+        if let Some(v) = &self.resource_handling_option {
+            v.write(w, "ResourceHandlingOption");
+        }
+        if let Some(v) = &self.resource_owner {
+            v.write(w, "ResourceOwner");
+        }
+        if let Some(v) = &self.resource_policy {
+            v.write(w, "ResourcePolicy");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SourceRoleTemplate {
     pub template_arn: String,
     pub template_minor_version: i32,
@@ -12452,6 +13831,58 @@ impl SourceRoleTemplate {
     pub fn write_members(&self, w: &mut XmlWriter) {
         self.template_arn.write(w, "TemplateArn");
         self.template_minor_version.write(w, "TemplateMinorVersion");
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Statement {
+    pub end_position: Option<Position>,
+    pub source_policy_id: Option<String>,
+    pub source_policy_type: Option<String>,
+    pub start_position: Option<Position>,
+}
+
+impl QueryValue for Statement {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for Statement {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl Statement {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            end_position: p.value(prefix, "EndPosition")?,
+            source_policy_id: p.value(prefix, "SourcePolicyId")?,
+            source_policy_type: p.value(prefix, "SourcePolicyType")?,
+            start_position: p.value(prefix, "StartPosition")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.end_position {
+            v.write(w, "EndPosition");
+        }
+        if let Some(v) = &self.source_policy_id {
+            v.write(w, "SourcePolicyId");
+        }
+        if let Some(v) = &self.source_policy_type {
+            v.write(w, "SourcePolicyType");
+        }
+        if let Some(v) = &self.start_position {
+            v.write(w, "StartPosition");
+        }
     }
 }
 
@@ -14533,6 +15964,66 @@ impl UserDetail {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VirtualMFADevice {
+    pub base32_string_seed: Option<Blob>,
+    pub enable_date: Option<Timestamp>,
+    pub qr_code_png: Option<Blob>,
+    pub serial_number: String,
+    pub tags: Vec<Tag>,
+    pub user: Option<User>,
+}
+
+impl QueryValue for VirtualMFADevice {
+    fn read(p: &QueryParams, key: &str) -> Result<Option<Self>, AwsError> {
+        if !p.has_prefix(key) {
+            return Ok(None);
+        }
+        Ok(Some(Self::read_members(p, key)?))
+    }
+}
+
+impl XmlValue for VirtualMFADevice {
+    fn write(&self, w: &mut XmlWriter, name: &str) {
+        w.open(name);
+        self.write_members(w);
+        w.close(name);
+    }
+}
+
+impl VirtualMFADevice {
+    pub fn read_members(p: &QueryParams, prefix: &str) -> Result<Self, AwsError> {
+        let s = Self {
+            base32_string_seed: p.value(prefix, "Base32StringSeed")?,
+            enable_date: p.value(prefix, "EnableDate")?,
+            qr_code_png: p.value(prefix, "QRCodePNG")?,
+            serial_number: p
+                .value(prefix, "SerialNumber")?
+                .ok_or_else(|| AwsError::missing_parameter(&join_key(prefix, "SerialNumber")))?,
+            tags: p.list(prefix, "Tags", "member", false)?,
+            user: p.value(prefix, "User")?,
+        };
+        Ok(s)
+    }
+
+    pub fn write_members(&self, w: &mut XmlWriter) {
+        if let Some(v) = &self.base32_string_seed {
+            v.write(w, "Base32StringSeed");
+        }
+        if let Some(v) = &self.enable_date {
+            v.write(w, "EnableDate");
+        }
+        if let Some(v) = &self.qr_code_png {
+            v.write(w, "QRCodePNG");
+        }
+        self.serial_number.write(w, "SerialNumber");
+        w.list("Tags", "member", false, &self.tags);
+        if let Some(v) = &self.user {
+            v.write(w, "User");
+        }
+    }
+}
+
 /// Implement the operations you support; the rest answer `NotImplemented`.
 pub trait Service: Send + Sync {
     fn accept_delegation_request(
@@ -14542,6 +16033,14 @@ pub trait Service: Send + Sync {
     ) -> Result<(), AwsError> {
         let _ = (ctx, input);
         Err(AwsError::not_implemented("iam", "AcceptDelegationRequest"))
+    }
+    fn acquire_role(
+        &self,
+        ctx: &RequestContext,
+        input: AcquireRoleRequest,
+    ) -> Result<AcquireRoleResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "AcquireRole"))
     }
     fn add_client_id_to_open_id_connect_provider(
         &self,
@@ -14730,6 +16229,14 @@ pub trait Service: Send + Sync {
     ) -> Result<CreateUserResponse, AwsError> {
         let _ = (ctx, input);
         Err(AwsError::not_implemented("iam", "CreateUser"))
+    }
+    fn create_virtual_mfa_device(
+        &self,
+        ctx: &RequestContext,
+        input: CreateVirtualMFADeviceRequest,
+    ) -> Result<CreateVirtualMFADeviceResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "CreateVirtualMFADevice"))
     }
     fn deactivate_mfa_device(
         &self,
@@ -15085,6 +16592,22 @@ pub trait Service: Send + Sync {
         let _ = (ctx, input);
         Err(AwsError::not_implemented("iam", "GetAccountPasswordPolicy"))
     }
+    fn get_account_properties(
+        &self,
+        ctx: &RequestContext,
+        input: GetAccountPropertiesRequest,
+    ) -> Result<GetAccountPropertiesResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "GetAccountProperties"))
+    }
+    fn get_account_summary(
+        &self,
+        ctx: &RequestContext,
+        input: (),
+    ) -> Result<GetAccountSummaryResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "GetAccountSummary"))
+    }
     fn get_context_keys_for_custom_policy(
         &self,
         ctx: &RequestContext,
@@ -15106,6 +16629,14 @@ pub trait Service: Send + Sync {
             "iam",
             "GetContextKeysForPrincipalPolicy",
         ))
+    }
+    fn get_credential_report(
+        &self,
+        ctx: &RequestContext,
+        input: (),
+    ) -> Result<GetCredentialReportResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "GetCredentialReport"))
     }
     fn get_delegation_request(
         &self,
@@ -15154,6 +16685,14 @@ pub trait Service: Send + Sync {
     ) -> Result<GetLoginProfileResponse, AwsError> {
         let _ = (ctx, input);
         Err(AwsError::not_implemented("iam", "GetLoginProfile"))
+    }
+    fn get_mfa_device(
+        &self,
+        ctx: &RequestContext,
+        input: GetMFADeviceRequest,
+    ) -> Result<GetMFADeviceResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "GetMFADevice"))
     }
     fn get_open_id_connect_provider(
         &self,
@@ -15602,6 +17141,22 @@ pub trait Service: Send + Sync {
         let _ = (ctx, input);
         Err(AwsError::not_implemented("iam", "ListUsers"))
     }
+    fn list_virtual_mfa_devices(
+        &self,
+        ctx: &RequestContext,
+        input: ListVirtualMFADevicesRequest,
+    ) -> Result<ListVirtualMFADevicesResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "ListVirtualMFADevices"))
+    }
+    fn put_account_properties(
+        &self,
+        ctx: &RequestContext,
+        input: PutAccountPropertiesRequest,
+    ) -> Result<PutAccountPropertiesResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "PutAccountProperties"))
+    }
     fn put_group_policy(
         &self,
         ctx: &RequestContext,
@@ -15731,6 +17286,22 @@ pub trait Service: Send + Sync {
             "iam",
             "SetSecurityTokenServicePreferences",
         ))
+    }
+    fn simulate_custom_policy(
+        &self,
+        ctx: &RequestContext,
+        input: SimulateCustomPolicyRequest,
+    ) -> Result<SimulatePolicyResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "SimulateCustomPolicy"))
+    }
+    fn simulate_principal_policy(
+        &self,
+        ctx: &RequestContext,
+        input: SimulatePrincipalPolicyRequest,
+    ) -> Result<SimulatePolicyResponse, AwsError> {
+        let _ = (ctx, input);
+        Err(AwsError::not_implemented("iam", "SimulatePrincipalPolicy"))
     }
     fn tag_instance_profile(
         &self,
@@ -16015,7 +17586,18 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "AcquireRole" => Err(AwsError::not_implemented("iam", "AcquireRole")),
+        "AcquireRole" => {
+            let output = svc.acquire_role(ctx, AcquireRoleRequest::read_members(params, "")?)?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "AcquireRole",
+                Some("AcquireRoleResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "AddClientIDToOpenIDConnectProvider" => {
             let output = svc.add_client_id_to_open_id_connect_provider(
                 ctx,
@@ -16307,7 +17889,21 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "CreateVirtualMFADevice" => Err(AwsError::not_implemented("iam", "CreateVirtualMFADevice")),
+        "CreateVirtualMFADevice" => {
+            let output = svc.create_virtual_mfa_device(
+                ctx,
+                CreateVirtualMFADeviceRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "CreateVirtualMFADevice",
+                Some("CreateVirtualMFADeviceResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "DeactivateMFADevice" => {
             let output = svc.deactivate_mfa_device(
                 ctx,
@@ -16829,8 +18425,33 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "GetAccountProperties" => Err(AwsError::not_implemented("iam", "GetAccountProperties")),
-        "GetAccountSummary" => Err(AwsError::not_implemented("iam", "GetAccountSummary")),
+        "GetAccountProperties" => {
+            let output = svc.get_account_properties(
+                ctx,
+                GetAccountPropertiesRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "GetAccountProperties",
+                Some("GetAccountPropertiesResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
+        "GetAccountSummary" => {
+            let output = svc.get_account_summary(ctx, ())?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "GetAccountSummary",
+                Some("GetAccountSummaryResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "GetContextKeysForCustomPolicy" => {
             let output = svc.get_context_keys_for_custom_policy(
                 ctx,
@@ -16861,7 +18482,18 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "GetCredentialReport" => Err(AwsError::not_implemented("iam", "GetCredentialReport")),
+        "GetCredentialReport" => {
+            let output = svc.get_credential_report(ctx, ())?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "GetCredentialReport",
+                Some("GetCredentialReportResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "GetDelegationRequest" => {
             let output = svc.get_delegation_request(
                 ctx,
@@ -16943,7 +18575,18 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "GetMFADevice" => Err(AwsError::not_implemented("iam", "GetMFADevice")),
+        "GetMFADevice" => {
+            let output = svc.get_mfa_device(ctx, GetMFADeviceRequest::read_members(params, "")?)?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "GetMFADevice",
+                Some("GetMFADeviceResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "GetOpenIDConnectProvider" => {
             let output = svc.get_open_id_connect_provider(
                 ctx,
@@ -17645,8 +19288,36 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "ListVirtualMFADevices" => Err(AwsError::not_implemented("iam", "ListVirtualMFADevices")),
-        "PutAccountProperties" => Err(AwsError::not_implemented("iam", "PutAccountProperties")),
+        "ListVirtualMFADevices" => {
+            let output = svc.list_virtual_mfa_devices(
+                ctx,
+                ListVirtualMFADevicesRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "ListVirtualMFADevices",
+                Some("ListVirtualMFADevicesResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
+        "PutAccountProperties" => {
+            let output = svc.put_account_properties(
+                ctx,
+                PutAccountPropertiesRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "PutAccountProperties",
+                Some("PutAccountPropertiesResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "PutGroupPolicy" => {
             let output =
                 svc.put_group_policy(ctx, PutGroupPolicyRequest::read_members(params, "")?)?;
@@ -17836,9 +19507,35 @@ pub fn dispatch<S: Service + ?Sized>(
                 &w.finish(),
             ))
         }
-        "SimulateCustomPolicy" => Err(AwsError::not_implemented("iam", "SimulateCustomPolicy")),
+        "SimulateCustomPolicy" => {
+            let output = svc.simulate_custom_policy(
+                ctx,
+                SimulateCustomPolicyRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "SimulateCustomPolicy",
+                Some("SimulateCustomPolicyResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
+        }
         "SimulatePrincipalPolicy" => {
-            Err(AwsError::not_implemented("iam", "SimulatePrincipalPolicy"))
+            let output = svc.simulate_principal_policy(
+                ctx,
+                SimulatePrincipalPolicyRequest::read_members(params, "")?,
+            )?;
+            let mut w = XmlWriter::new();
+            output.write_members(&mut w);
+            Ok(query_response(
+                NAMESPACE,
+                "SimulatePrincipalPolicy",
+                Some("SimulatePrincipalPolicyResult"),
+                &ctx.request_id,
+                &w.finish(),
+            ))
         }
         "TagInstanceProfile" => {
             let output = svc

@@ -3,7 +3,10 @@
 
 use roto_core::{AwsError, RawResponse, RequestContext};
 use roto_protocol::query::join_key;
-use roto_protocol::{QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response};
+use roto_protocol::{
+    Blob, QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response,
+};
+use std::collections::BTreeMap;
 
 pub const NAMESPACE: &str = "https://sts.amazonaws.com/doc/2011-06-15/";
 pub const API_VERSION: &str = "2011-06-15";

@@ -135,10 +135,8 @@ impl<'a> Generator<'a> {
             "double" | "float" => Kind::Double,
             "timestamp" => Kind::Time,
             "structure" => Kind::Struct(shape_name.to_string()),
-            "blob" if self.json || self.rest_xml => Kind::Blob,
-            "map" if self.json || self.rest_xml => {
-                Kind::Map(Box::new(self.kind(s["value"]["shape"].as_str().unwrap())))
-            }
+            "blob" => Kind::Blob,
+            "map" => Kind::Map(Box::new(self.kind(s["value"]["shape"].as_str().unwrap()))),
             "list" => {
                 let member = &s["member"];
                 let item = self.kind(member["shape"].as_str().unwrap());
@@ -237,7 +235,7 @@ impl<'a> Generator<'a> {
         } else {
             let ns = meta["xmlNamespace"].as_str().expect("xmlNamespace");
             out.push_str("use roto_protocol::query::join_key;\n");
-            out.push_str("use roto_protocol::{QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response};\n\n");
+            out.push_str("use roto_protocol::{Blob, QueryParams, QueryValue, Timestamp, XmlValue, XmlWriter, query_response};\nuse std::collections::BTreeMap;\n\n");
             let _ = writeln!(out, "pub const NAMESPACE: &str = {ns:?};");
         }
         let _ = writeln!(
@@ -312,6 +310,24 @@ impl<'a> Generator<'a> {
         v
     }
 
+    /// `(key element, value element, flattened)` for a map member in the query protocol.
+    fn map_meta(&self, shape: &str, member: &str) -> (String, String, bool) {
+        let m = &self.shape(shape)["members"][member];
+        let map = self.shape(m["shape"].as_str().unwrap_or(""));
+        (
+            map["key"]["locationName"]
+                .as_str()
+                .unwrap_or("key")
+                .to_string(),
+            map["value"]["locationName"]
+                .as_str()
+                .unwrap_or("value")
+                .to_string(),
+            m["flattened"].as_bool().unwrap_or(false)
+                || map["flattened"].as_bool().unwrap_or(false),
+        )
+    }
+
     fn gen_struct(&self, out: &mut String, shape: &str) {
         let name = pascal(shape);
         let members = self.members(shape);
@@ -362,6 +378,14 @@ impl<'a> Generator<'a> {
                         field(m)
                     );
                 }
+                Kind::Map(_) => {
+                    let (kn, vn, flat) = self.map_meta(shape, m);
+                    let _ = writeln!(
+                        out,
+                        "            {}: p.map(prefix, {wire:?}, {kn:?}, {vn:?}, {flat})?,",
+                        field(m)
+                    );
+                }
                 _ if *req => {
                     let _ = writeln!(
                         out,
@@ -396,6 +420,14 @@ impl<'a> Generator<'a> {
                     let _ = writeln!(
                         out,
                         "        w.list({wire:?}, {item_name:?}, {flattened}, &self.{});",
+                        field(m)
+                    );
+                }
+                Kind::Map(_) => {
+                    let (kn, vn, flat) = self.map_meta(shape, m);
+                    let _ = writeln!(
+                        out,
+                        "        if !self.{0}.is_empty() {{ w.map({wire:?}, {flat}, {kn:?}, {vn:?}, &self.{0}); }}",
                         field(m)
                     );
                 }
