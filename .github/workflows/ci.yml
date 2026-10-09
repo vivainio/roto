@@ -26,3 +26,4 @@ jobs:
           scripts/run-moto-tests.sh test_sts
           scripts/run-moto-tests.sh test_sqs
           scripts/run-moto-tests.sh test_s3
+          scripts/run-moto-tests.sh test_iam
