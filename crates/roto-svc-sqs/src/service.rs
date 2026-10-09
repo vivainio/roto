@@ -621,20 +621,20 @@ fn receive_once(
         if out.len() >= max {
             break;
         }
-        if let Some((dlq_name, max_receives)) = &redrive {
-            if row.receive_count >= *max_receives {
-                if let Some(dlq) = load_queue(tx, &q.account, &q.region, dlq_name)? {
-                    tx.execute(
-                        "INSERT INTO messages (queue_id, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at,
-                                               group_id, dedup_id, sender_id)
-                         SELECT ?1, message_id, body, md5, attrs, md5_attrs, ?2, ?2, group_id, NULL, sender_id
-                         FROM messages WHERE seq = ?3",
-                        params![dlq.id, now, row.seq],
-                    )?;
-                }
-                tx.execute("DELETE FROM messages WHERE seq = ?1", params![row.seq])?;
-                continue;
+        if let Some((dlq_name, max_receives)) = &redrive
+            && row.receive_count >= *max_receives
+        {
+            if let Some(dlq) = load_queue(tx, &q.account, &q.region, dlq_name)? {
+                tx.execute(
+                    "INSERT INTO messages (queue_id, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at,
+                                           group_id, dedup_id, sender_id, trace_header)
+                     SELECT ?1, message_id, body, md5, attrs, md5_attrs, ?2, ?2, group_id, NULL, sender_id, trace_header
+                     FROM messages WHERE seq = ?3",
+                    params![dlq.id, now, row.seq],
+                )?;
             }
+            tx.execute("DELETE FROM messages WHERE seq = ?1", params![row.seq])?;
+            continue;
         }
         let handle = format!("{}{}", new_id().replace('-', ""), new_id().replace('-', ""));
         let first = row.first_received_at.unwrap_or(now);
