@@ -14,6 +14,10 @@ aws --endpoint-url http://localhost:5070 sts get-caller-identity
 scripts/run-moto-tests.sh test_sts              # moto's own tests, run against roto
 ```
 
+Lambda functions can execute local commands or POST events to an HTTP API. Configure bindings
+with `--lambda-executors`; see the [runnable example and contracts](examples/lambda/README.md).
+S3 bucket notifications invoke those same executors.
+
 ## Documentation
 
 ```sh

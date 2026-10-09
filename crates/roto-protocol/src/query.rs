@@ -31,6 +31,12 @@ impl QueryParams {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }
+    pub fn get_all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0
+            .iter()
+            .filter(move |(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
 
     /// Whether any parameter is `key` or starts with `key.`.
     pub fn has_prefix(&self, key: &str) -> bool {

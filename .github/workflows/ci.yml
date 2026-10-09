@@ -31,3 +31,5 @@ jobs:
           scripts/run-moto-tests.sh test_ssm
           scripts/run-moto-tests.sh test_secretsmanager
           scripts/run-moto-tests.sh test_sns
+      - name: Lambda executor SDK smoke (command, HTTP, S3 to SQS)
+        run: .venv-moto/bin/python scripts/smoke-lambda.py

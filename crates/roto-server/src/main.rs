@@ -32,6 +32,9 @@ struct Args {
     durable: bool,
     #[arg(long, default_value = "123456789012", env = "ROTO_ACCOUNT_ID")]
     account_id: String,
+    /// JSON bindings from Lambda function names/ARNs to local command or HTTP executors.
+    #[arg(long)]
+    lambda_executors: Option<PathBuf>,
 }
 
 struct App {
@@ -77,7 +80,21 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
-    let s3 = roto_svc_s3::S3Handler::new(&store).unwrap_or_else(|e| {
+    let executors = args
+        .lambda_executors
+        .as_deref()
+        .map(roto_svc_lambda::Executors::load)
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("error loading Lambda executors: {e}");
+            std::process::exit(1);
+        })
+        .unwrap_or_default();
+    let lambda = roto_svc_lambda::LambdaHandler::new(&store, executors).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let s3 = roto_svc_s3::S3Handler::with_lambda(&store, lambda.0.clone()).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
@@ -107,6 +124,7 @@ async fn main() {
         Arc::new(ssm),
         Arc::new(secretsmanager),
         Arc::new(sns),
+        Arc::new(lambda),
     ];
     let app = Arc::new(App {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),

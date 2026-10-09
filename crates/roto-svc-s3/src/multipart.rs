@@ -266,6 +266,7 @@ pub(crate) fn complete(
         let mut attrs = up.attrs.clone();
         attrs.headers.insert("mp_parts".into(), layout.join(","));
         let o = s3.store_object(tx, &b, &up.key, &data, etag.clone(), attrs)?;
+        crate::notifications::record(tx, ctx, &b, &up.key, "ObjectCreated:CompleteMultipartUpload", Some(&o))?;
         tx.execute("DELETE FROM uploads WHERE upload_id = ?1", params![i.upload_id])?;
         s3.blobs.remove_dir(&format!(".roto/{}/uploads/{}", i.bucket, i.upload_id)).map_err(io)?;
         Ok(CompleteMultipartUploadOutput {

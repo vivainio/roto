@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
+mod restjson;
 mod restxml;
 
 fn main() {
@@ -53,6 +54,8 @@ const RAW_SHAPES: &[(&str, &str)] = &[("DynamoDB", "AttributeValue")];
 /// `(serviceId, shape, member)`: collections that are always present in JSON responses, even when
 /// empty (DynamoDB lists `Items: []`; most services omit empty lists).
 const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
+    ("Lambda", "ListFunctionsResponse", "Functions"),
+    ("Lambda", "ListTagsResponse", "Tags"),
     ("DynamoDB", "ListTablesOutput", "TableNames"),
     ("DynamoDB", "ListTagsOfResourceOutput", "Tags"),
     ("DynamoDB", "QueryOutput", "Items"),
@@ -98,19 +101,21 @@ struct Generator<'a> {
     model: &'a Value,
     json: bool,
     rest_xml: bool,
+    rest_json: bool,
 }
 
 impl<'a> Generator<'a> {
     fn new(model: &'a Value) -> Self {
         let proto = model["metadata"]["protocol"].as_str().unwrap_or("");
         assert!(
-            matches!(proto, "query" | "json" | "rest-xml"),
+            matches!(proto, "query" | "json" | "rest-xml" | "rest-json"),
             "unsupported protocol {proto}"
         );
         Self {
             model,
-            json: proto == "json",
+            json: matches!(proto, "json" | "rest-json"),
             rest_xml: proto == "rest-xml",
+            rest_json: proto == "rest-json",
         }
     }
 
@@ -277,6 +282,9 @@ impl<'a> Generator<'a> {
         }
         self.gen_trait(&mut out, &ops, &unsupported);
         self.gen_dispatch(&mut out, &ops, &unsupported);
+        if self.rest_json {
+            self.gen_rest_json(&mut out);
+        }
         out
     }
 
