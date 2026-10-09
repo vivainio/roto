@@ -1,0 +1,6 @@
+# Test-runner dependencies; moto itself is used only as a library by the test code.
+moto[all,server]==5.0.11
+pytest
+pytest-order
+freezegun
+requests

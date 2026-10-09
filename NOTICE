@@ -1,0 +1,9 @@
+roto
+Copyright (c) 2026 Ville Vainio (MIT License)
+
+This product includes material derived from third parties, used under the Apache License 2.0:
+
+- moto (https://github.com/getmoto/moto), Copyright moto contributors.
+  The tests under tests/moto/ are vendored unmodified from moto; see tests/moto/LICENSE-moto.
+- botocore service models (https://github.com/boto/botocore), Copyright Amazon.com, Inc.
+  The JSON models under models/ are derived from botocore's service-2.json files.

@@ -1,0 +1,10 @@
+[package]
+name = "roto-svc-sts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+roto-core = { version = "0.0.1", path = "../roto-core" }
+roto-protocol = { version = "0.0.1", path = "../roto-protocol" }

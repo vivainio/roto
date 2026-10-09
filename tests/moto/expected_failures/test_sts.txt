@@ -1,0 +1,25 @@
+# Known failures for test_sts (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_sts)
+tests/test_sts/test_sts.py::test_assume_role[cn-north-1-aws-cn]
+tests/test_sts/test_sts.py::test_assume_role[us-east-1-aws]
+tests/test_sts/test_sts.py::test_assume_role[us-isob-east-1-aws-iso-b]
+tests/test_sts/test_sts.py::test_assume_role_with_saml
+tests/test_sts/test_sts.py::test_assume_role_with_saml_should_not_rely_on_attribute_order
+tests/test_sts/test_sts.py::test_assume_role_with_saml_should_respect_xml_namespaces
+tests/test_sts/test_sts.py::test_assume_role_with_saml_when_saml_attribute_not_provided
+tests/test_sts/test_sts.py::test_assume_role_with_saml_when_xml_tag_contains_xmlns_attributes
+tests/test_sts/test_sts.py::test_assume_role_with_web_identity_boto3[cn-north-1-aws-cn]
+tests/test_sts/test_sts.py::test_assume_role_with_web_identity_boto3[us-east-1-aws]
+tests/test_sts/test_sts.py::test_federation_token_with_too_long_policy
+tests/test_sts/test_sts.py::test_get_caller_identity_with_assumed_role_credentials[cn-north-1-aws-cn]
+tests/test_sts/test_sts.py::test_get_caller_identity_with_assumed_role_credentials[us-east-1-aws]
+tests/test_sts/test_sts.py::test_get_caller_identity_with_default_credentials[cn-north-1-aws-cn]
+tests/test_sts/test_sts.py::test_get_caller_identity_with_default_credentials[us-east-1-aws]
+tests/test_sts/test_sts.py::test_get_caller_identity_with_iam_user_credentials[cn-north-1-aws-cn]
+tests/test_sts/test_sts.py::test_get_caller_identity_with_iam_user_credentials[us-east-1-aws]
+tests/test_sts/test_sts.py::test_get_federation_token_boto3
+tests/test_sts/test_sts.py::test_get_session_token_boto3
+tests/test_sts/test_sts.py::test_sts_regions[cn-northwest-1]
+tests/test_sts/test_sts.py::test_sts_regions[us-isob-east-1]
+tests/test_sts/test_sts_integration.py::TestStsAssumeRole::test_assume_role_in_different_account
+tests/test_sts/test_sts_integration.py::TestStsAssumeRole::test_assume_role_with_saml_in_different_account
+tests/test_sts/test_sts_integration.py::TestStsAssumeRole::test_dynamodb_supports_multiple_accounts

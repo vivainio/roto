@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Vendor moto's test suite for the given services into tests/moto/ at a pinned tag.
+# Usage: scripts/sync-moto-tests.sh test_sts test_sqs ...
+set -euo pipefail
+MOTO_TAG="${MOTO_TAG:-5.0.11}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+work="$(mktemp -d)"   # downloaded content is untrusted: never execute anything from it
+trap 'rm -rf "$work"' EXIT
+git clone -q --depth 1 --branch "$MOTO_TAG" https://github.com/getmoto/moto.git "$work/moto"
+top="$root/tests/moto"        # NOT a package: a dir named moto with __init__.py would shadow real moto
+dest="$top/tests"           # upstream layout, so `from tests import ...` keeps working
+mkdir -p "$dest"
+cp "$work/moto/LICENSE" "$top/LICENSE-moto"
+cp "$work/moto/tests/__init__.py" "$work/moto/tests/markers.py" "$dest/"
+for svc in "$@"; do
+  rm -rf "$dest/$svc"
+  cp -r "$work/moto/tests/$svc" "$dest/$svc"
+  find "$dest/$svc" -name __pycache__ -prune -exec rm -rf {} +
+done
+echo "$MOTO_TAG" > "$top/MOTO_VERSION"
+# Tests that drive moto's Python internals in-process cannot target a different server.
+(cd "$dest" && grep -rlE 'create_backend_app|moto\.server|_backends|backends\[|moto_server|ThreadedMotoServer' --include='*.py' "$@" 2>/dev/null | sort) \
+  > "$top/not_portable.txt" || true
+echo "synced: $* (moto $MOTO_TAG)"

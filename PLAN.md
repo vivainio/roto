@@ -58,7 +58,11 @@ $ROTO_DATA_DIR/s3/
 
 ## Testing
 1. Differential tests: same boto3 scripts vs moto_server and roto; diff normalised responses (mask IDs/timestamps/ordering).
-2. Port moto's own per-service tests, run via boto3 against roto.
+2. **Moto's own test suite, vendored unmodified** (`tests/moto/tests/<service>`, pinned by `MOTO_VERSION`, Apache-2.0, see NOTICE) and run in moto's `TEST_SERVER_MODE` against roto on port 5000 (roto also serves `POST /moto-api/reset`).
+   - `scripts/sync-moto-tests.sh <test_dir>...` vendors services; `scripts/run-moto-tests.sh <test_dir>` runs them.
+   - Tests that drive moto internals in-process (Flask test client, backends) cannot target another server; the sync script lists them in `tests/moto/not_portable.txt` and they are ignored. Their intent gets re-implemented as native Rust tests instead.
+   - `tests/moto/expected_failures/<service>.txt` is the baseline of known failures (deselected). Goal per service: empty list. CI fails on regressions; `UPDATE_EXPECTED=1` re-baselines after progress.
+   - Server-mode caveats: tests relying on `freeze_time` or on `settings.TEST_SERVER_MODE`-guarded branches behave as upstream's server mode does.
 3. SDK smoke: AWS CLI, aws-sdk-rust, aws-sdk-js v3, Terraform AWS provider.
 4. Property/fuzz: codecs, expression parsers, `KeyPath`.
 5. Protocol corpus from botocore's `tests/unit/protocols`.
@@ -75,4 +79,8 @@ $ROTO_DATA_DIR/s3/
 ## Open items
 - Compatibility target: exact moto error messages/IDs vs "good enough for SDKs".
 - Default libs: tokio, hyper/axum, serde, quick-xml, rusqlite, dashmap-free (state is in SQLite).
-- Next step: scaffold Phase 0.
+- Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
+
+## Status
+- Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.
+- Not yet: json/rest-json/rest-xml/ec2 codecs, state-backed services using the store, reset of persisted state, coverage-matrix report.
