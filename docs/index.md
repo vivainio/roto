@@ -10,6 +10,22 @@ with persistent resources that survive server restarts. Point your AWS clients
 at its local endpoint, create your development environment once, and keep using
 its buckets, queues, tables, and other supported resources across sessions.
 
+## Why an open-source LocalStack alternative
+
+LocalStack for AWS is now distributed as commercial software. In March 2026,
+LocalStack replaced its maintained Community edition with a unified distribution
+requiring an account and authentication token. Commercial use requires a
+commercial license; free access remains available for non-commercial use and
+eligible open-source projects. See LocalStack's
+[distribution announcement](https://blog.localstack.cloud/the-road-ahead-for-localstack/)
+and [licensing documentation](https://docs.localstack.cloud/aws/licensing/).
+
+For many organizations that want to avoid subscription procurement, license
+management, and account or token administration for local development and CI,
+that makes LocalStack an impractical choice. roto is intended to offer an
+MIT-licensed alternative that runs locally without a vendor account, license
+key, or subscription.
+
 ## Why persistence comes first
 
 Moto focuses on quick, isolated integration tests with disposable mock state.
