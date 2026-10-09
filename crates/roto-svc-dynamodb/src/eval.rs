@@ -452,7 +452,20 @@ pub fn apply_update(scope: &Scope, item: &mut Item, upd: &UpdateExpr) -> Result<
     for (path, v) in computed {
         set_in_map(item, path, v)?;
     }
-    for path in &upd.remove {
+    // Indexes refer to the original list, so remove from the back.
+    let mut removals: Vec<&Path> = upd.remove.iter().collect();
+    removals.sort_by(|a, b| {
+        let key = |p: &Path| {
+            p.iter()
+                .map(|e| match e {
+                    PathElem::Index(i) => (1, String::new(), *i),
+                    PathElem::Attr(a) => (0, a.clone(), 0),
+                })
+                .collect::<Vec<_>>()
+        };
+        key(b).cmp(&key(a))
+    });
+    for path in removals {
         remove_in_map(item, path);
     }
     for (path, op) in &upd.add {

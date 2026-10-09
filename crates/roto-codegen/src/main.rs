@@ -50,6 +50,20 @@ enum Kind {
 /// `(serviceId, shape)` pairs carried as raw JSON instead of a generated struct.
 const RAW_SHAPES: &[(&str, &str)] = &[("DynamoDB", "AttributeValue")];
 
+/// `(serviceId, shape, member)`: collections that are always present in JSON responses, even when
+/// empty (DynamoDB lists `Items: []`; most services omit empty lists).
+const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
+    ("DynamoDB", "ListTablesOutput", "TableNames"),
+    ("DynamoDB", "ListTagsOfResourceOutput", "Tags"),
+    ("DynamoDB", "QueryOutput", "Items"),
+    ("DynamoDB", "ScanOutput", "Items"),
+    ("DynamoDB", "BatchGetItemOutput", "Responses"),
+    ("DynamoDB", "BatchGetItemOutput", "UnprocessedKeys"),
+    ("DynamoDB", "BatchWriteItemOutput", "UnprocessedItems"),
+    ("DynamoDB", "TransactGetItemsOutput", "Responses"),
+    ("DynamoDB", "ListBackupsOutput", "BackupSummaries"),
+];
+
 /// operation -> (input shape, output shape, result wrapper)
 type Ops = BTreeMap<String, (Option<String>, Option<String>, Option<String>)>;
 
@@ -467,7 +481,9 @@ impl Generator<'_> {
         let _ = writeln!(out, "impl ToJson for {name} {{");
         out.push_str("    fn to_json(&self) -> Value {\n        let mut o = Map::new();\n");
         for (m, wire, k, req) in members {
-            if !coll(k) && *req {
+            let service_id = self.model["metadata"]["serviceId"].as_str().unwrap_or("");
+            let always = ALWAYS_EMIT.contains(&(service_id, name, wire.as_str()));
+            if (!coll(k) && *req) || (coll(k) && always) {
                 let _ = writeln!(
                     out,
                     "        o.insert({wire:?}.into(), self.{}.to_json());",

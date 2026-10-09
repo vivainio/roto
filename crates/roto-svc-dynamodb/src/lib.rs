@@ -10,6 +10,7 @@
 #[allow(clippy::all)]
 mod generated;
 
+mod backups;
 mod batch;
 mod eval;
 mod expr;
@@ -70,6 +71,26 @@ CREATE TABLE items (
         version: 2,
         sql: "ALTER TABLE tables ADD COLUMN pitr INTEGER NOT NULL DEFAULT 0;",
     },
+    Migration {
+        version: 3,
+        sql: "
+CREATE TABLE backups (
+    arn TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    table_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    meta TEXT NOT NULL
+);
+CREATE TABLE backup_items (
+    arn TEXT NOT NULL,
+    hk BLOB NOT NULL,
+    rk BLOB NOT NULL,
+    item TEXT NOT NULL,
+    PRIMARY KEY (arn, hk, rk)
+) WITHOUT ROWID;
+",
+    },
 ];
 
 /// Operations with real behaviour; the rest answer `NotImplemented`.
@@ -98,6 +119,12 @@ pub const IMPLEMENTED: &[&str] = &[
     "DescribeLimits",
     "DescribeContinuousBackups",
     "UpdateContinuousBackups",
+    "CreateBackup",
+    "DescribeBackup",
+    "ListBackups",
+    "DeleteBackup",
+    "RestoreTableFromBackup",
+    "RestoreTableToPointInTime",
 ];
 
 pub struct DynamoDbHandler(pub Arc<DynamoDb>);

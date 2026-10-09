@@ -81,6 +81,12 @@ $ROTO_DATA_DIR/s3/
 - Default libs: tokio, hyper/axum, serde, quick-xml, rusqlite, dashmap-free (state is in SQLite).
 - Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
 
+## Target services (what the user's stack actually uses)
+`s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam` (plus STS, which clients need for identity).
+Everything else in moto is out of scope. Order after DynamoDB: **SNS, SSM, Secrets Manager, KMS, Kinesis**, then
+**IAM completion** (managed policies, groups, instance profiles) and **Lambda** (needs a code-execution story).
+Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
+
 ## Status
 - Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.
 - Phase 1 started: JSON 1.0/1.1 codec + codegen (maps, blobs, required members as plain values); **SQS** service on SQLite (queues, messages, receipt-handle history, DLQ redrive, FIFO + dedup, long polling, batch ops, permissions, tags) - 131/139 of moto's `test_sqs` pass against roto; the 8 failures need CloudFormation (7) and STS AssumeRole (1) and are in `tests/moto/expected_failures/test_sqs.txt`.

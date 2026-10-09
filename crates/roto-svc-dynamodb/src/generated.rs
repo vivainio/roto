@@ -687,12 +687,8 @@ impl ToJson for BatchGetItemOutput {
         if !self.consumed_capacity.is_empty() {
             o.insert("ConsumedCapacity".into(), self.consumed_capacity.to_json());
         }
-        if !self.responses.is_empty() {
-            o.insert("Responses".into(), self.responses.to_json());
-        }
-        if !self.unprocessed_keys.is_empty() {
-            o.insert("UnprocessedKeys".into(), self.unprocessed_keys.to_json());
-        }
+        o.insert("Responses".into(), self.responses.to_json());
+        o.insert("UnprocessedKeys".into(), self.unprocessed_keys.to_json());
         Value::Object(o)
     }
 }
@@ -877,9 +873,7 @@ impl ToJson for BatchWriteItemOutput {
                 self.item_collection_metrics.to_json(),
             );
         }
-        if !self.unprocessed_items.is_empty() {
-            o.insert("UnprocessedItems".into(), self.unprocessed_items.to_json());
-        }
+        o.insert("UnprocessedItems".into(), self.unprocessed_items.to_json());
         Value::Object(o)
     }
 }
@@ -4686,9 +4680,7 @@ impl FromJson for ListBackupsOutput {
 impl ToJson for ListBackupsOutput {
     fn to_json(&self) -> Value {
         let mut o = Map::new();
-        if !self.backup_summaries.is_empty() {
-            o.insert("BackupSummaries".into(), self.backup_summaries.to_json());
-        }
+        o.insert("BackupSummaries".into(), self.backup_summaries.to_json());
         if let Some(v) = &self.last_evaluated_backup_arn {
             o.insert("LastEvaluatedBackupArn".into(), v.to_json());
         }
@@ -5016,9 +5008,7 @@ impl ToJson for ListTablesOutput {
         if let Some(v) = &self.last_evaluated_table_name {
             o.insert("LastEvaluatedTableName".into(), v.to_json());
         }
-        if !self.table_names.is_empty() {
-            o.insert("TableNames".into(), self.table_names.to_json());
-        }
+        o.insert("TableNames".into(), self.table_names.to_json());
         Value::Object(o)
     }
 }
@@ -5075,9 +5065,7 @@ impl ToJson for ListTagsOfResourceOutput {
         if let Some(v) = &self.next_token {
             o.insert("NextToken".into(), v.to_json());
         }
-        if !self.tags.is_empty() {
-            o.insert("Tags".into(), self.tags.to_json());
-        }
+        o.insert("Tags".into(), self.tags.to_json());
         Value::Object(o)
     }
 }
@@ -5921,9 +5909,7 @@ impl ToJson for QueryOutput {
         if let Some(v) = &self.count {
             o.insert("Count".into(), v.to_json());
         }
-        if !self.items.is_empty() {
-            o.insert("Items".into(), self.items.to_json());
-        }
+        o.insert("Items".into(), self.items.to_json());
         if !self.last_evaluated_key.is_empty() {
             o.insert("LastEvaluatedKey".into(), self.last_evaluated_key.to_json());
         }
@@ -7172,9 +7158,7 @@ impl ToJson for ScanOutput {
         if let Some(v) = &self.count {
             o.insert("Count".into(), v.to_json());
         }
-        if !self.items.is_empty() {
-            o.insert("Items".into(), self.items.to_json());
-        }
+        o.insert("Items".into(), self.items.to_json());
         if !self.last_evaluated_key.is_empty() {
             o.insert("LastEvaluatedKey".into(), self.last_evaluated_key.to_json());
         }
@@ -8050,9 +8034,7 @@ impl ToJson for TransactGetItemsOutput {
         if !self.consumed_capacity.is_empty() {
             o.insert("ConsumedCapacity".into(), self.consumed_capacity.to_json());
         }
-        if !self.responses.is_empty() {
-            o.insert("Responses".into(), self.responses.to_json());
-        }
+        o.insert("Responses".into(), self.responses.to_json());
         Value::Object(o)
     }
 }

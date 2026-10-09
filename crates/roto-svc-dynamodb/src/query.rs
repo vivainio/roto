@@ -619,6 +619,11 @@ pub(crate) fn query(
     ctx: &RequestContext,
     i: QueryInput,
 ) -> Result<QueryOutput, AwsError> {
+    if i.key_condition_expression.is_none() && i.key_conditions.is_empty() {
+        return Err(ve(
+            "Either the KeyConditions or KeyConditionExpression parameter must be specified in the request.",
+        ));
+    }
     d.db.transaction(|tx| {
         let t = Table::load(tx, ctx, &i.table_name)?;
         let table_schema = t.schema()?;

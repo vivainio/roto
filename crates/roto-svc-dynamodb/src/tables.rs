@@ -67,9 +67,19 @@ fn validate_definitions(
     }
     let defined: BTreeSet<&str> = defs.iter().map(|d| d.attribute_name.as_str()).collect();
     if used.iter().any(|u| !defined.contains(u.as_str())) {
-        return Err(invalid_param(
-            "Invalid Key Schema: a key attribute is not defined in AttributeDefinitions",
-        ));
+        let missing: Vec<&str> = used
+            .iter()
+            .filter(|u| !defined.contains(u.as_str()))
+            .map(String::as_str)
+            .collect();
+        return Err(ve(format!(
+            "Some index key attributes are not defined in AttributeDefinitions. Keys: [{}], AttributeDefinitions: [{}]",
+            missing.join(", "),
+            defs.iter()
+                .map(|d| d.attribute_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
     }
     if defined.len() != used.len() {
         return Err(invalid_param(

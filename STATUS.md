@@ -12,7 +12,8 @@ is a regression.
 | **SQS** | 19 / 23 | 132 / 139 (6 skipped upstream) | 7 failures need CloudFormation. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
 | **S3** | 66 / 116 | 235 / 368 (59 skipped) | See [S3](#s3) below. |
 | **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
-| DynamoDB, Lambda, SNS, … | not started | – | See `PLAN.md`. |
+| **DynamoDB** | 36 / 57 | 411 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
+| SNS, SSM, Secrets Manager, KMS, Kinesis, Lambda | not started | – | The rest of the target set: `s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam`. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -85,5 +86,4 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 
 ## Next
 
-DynamoDB (JSON 1.0, expression parser), then the long tails: IAM managed policies and groups,
-S3 object lock and checksums. See `PLAN.md`.
+SNS, SSM, Secrets Manager, KMS, Kinesis, then IAM managed policies/groups and Lambda. See `PLAN.md`.

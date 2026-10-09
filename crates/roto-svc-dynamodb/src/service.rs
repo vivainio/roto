@@ -31,6 +31,8 @@ impl DynamoDb {
         self.db.transaction(|tx| {
             tx.execute("DELETE FROM items", [])?;
             tx.execute("DELETE FROM tables", [])?;
+            tx.execute("DELETE FROM backup_items", [])?;
+            tx.execute("DELETE FROM backups", [])?;
             Ok(())
         })
     }
@@ -277,6 +279,10 @@ fn remove_item(tx: &Transaction, t: &Table, hk: &[u8], rk: &[u8]) -> Result<(), 
 
 /// Checks every value of a client-supplied item and the item size.
 fn validate_item(item: &Item) -> Result<(), AwsError> {
+    validate_item_for(item, false)
+}
+
+fn validate_item_for(item: &Item, update: bool) -> Result<(), AwsError> {
     for (k, v) in item {
         if k.is_empty() {
             return Err(invalid_param("Empty attribute name"));
@@ -284,7 +290,11 @@ fn validate_item(item: &Item) -> Result<(), AwsError> {
         value::validate(v).map_err(|e| invalid_param(&e))?;
     }
     if value::item_size(item) > MAX_ITEM_SIZE {
-        return Err(ve("Item size has exceeded the maximum allowed size"));
+        return Err(ve(if update {
+            "Item size to update has exceeded the maximum allowed size"
+        } else {
+            "Item size has exceeded the maximum allowed size"
+        }));
     }
     Ok(())
 }
@@ -337,9 +347,12 @@ fn check_index_key_types(t: &Table, item: &Item) -> Result<(), AwsError> {
 }
 
 fn return_values(rv: &Option<String>, allowed: &[&str]) -> Result<String, AwsError> {
+    const ENUM: [&str; 5] = ["NONE", "ALL_OLD", "UPDATED_OLD", "ALL_NEW", "UPDATED_NEW"];
     let v = rv.clone().unwrap_or_else(|| "NONE".into());
     if allowed.contains(&v.as_str()) {
         Ok(v)
+    } else if ENUM.contains(&v.as_str()) {
+        Err(ve("Return values set to invalid value"))
     } else {
         Err(ve(format!(
             "1 validation error detected: Value '{v}' at 'returnValues' failed to satisfy constraint: Member must satisfy enum value set: [ALL_NEW, UPDATED_OLD, ALL_OLD, NONE, UPDATED_NEW]"
@@ -458,6 +471,7 @@ fn check_projection_names(
 fn legacy_update(
     updates: &BTreeMap<String, AttributeValueUpdate>,
     key_names: &[String],
+    existing: &Item,
 ) -> Result<(UpdateExpr, Map<String, Value>), AwsError> {
     let mut u = UpdateExpr::default();
     let mut vals = Map::new();
@@ -479,7 +493,22 @@ fn legacy_update(
             }
             ("ADD", Some(v)) => {
                 vals.insert(ph.clone(), v.0.clone());
-                u.add.push((path, Operand::Placeholder(ph)));
+                // Legacy ADD on a list appends the given elements.
+                let is_list = value::type_of(&v.0) == Some("L");
+                if is_list && existing.contains_key(name) {
+                    u.set.push((
+                        path.clone(),
+                        SetValue::Operand(Operand::Func(
+                            "list_append".into(),
+                            vec![Operand::Path(path), Operand::Placeholder(ph)],
+                        )),
+                    ));
+                } else if is_list {
+                    u.set
+                        .push((path, SetValue::Operand(Operand::Placeholder(ph))));
+                } else {
+                    u.add.push((path, Operand::Placeholder(ph)));
+                }
             }
             ("DELETE", None) => u.remove.push(path),
             ("DELETE", Some(v)) => {
@@ -501,25 +530,23 @@ fn legacy_update(
     Ok((u, vals))
 }
 
-fn touched_attrs(u: &UpdateExpr) -> Vec<String> {
-    let first = |p: &Path| match p.first() {
-        Some(PathElem::Attr(a)) => Some(a.clone()),
-        _ => None,
-    };
+fn touched_paths(u: &UpdateExpr) -> Vec<Path> {
     u.set
         .iter()
-        .map(|(p, _)| p)
-        .chain(u.remove.iter())
-        .chain(u.add.iter().map(|(p, _)| p))
-        .chain(u.delete.iter().map(|(p, _)| p))
-        .filter_map(first)
+        .map(|(p, _)| p.clone())
+        .chain(u.remove.iter().cloned())
+        .chain(u.add.iter().map(|(p, _)| p.clone()))
+        .chain(u.delete.iter().map(|(p, _)| p.clone()))
         .collect()
 }
 
-fn pick(item: &Item, names: &[String]) -> Item {
-    item.iter()
-        .filter(|(k, _)| names.contains(k))
-        .map(|(k, v)| (k.clone(), v.clone()))
+fn touched_attrs(u: &UpdateExpr) -> Vec<String> {
+    touched_paths(u)
+        .iter()
+        .filter_map(|p| match p.first() {
+            Some(PathElem::Attr(a)) => Some(a.clone()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -668,7 +695,11 @@ impl DynamoDb {
         let key_names: Vec<String> = schema.attrs().iter().map(|a| a.name.clone()).collect();
         let (upd, extra) = match update {
             Some(u) => (u, Map::new()),
-            None => legacy_update(&i.attribute_updates, &key_names)?,
+            None => legacy_update(
+                &i.attribute_updates,
+                &key_names,
+                old.as_ref().unwrap_or(&key),
+            )?,
         };
         values.extend(extra);
         // Key attributes cannot be changed.
@@ -689,19 +720,18 @@ impl DynamoDb {
             &upd,
         )
         .map_err(ve)?;
-        validate_item(&item)?;
+        validate_item_for(&item, true)?;
         check_index_key_types(&t, &item)?;
         store_item(tx, &t, &hk, &rk, &item)?;
 
-        let touched = touched_attrs(&upd);
         let attributes = match rv.as_str() {
             "ALL_OLD" => old.as_ref().map(from_item).unwrap_or_default(),
             "ALL_NEW" => from_item(&item),
             "UPDATED_OLD" => old
                 .as_ref()
-                .map(|o| from_item(&pick(o, &touched)))
+                .map(|o| from_item(&project(o, &touched_paths(&upd))))
                 .unwrap_or_default(),
-            "UPDATED_NEW" => from_item(&pick(&item, &touched)),
+            "UPDATED_NEW" => from_item(&project(&item, &touched_paths(&upd))),
             _ => BTreeMap::new(),
         };
         Ok(UpdateItemOutput {
@@ -793,6 +823,48 @@ impl Service for DynamoDb {
         i: UpdateTableInput,
     ) -> Result<UpdateTableOutput, AwsError> {
         crate::tables::update_table(self, ctx, i)
+    }
+    fn create_backup(
+        &self,
+        ctx: &RequestContext,
+        i: CreateBackupInput,
+    ) -> Result<CreateBackupOutput, AwsError> {
+        crate::backups::create(self, ctx, i)
+    }
+    fn describe_backup(
+        &self,
+        ctx: &RequestContext,
+        i: DescribeBackupInput,
+    ) -> Result<DescribeBackupOutput, AwsError> {
+        crate::backups::describe(self, ctx, i)
+    }
+    fn list_backups(
+        &self,
+        ctx: &RequestContext,
+        i: ListBackupsInput,
+    ) -> Result<ListBackupsOutput, AwsError> {
+        crate::backups::list(self, ctx, i)
+    }
+    fn delete_backup(
+        &self,
+        ctx: &RequestContext,
+        i: DeleteBackupInput,
+    ) -> Result<DeleteBackupOutput, AwsError> {
+        crate::backups::delete(self, ctx, i)
+    }
+    fn restore_table_from_backup(
+        &self,
+        ctx: &RequestContext,
+        i: RestoreTableFromBackupInput,
+    ) -> Result<RestoreTableFromBackupOutput, AwsError> {
+        crate::backups::restore_from_backup(self, ctx, i)
+    }
+    fn restore_table_to_point_in_time(
+        &self,
+        ctx: &RequestContext,
+        i: RestoreTableToPointInTimeInput,
+    ) -> Result<RestoreTableToPointInTimeOutput, AwsError> {
+        crate::backups::restore_to_point_in_time(self, ctx, i)
     }
     fn batch_get_item(
         &self,
@@ -898,9 +970,17 @@ pub(crate) fn schema_for_index(
             if let Some(l) = t.lsis.iter().find(|l| &l.index_name == name) {
                 return Ok((t.schema_of(&l.key_schema)?, Some(l.projection.clone())));
             }
-            Err(ve(format!(
-                "The table does not have the specified index: {name}"
-            )))
+            let mut available: Vec<&str> = t.gsis.iter().map(|g| g.index_name.as_str()).collect();
+            available.extend(t.lsis.iter().map(|l| l.index_name.as_str()));
+            Err(AwsError::sender(
+                400,
+                "ResourceNotFoundException",
+                format!(
+                    "Invalid index: {name} for table: {}. Available indexes are: {}",
+                    t.name,
+                    available.join(", ")
+                ),
+            ))
         }
     }
 }

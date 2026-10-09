@@ -514,10 +514,10 @@ pub(crate) fn describe_endpoints(ctx: &RequestContext) -> DescribeEndpointsRespo
 
 pub(crate) fn describe_limits() -> DescribeLimitsOutput {
     DescribeLimitsOutput {
-        account_max_read_capacity_units: Some(80_000),
-        account_max_write_capacity_units: Some(80_000),
-        table_max_read_capacity_units: Some(40_000),
-        table_max_write_capacity_units: Some(40_000),
+        account_max_read_capacity_units: Some(20_000),
+        account_max_write_capacity_units: Some(20_000),
+        table_max_read_capacity_units: Some(10_000),
+        table_max_write_capacity_units: Some(10_000),
     }
 }
 

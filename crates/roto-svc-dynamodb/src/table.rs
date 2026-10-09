@@ -144,6 +144,67 @@ impl Table {
             .optional()?)
     }
 
+    /// The table definition as JSON (for backups).
+    pub fn to_meta(&self) -> String {
+        let arr = |v: Vec<serde_json::Value>| serde_json::Value::Array(v);
+        serde_json::json!({
+            "key_schema": arr(self.key_schema.iter().map(ToJson::to_json).collect()),
+            "attr_defs": arr(self.attr_defs.iter().map(ToJson::to_json).collect()),
+            "gsis": arr(self.gsis.iter().map(ToJson::to_json).collect()),
+            "lsis": arr(self.lsis.iter().map(ToJson::to_json).collect()),
+            "billing_mode": self.billing_mode,
+            "throughput": self.throughput.as_ref().map(ToJson::to_json),
+            "stream": self.stream.as_ref().map(ToJson::to_json),
+            "tags": arr(self.tags.iter().map(ToJson::to_json).collect()),
+            "sse": self.sse.as_ref().map(ToJson::to_json),
+            "table_class": self.table_class,
+            "deletion_protection": self.deletion_protection,
+        })
+        .to_string()
+    }
+
+    pub fn from_meta(
+        meta: &str,
+        id: &str,
+        name: &str,
+        ctx: &RequestContext,
+        created_at: i64,
+    ) -> Table {
+        let m: serde_json::Value = serde_json::from_str(meta).unwrap_or_default();
+        let list = |k: &str| m[k].to_string();
+        let opt = |k: &str| {
+            if m[k].is_null() {
+                None
+            } else {
+                Some(m[k].to_string())
+            }
+        };
+        Table {
+            id: id.to_string(),
+            account: ctx.account_id.clone(),
+            region: ctx.region.clone(),
+            name: name.to_string(),
+            created_at,
+            key_schema: from_list(&list("key_schema")),
+            attr_defs: from_list(&list("attr_defs")),
+            gsis: from_list(&list("gsis")),
+            lsis: from_list(&list("lsis")),
+            billing_mode: m["billing_mode"]
+                .as_str()
+                .unwrap_or("PROVISIONED")
+                .to_string(),
+            throughput: from_opt(opt("throughput")),
+            stream: from_opt(opt("stream")),
+            tags: from_list(&list("tags")),
+            ttl_attr: None,
+            ttl_enabled: false,
+            deletion_protection: m["deletion_protection"].as_bool().unwrap_or(false),
+            sse: from_opt(opt("sse")),
+            table_class: m["table_class"].as_str().map(String::from),
+            pitr: false,
+        }
+    }
+
     pub fn insert(&self, tx: &Transaction) -> Result<(), AwsError> {
         tx.execute(
             "INSERT INTO tables (account_id, region, name, table_id, created_at, key_schema, attr_defs, gsis, lsis,
