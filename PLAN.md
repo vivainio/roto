@@ -204,3 +204,14 @@ row models separate from generated AWS models. Persistence, rollback, ephemeral-
 isolation and inspection access have native coverage. The IAM Moto baseline remains
 133 passing, 13 skipped and 216 excluded; the seeded demo and workspace tests pass.
 Remaining services retain `rusqlite` for incremental conversion.
+
+
+## SSM Diesel port (2026-10-10)
+
+Parameter Store now uses typed Diesel records and queries for parameter versions,
+labels, resource tags and scoped latest-version selection. The Moto baseline stays
+75 passing, 2 skipped and 81 excluded. Native tests cover restart persistence,
+account/region isolation with identical names, SecureString reads, label moves,
+tag updates, history pagination, reset and the labeled-oldest-version pruning guard.
+Secrets Manager and KMS are the next small CRUD candidates; S3, DynamoDB, SQS and
+Lambda need more care around storage and delivery behavior.

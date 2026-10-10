@@ -9,7 +9,9 @@
 
 #[allow(clippy::all)]
 mod generated;
+mod models;
 mod parameters;
+mod schema;
 
 use std::sync::Arc;
 
