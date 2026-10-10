@@ -1,11 +1,16 @@
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::Db;
+use crate::schema::*;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
 use crate::misc::*;
 use crate::util::*;
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name=roles)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct RoleRow {
     pub name: String,
     pub path: String,
@@ -17,29 +22,25 @@ pub struct RoleRow {
     pub permissions_boundary: Option<String>,
 }
 
-pub fn load_role(tx: &Transaction, account: &str, name: &str) -> Result<RoleRow, AwsError> {
-    tx.query_row(
-        "SELECT name, path, role_id, created_at, assume_role_policy, description, max_session_duration,
-                permissions_boundary FROM roles WHERE account_id = ?1 AND name = ?2",
-        params![account, name],
-        |r| {
-            Ok(RoleRow {
-                name: r.get(0)?,
-                path: r.get(1)?,
-                role_id: r.get(2)?,
-                created_at: r.get(3)?,
-                assume_role_policy: r.get(4)?,
-                description: r.get(5)?,
-                max_session_duration: r.get(6)?,
-                permissions_boundary: r.get(7)?,
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| no_such("role", name))
+pub fn load_role(
+    tx: &mut SqliteConnection,
+    account: &str,
+    name: &str,
+) -> Result<RoleRow, AwsError> {
+    roles::table
+        .filter(roles::account_id.eq(account))
+        .filter(roles::name.eq(name))
+        .select(RoleRow::as_select())
+        .first::<RoleRow>(tx)
+        .optional()?
+        .ok_or_else(|| no_such("role", name))
 }
 
-pub fn role_out(tx: &Transaction, ctx: &RequestContext, r: &RoleRow) -> Result<Role, AwsError> {
+pub fn role_out(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    r: &RoleRow,
+) -> Result<Role, AwsError> {
     Ok(Role {
         arn: arn(ctx, &format!("role{}{}", r.path, r.name)),
         assume_role_policy_document: Some(r.assume_role_policy.clone()),
@@ -100,25 +101,24 @@ pub fn create_role(
             return Err(exists("Role", &input.role_name));
         }
         check_tags(0, &input.tags)?;
-        tx.execute(
-            "INSERT INTO roles (account_id, name, path, role_id, created_at, assume_role_policy, description,
-                                max_session_duration, permissions_boundary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                ctx.account_id,
-                input.role_name,
-                path,
-                gen_id("AROA", 17),
-                now(),
-                input.assume_role_policy_document,
-                input.description,
-                duration,
-                input.permissions_boundary
-            ],
-        )?;
+        diesel::insert_into(roles::table)
+            .values((
+                roles::account_id.eq(&ctx.account_id),
+                roles::name.eq(&input.role_name),
+                roles::path.eq(&path),
+                roles::role_id.eq(&gen_id("AROA", 17)),
+                roles::created_at.eq(&now()),
+                roles::assume_role_policy.eq(&input.assume_role_policy_document),
+                roles::description.eq(&input.description),
+                roles::max_session_duration.eq(&duration),
+                roles::permissions_boundary.eq(&input.permissions_boundary),
+            ))
+            .execute(tx)?;
         set_tags(tx, &ctx.account_id, "role", &input.role_name, &input.tags)?;
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
-        Ok(CreateRoleResponse { role: role_out(tx, ctx, &r)? })
+        Ok(CreateRoleResponse {
+            role: role_out(tx, ctx, &r)?,
+        })
     })
 }
 
@@ -143,17 +143,29 @@ pub fn list_roles(
     db.transaction(|tx| {
         let prefix = input.path_prefix.clone().unwrap_or_else(|| "/".into());
         let names: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT name FROM roles WHERE account_id = ?1 AND substr(path, 1, length(?2)) = ?2 ORDER BY name COLLATE NOCASE",
-            )?;
-            stmt.query_map(params![ctx.account_id, prefix], |r| r.get(0))?.collect::<Result<_, _>>()?
+            roles::table
+                .filter(
+                    substr(roles::path, 1, length(literal_prefix(Some(&prefix))))
+                        .eq(literal_prefix(Some(&prefix))),
+                )
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .order(roles::name)
+                .select(roles::name)
+                .load::<String>(tx)?
         };
         let (page, truncated, marker) = paginate(names, input.marker.as_deref(), input.max_items)?;
         let roles = page
             .iter()
-            .map(|n| role_out(tx, ctx, &load_role(tx, &ctx.account_id, n)?))
+            .map(|n| {
+                let row = load_role(tx, &ctx.account_id, n)?;
+                role_out(tx, ctx, &row)
+            })
             .collect::<Result<_, _>>()?;
-        Ok(ListRolesResponse { roles, is_truncated: Some(truncated), marker })
+        Ok(ListRolesResponse {
+            roles,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 
@@ -164,20 +176,54 @@ pub fn delete_role(
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
-        let count = |sql: &str| -> Result<i64, AwsError> {
-            Ok(tx.query_row(sql, params![ctx.account_id, r.name], |row| row.get(0))?)
-        };
-        if count("SELECT COUNT(*) FROM inline_policies WHERE account_id = ?1 AND kind = 'role' AND entity = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must delete policies first."));
+        if inline_policies::table
+            .filter(inline_policies::account_id.eq(&ctx.account_id))
+            .filter(inline_policies::kind.eq("role"))
+            .filter(inline_policies::entity.eq(&r.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must delete policies first.",
+            ));
         }
-        if count("SELECT COUNT(*) FROM attachments WHERE account_id = ?1 AND kind = 'role' AND entity = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must detach all policies first."));
+        if attachments::table
+            .filter(attachments::account_id.eq(&ctx.account_id))
+            .filter(attachments::kind.eq("role"))
+            .filter(attachments::entity.eq(&r.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must detach all policies first.",
+            ));
         }
-        if count("SELECT COUNT(*) FROM profile_roles WHERE account_id = ?1 AND role = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must remove roles from instance profile first."));
+        if profile_roles::table
+            .filter(profile_roles::account_id.eq(&ctx.account_id))
+            .filter(profile_roles::role.eq(&r.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must remove roles from instance profile first.",
+            ));
         }
-        tx.execute("DELETE FROM tags WHERE account_id = ?1 AND kind = 'role' AND entity = ?2", params![ctx.account_id, r.name])?;
-        tx.execute("DELETE FROM roles WHERE account_id = ?1 AND name = ?2", params![ctx.account_id, r.name])?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("role"))
+                .filter(tags::entity.eq(&r.name)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            roles::table
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .filter(roles::name.eq(&r.name)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -191,10 +237,16 @@ pub fn update_role(
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
         let duration = input.max_session_duration.unwrap_or(r.max_session_duration);
         check_session_duration(duration)?;
-        tx.execute(
-            "UPDATE roles SET description = ?1, max_session_duration = ?2 WHERE account_id = ?3 AND name = ?4",
-            params![input.description.or(r.description), duration, ctx.account_id, r.name],
-        )?;
+        diesel::update(
+            roles::table
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .filter(roles::name.eq(&r.name)),
+        )
+        .set((
+            roles::description.eq(&input.description.or(r.description)),
+            roles::max_session_duration.eq(&duration),
+        ))
+        .execute(tx)?;
         Ok(UpdateRoleResponse {})
     })
 }
@@ -206,10 +258,13 @@ pub fn update_role_description(
 ) -> Result<UpdateRoleDescriptionResponse, AwsError> {
     db.transaction(|tx| {
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
-        tx.execute(
-            "UPDATE roles SET description = ?1 WHERE account_id = ?2 AND name = ?3",
-            params![input.description, ctx.account_id, r.name],
-        )?;
+        diesel::update(
+            roles::table
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .filter(roles::name.eq(&r.name)),
+        )
+        .set(roles::description.eq(&input.description))
+        .execute(tx)?;
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
         Ok(UpdateRoleDescriptionResponse {
             role: Some(role_out(tx, ctx, &r)?),
@@ -225,10 +280,13 @@ pub fn update_assume_role_policy(
     check_policy_document(&input.policy_document)?;
     db.transaction(|tx| {
         let r = load_role(tx, &ctx.account_id, &input.role_name)?;
-        tx.execute(
-            "UPDATE roles SET assume_role_policy = ?1 WHERE account_id = ?2 AND name = ?3",
-            params![input.policy_document, ctx.account_id, r.name],
-        )?;
+        diesel::update(
+            roles::table
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .filter(roles::name.eq(&r.name)),
+        )
+        .set(roles::assume_role_policy.eq(&input.policy_document))
+        .execute(tx)?;
         Ok(())
     })
 }

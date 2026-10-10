@@ -102,3 +102,19 @@ scripts/sync-moto-tests.sh test_sts test_sqs
 Implement operations in the relevant service crate, add meaningful Rust or
 compatibility coverage, regenerate when model/codegen changes require it, and
 update the coverage baseline and book when observable behavior changes.
+
+## Typed SQLite access
+
+IAM uses Diesel's SQLite backend. Its `schema.rs` declares database tables and
+`models.rs` contains stored records derived with `Queryable`, `Selectable` and
+`Insertable`; generated AWS API models remain separate. Handlers use typed
+queries inside `DieselDb::transaction`, retaining one transaction per API call.
+Path-prefix filters use SQLite substring functions so prefixes remain literal
+and case-sensitive.
+
+`Store::diesel_db` runs existing service migrations, configures WAL, foreign keys,
+busy timeout and durability, and shares the service lock with the legacy
+connection used by inspection. Ephemeral connections share an isolated in-memory
+SQLite database. Other services still use `rusqlite` and can be ported individually.
+Add a direct Diesel dependency when using its derives or table macros; the core
+crate converts Diesel errors to the existing storage error response.

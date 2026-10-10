@@ -1457,6 +1457,7 @@ dependencies = [
 name = "roto-svc-iam"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "roto-core",
  "roto-protocol",
  "serde_json",

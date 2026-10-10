@@ -194,3 +194,13 @@ cleanup/reset, tag replacement at capacity and rollback of invalid creation. The
 tag updater now counts new keys rather than replacements toward the 50-tag limit.
 Some remaining Moto profile tests use invalid paths or non-JSON trust policies that
 Roto deliberately rejects. CloudFormation instance-profile resources remain unsupported.
+
+## Diesel adoption (2026-10-10)
+
+The shared store now provides typed Diesel SQLite connections, sharing the service
+lock and database with existing migrations and read-only inspection. IAM's entire
+implemented handler surface uses Diesel queries, with table declarations and stored
+row models separate from generated AWS models. Persistence, rollback, ephemeral-store
+isolation and inspection access have native coverage. The IAM Moto baseline remains
+133 passing, 13 skipped and 216 excluded; the seeded demo and workspace tests pass.
+Remaining services retain `rusqlite` for incremental conversion.

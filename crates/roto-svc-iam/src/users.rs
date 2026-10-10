@@ -1,11 +1,16 @@
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::Db;
+use crate::schema::*;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
 use crate::misc::*;
 use crate::util::*;
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name=users)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct UserRow {
     pub name: String,
     pub path: String,
@@ -15,27 +20,25 @@ pub struct UserRow {
     pub password_last_used: Option<i64>,
 }
 
-pub fn load_user(tx: &Transaction, account: &str, name: &str) -> Result<UserRow, AwsError> {
-    tx.query_row(
-        "SELECT name, path, user_id, created_at, permissions_boundary, password_last_used
-         FROM users WHERE account_id = ?1 AND name = ?2",
-        params![account, name],
-        |r| {
-            Ok(UserRow {
-                name: r.get(0)?,
-                path: r.get(1)?,
-                user_id: r.get(2)?,
-                created_at: r.get(3)?,
-                permissions_boundary: r.get(4)?,
-                password_last_used: r.get(5)?,
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| no_such("user", name))
+pub fn load_user(
+    tx: &mut SqliteConnection,
+    account: &str,
+    name: &str,
+) -> Result<UserRow, AwsError> {
+    users::table
+        .filter(users::account_id.eq(account))
+        .filter(users::name.eq(name))
+        .select(UserRow::as_select())
+        .first::<UserRow>(tx)
+        .optional()?
+        .ok_or_else(|| no_such("user", name))
 }
 
-pub fn user_out(tx: &Transaction, ctx: &RequestContext, u: &UserRow) -> Result<User, AwsError> {
+pub fn user_out(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    u: &UserRow,
+) -> Result<User, AwsError> {
     Ok(User {
         arn: arn(ctx, &format!("user{}{}", u.path, u.name)),
         create_date: ts(u.created_at),
@@ -60,30 +63,26 @@ pub fn create_user(
 ) -> Result<CreateUserResponse, AwsError> {
     let path = normalize_path(input.path.as_deref())?;
     db.transaction(|tx| {
-        let taken = tx
-            .query_row(
-                "SELECT 1 FROM users WHERE account_id = ?1 AND name = ?2",
-                params![ctx.account_id, input.user_name],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
+        let taken = diesel::select(diesel::dsl::exists(
+            users::table
+                .filter(users::account_id.eq(&ctx.account_id))
+                .filter(users::name.eq(&input.user_name)),
+        ))
+        .get_result::<bool>(tx)?;
         if taken {
             return Err(exists("User", &input.user_name));
         }
         check_tags(0, &input.tags)?;
-        tx.execute(
-            "INSERT INTO users (account_id, name, path, user_id, created_at, permissions_boundary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                ctx.account_id,
-                input.user_name,
-                path,
-                gen_id("AIDA", 17),
-                now(),
-                input.permissions_boundary
-            ],
-        )?;
+        diesel::insert_into(users::table)
+            .values((
+                users::account_id.eq(&ctx.account_id),
+                users::name.eq(&input.user_name),
+                users::path.eq(&path),
+                users::user_id.eq(&gen_id("AIDA", 17)),
+                users::created_at.eq(&now()),
+                users::permissions_boundary.eq(&input.permissions_boundary),
+            ))
+            .execute(tx)?;
         set_tags(tx, &ctx.account_id, "user", &input.user_name, &input.tags)?;
         let u = load_user(tx, &ctx.account_id, &input.user_name)?;
         Ok(CreateUserResponse {
@@ -105,14 +104,13 @@ pub fn get_user(
                 .access_key
                 .as_deref()
                 .and_then(|k| {
-                    tx.query_row(
-                        "SELECT user_name FROM access_keys WHERE access_key_id = ?1",
-                        params![k],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
+                    access_keys::table
+                        .filter(access_keys::access_key_id.eq(&k))
+                        .select(access_keys::user_name)
+                        .first::<String>(tx)
+                        .optional()
+                        .ok()
+                        .flatten()
                 })
                 .ok_or_else(|| no_such("user", "default"))?,
         };
@@ -131,17 +129,29 @@ pub fn list_users(
     db.transaction(|tx| {
         let prefix = input.path_prefix.clone().unwrap_or_else(|| "/".into());
         let names: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT name FROM users WHERE account_id = ?1 AND substr(path, 1, length(?2)) = ?2 ORDER BY name COLLATE NOCASE",
-            )?;
-            stmt.query_map(params![ctx.account_id, prefix], |r| r.get(0))?.collect::<Result<_, _>>()?
+            users::table
+                .filter(
+                    substr(users::path, 1, length(literal_prefix(Some(&prefix))))
+                        .eq(literal_prefix(Some(&prefix))),
+                )
+                .filter(users::account_id.eq(&ctx.account_id))
+                .order(users::name)
+                .select(users::name)
+                .load::<String>(tx)?
         };
         let (page, truncated, marker) = paginate(names, input.marker.as_deref(), input.max_items)?;
         let users = page
             .iter()
-            .map(|n| user_out(tx, ctx, &load_user(tx, &ctx.account_id, n)?))
+            .map(|n| {
+                let row = load_user(tx, &ctx.account_id, n)?;
+                user_out(tx, ctx, &row)
+            })
             .collect::<Result<_, _>>()?;
-        Ok(ListUsersResponse { users, is_truncated: Some(truncated), marker })
+        Ok(ListUsersResponse {
+            users,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 
@@ -152,21 +162,60 @@ pub fn delete_user(
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
         let u = load_user(tx, &ctx.account_id, &input.user_name)?;
-        let count = |sql: &str| -> Result<i64, AwsError> {
-            Ok(tx.query_row(sql, params![ctx.account_id, u.name], |r| r.get(0))?)
-        };
-        if count("SELECT COUNT(*) FROM access_keys WHERE account_id = ?1 AND user_name = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must delete access keys first."));
+        if access_keys::table
+            .filter(access_keys::account_id.eq(&ctx.account_id))
+            .filter(access_keys::user_name.eq(&u.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must delete access keys first.",
+            ));
         }
-        if count("SELECT COUNT(*) FROM inline_policies WHERE account_id = ?1 AND kind = 'user' AND entity = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must delete policies first."));
+        if inline_policies::table
+            .filter(inline_policies::account_id.eq(&ctx.account_id))
+            .filter(inline_policies::kind.eq("user"))
+            .filter(inline_policies::entity.eq(&u.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must delete policies first.",
+            ));
         }
-        if count("SELECT COUNT(*) FROM attachments WHERE account_id = ?1 AND kind = 'user' AND entity = ?2")? > 0 {
-            return Err(conflict("Cannot delete entity, must detach all policies first."));
+        if attachments::table
+            .filter(attachments::account_id.eq(&ctx.account_id))
+            .filter(attachments::kind.eq("user"))
+            .filter(attachments::entity.eq(&u.name))
+            .count()
+            .get_result::<i64>(tx)?
+            > 0
+        {
+            return Err(conflict(
+                "Cannot delete entity, must detach all policies first.",
+            ));
         }
-        tx.execute("DELETE FROM group_members WHERE account_id = ?1 AND user_name = ?2", params![ctx.account_id, u.name])?;
-        tx.execute("DELETE FROM tags WHERE account_id = ?1 AND kind = 'user' AND entity = ?2", params![ctx.account_id, u.name])?;
-        tx.execute("DELETE FROM users WHERE account_id = ?1 AND name = ?2", params![ctx.account_id, u.name])?;
+        diesel::delete(
+            group_members::table
+                .filter(group_members::account_id.eq(&ctx.account_id))
+                .filter(group_members::user_name.eq(&u.name)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("user"))
+                .filter(tags::entity.eq(&u.name)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            users::table
+                .filter(users::account_id.eq(&ctx.account_id))
+                .filter(users::name.eq(&u.name)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -182,24 +231,60 @@ pub fn update_user(
             Some(p) => normalize_path(Some(p))?,
             None => u.path.clone(),
         };
-        let new_name = input.new_user_name.clone().unwrap_or_else(|| u.name.clone());
-        if !new_name.eq_ignore_ascii_case(&u.name) && load_user(tx, &ctx.account_id, &new_name).is_ok() {
+        let new_name = input
+            .new_user_name
+            .clone()
+            .unwrap_or_else(|| u.name.clone());
+        if !new_name.eq_ignore_ascii_case(&u.name)
+            && load_user(tx, &ctx.account_id, &new_name).is_ok()
+        {
             return Err(exists("User", &new_name));
         }
-        tx.execute(
-            "UPDATE users SET name = ?1, path = ?2 WHERE account_id = ?3 AND name = ?4",
-            params![new_name, path, ctx.account_id, u.name],
-        )?;
-        // Rename everything that refers to the user by name.
-        for sql in [
-            "UPDATE access_keys SET user_name = ?1 WHERE account_id = ?2 AND user_name = ?3",
-            "UPDATE group_members SET user_name = ?1 WHERE account_id = ?2 AND user_name = ?3",
-            "UPDATE inline_policies SET entity = ?1 WHERE account_id = ?2 AND kind = 'user' AND entity = ?3",
-            "UPDATE attachments SET entity = ?1 WHERE account_id = ?2 AND kind = 'user' AND entity = ?3",
-            "UPDATE tags SET entity = ?1 WHERE account_id = ?2 AND kind = 'user' AND entity = ?3",
-        ] {
-            tx.execute(sql, params![new_name, ctx.account_id, u.name])?;
-        }
+        diesel::update(
+            users::table
+                .filter(users::account_id.eq(&ctx.account_id))
+                .filter(users::name.eq(&u.name)),
+        )
+        .set((users::name.eq(&new_name), users::path.eq(&path)))
+        .execute(tx)?;
+        diesel::update(
+            access_keys::table
+                .filter(access_keys::account_id.eq(&ctx.account_id))
+                .filter(access_keys::user_name.eq(&u.name)),
+        )
+        .set(access_keys::user_name.eq(&new_name))
+        .execute(tx)?;
+        diesel::update(
+            group_members::table
+                .filter(group_members::account_id.eq(&ctx.account_id))
+                .filter(group_members::user_name.eq(&u.name)),
+        )
+        .set(group_members::user_name.eq(&new_name))
+        .execute(tx)?;
+        diesel::update(
+            inline_policies::table
+                .filter(inline_policies::account_id.eq(&ctx.account_id))
+                .filter(inline_policies::kind.eq("user"))
+                .filter(inline_policies::entity.eq(&u.name)),
+        )
+        .set(inline_policies::entity.eq(&new_name))
+        .execute(tx)?;
+        diesel::update(
+            attachments::table
+                .filter(attachments::account_id.eq(&ctx.account_id))
+                .filter(attachments::kind.eq("user"))
+                .filter(attachments::entity.eq(&u.name)),
+        )
+        .set(attachments::entity.eq(&new_name))
+        .execute(tx)?;
+        diesel::update(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("user"))
+                .filter(tags::entity.eq(&u.name)),
+        )
+        .set(tags::entity.eq(&new_name))
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -239,7 +324,7 @@ pub fn list_user_tags(
 
 /// The user an access-key request applies to: the named user, else the caller's own.
 fn key_user(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &Option<String>,
 ) -> Result<String, AwsError> {
@@ -249,14 +334,13 @@ fn key_user(
             .access_key
             .as_deref()
             .and_then(|k| {
-                tx.query_row(
-                    "SELECT user_name FROM access_keys WHERE access_key_id = ?1",
-                    params![k],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()
-                .ok()
-                .flatten()
+                access_keys::table
+                    .filter(access_keys::access_key_id.eq(&k))
+                    .select(access_keys::user_name)
+                    .first::<String>(tx)
+                    .optional()
+                    .ok()
+                    .flatten()
             })
             .ok_or_else(|| no_such("user", "default")),
     }
@@ -269,11 +353,11 @@ pub fn create_access_key(
 ) -> Result<CreateAccessKeyResponse, AwsError> {
     db.transaction(|tx| {
         let user = key_user(tx, ctx, &input.user_name)?;
-        let n: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM access_keys WHERE account_id = ?1 AND user_name = ?2",
-            params![ctx.account_id, user],
-            |r| r.get(0),
-        )?;
+        let n: i64 = access_keys::table
+            .filter(access_keys::account_id.eq(&ctx.account_id))
+            .filter(access_keys::user_name.eq(&user))
+            .count()
+            .first::<i64>(tx)?;
         if n >= 2 {
             return Err(AwsError::sender(
                 409,
@@ -282,11 +366,16 @@ pub fn create_access_key(
             ));
         }
         let (id, secret, created) = (gen_id("AKIA", 16), gen_secret(), now());
-        tx.execute(
-            "INSERT INTO access_keys (access_key_id, account_id, user_name, secret, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'Active', ?5)",
-            params![id, ctx.account_id, user, secret, created],
-        )?;
+        diesel::insert_into(access_keys::table)
+            .values((
+                access_keys::access_key_id.eq(&id),
+                access_keys::account_id.eq(&ctx.account_id),
+                access_keys::user_name.eq(&user),
+                access_keys::secret.eq(&secret),
+                access_keys::status.eq("Active"),
+                access_keys::created_at.eq(&created),
+            ))
+            .execute(tx)?;
         Ok(CreateAccessKeyResponse {
             access_key: AccessKey {
                 access_key_id: id,
@@ -307,19 +396,24 @@ pub fn list_access_keys(
     db.transaction(|tx| {
         let user = key_user(tx, ctx, &input.user_name)?;
         let keys: Vec<AccessKeyMetadata> = {
-            let mut stmt = tx.prepare(
-                "SELECT access_key_id, status, created_at FROM access_keys
-                 WHERE account_id = ?1 AND user_name = ?2 ORDER BY created_at, access_key_id",
-            )?;
-            stmt.query_map(params![ctx.account_id, user], |r| {
-                Ok(AccessKeyMetadata {
-                    access_key_id: Some(r.get(0)?),
-                    status: Some(r.get(1)?),
-                    create_date: Some(ts(r.get(2)?)),
+            access_keys::table
+                .filter(access_keys::account_id.eq(&ctx.account_id))
+                .filter(access_keys::user_name.eq(&user))
+                .order((access_keys::created_at, access_keys::access_key_id))
+                .select((
+                    access_keys::access_key_id,
+                    access_keys::status,
+                    access_keys::created_at,
+                ))
+                .load::<(String, String, i64)>(tx)?
+                .into_iter()
+                .map(|r| AccessKeyMetadata {
+                    access_key_id: Some(r.0.clone()),
+                    status: Some(r.1.clone()),
+                    create_date: Some(ts(r.2)),
                     user_name: Some(user.clone()),
                 })
-            })?
-            .collect::<Result<_, _>>()?
+                .collect::<Vec<_>>()
         };
         let (keys, truncated, marker) = paginate(keys, input.marker.as_deref(), input.max_items)?;
         Ok(ListAccessKeysResponse {
@@ -343,15 +437,22 @@ pub fn update_access_key(
     }
     db.transaction(|tx| {
         let user = key_user(tx, ctx, &input.user_name)?;
-        let n = tx.execute(
-            "UPDATE access_keys SET status = ?1 WHERE account_id = ?2 AND user_name = ?3 AND access_key_id = ?4",
-            params![input.status, ctx.account_id, user, input.access_key_id],
-        )?;
+        let n = diesel::update(
+            access_keys::table
+                .filter(access_keys::account_id.eq(&ctx.account_id))
+                .filter(access_keys::user_name.eq(&user))
+                .filter(access_keys::access_key_id.eq(&input.access_key_id)),
+        )
+        .set(access_keys::status.eq(&input.status))
+        .execute(tx)?;
         if n == 0 {
             return Err(AwsError::sender(
                 404,
                 "NoSuchEntity",
-                format!("The Access Key with id {} cannot be found.", input.access_key_id),
+                format!(
+                    "The Access Key with id {} cannot be found.",
+                    input.access_key_id
+                ),
             ));
         }
         Ok(())
@@ -365,15 +466,21 @@ pub fn delete_access_key(
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
         let user = key_user(tx, ctx, &input.user_name)?;
-        let n = tx.execute(
-            "DELETE FROM access_keys WHERE account_id = ?1 AND user_name = ?2 AND access_key_id = ?3",
-            params![ctx.account_id, user, input.access_key_id],
-        )?;
+        let n = diesel::delete(
+            access_keys::table
+                .filter(access_keys::account_id.eq(&ctx.account_id))
+                .filter(access_keys::user_name.eq(&user))
+                .filter(access_keys::access_key_id.eq(&input.access_key_id)),
+        )
+        .execute(tx)?;
         if n == 0 {
             return Err(AwsError::sender(
                 404,
                 "NoSuchEntity",
-                format!("The Access Key with id {} cannot be found.", input.access_key_id),
+                format!(
+                    "The Access Key with id {} cannot be found.",
+                    input.access_key_id
+                ),
             ));
         }
         Ok(())
@@ -386,15 +493,23 @@ pub fn get_access_key_last_used(
     input: GetAccessKeyLastUsedRequest,
 ) -> Result<GetAccessKeyLastUsedResponse, AwsError> {
     db.transaction(|tx| {
-        let row = tx
-            .query_row(
-                "SELECT user_name, last_used_at, last_used_service, last_used_region FROM access_keys
-                 WHERE account_id = ?1 AND access_key_id = ?2",
-                params![ctx.account_id, input.access_key_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
-            )
+        let row = access_keys::table
+            .filter(access_keys::account_id.eq(&ctx.account_id))
+            .filter(access_keys::access_key_id.eq(&input.access_key_id))
+            .select((
+                access_keys::user_name,
+                access_keys::last_used_at,
+                access_keys::last_used_service,
+                access_keys::last_used_region,
+            ))
+            .first::<(String, Option<i64>, Option<String>, Option<String>)>(tx)
             .optional()?
-            .ok_or_else(|| validation(format!("Invalid Access Key ID or Access Key ID not found: {}", input.access_key_id)))?;
+            .ok_or_else(|| {
+                validation(format!(
+                    "Invalid Access Key ID or Access Key ID not found: {}",
+                    input.access_key_id
+                ))
+            })?;
         Ok(GetAccessKeyLastUsedResponse {
             user_name: Some(row.0),
             access_key_last_used: Some(AccessKeyLastUsed {

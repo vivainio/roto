@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use roto_core::rusqlite::{OptionalExtension, params};
-use roto_core::store::{Db, Store};
+use crate::schema::{access_keys as key_table, roles as role_table, users as user_table};
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
@@ -23,29 +24,25 @@ pub struct KeyOwner {
 impl Iam {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("iam", MIGRATIONS)?,
+            db: store.diesel_db("iam", MIGRATIONS)?,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            for t in [
-                "policy_versions",
-                "users",
-                "groups",
-                "group_members",
-                "roles",
-                "policies",
-                "inline_policies",
-                "attachments",
-                "access_keys",
-                "tags",
-                "instance_profiles",
-                "profile_roles",
-                "account_aliases",
-            ] {
-                tx.execute(&format!("DELETE FROM {t}"), [])?;
-            }
+            diesel::delete(crate::schema::policy_versions::table).execute(tx)?;
+            diesel::delete(crate::schema::group_members::table).execute(tx)?;
+            diesel::delete(crate::schema::profile_roles::table).execute(tx)?;
+            diesel::delete(crate::schema::inline_policies::table).execute(tx)?;
+            diesel::delete(crate::schema::attachments::table).execute(tx)?;
+            diesel::delete(crate::schema::access_keys::table).execute(tx)?;
+            diesel::delete(crate::schema::tags::table).execute(tx)?;
+            diesel::delete(crate::schema::users::table).execute(tx)?;
+            diesel::delete(crate::schema::groups::table).execute(tx)?;
+            diesel::delete(crate::schema::roles::table).execute(tx)?;
+            diesel::delete(crate::schema::policies::table).execute(tx)?;
+            diesel::delete(crate::schema::instance_profiles::table).execute(tx)?;
+            diesel::delete(crate::schema::account_aliases::table).execute(tx)?;
             Ok(())
         })
     }
@@ -56,12 +53,12 @@ impl Iam {
         let name = arn.rsplit('/').next()?;
         self.db
             .read(|c| {
-                Ok(c.query_row(
-                    "SELECT role_id FROM roles WHERE account_id = ?1 AND name = ?2",
-                    params![account, name],
-                    |r| r.get(0),
-                )
-                .optional()?)
+                Ok(role_table::table
+                    .filter(role_table::account_id.eq(account))
+                    .filter(role_table::name.eq(name))
+                    .select(role_table::role_id)
+                    .first::<String>(c)
+                    .optional()?)
             })
             .ok()
             .flatten()
@@ -70,21 +67,27 @@ impl Iam {
     pub fn key_owner(&self, access_key: &str) -> Option<KeyOwner> {
         self.db
             .read(|c| {
-                Ok(c.query_row(
-                    "SELECT k.account_id, u.name, u.user_id, u.path FROM access_keys k
-                     JOIN users u ON u.account_id = k.account_id AND u.name = k.user_name
-                     WHERE k.access_key_id = ?1",
-                    params![access_key],
-                    |r| {
-                        Ok(KeyOwner {
-                            account_id: r.get(0)?,
-                            user_name: r.get(1)?,
-                            user_id: r.get(2)?,
-                            path: r.get(3)?,
-                        })
-                    },
-                )
-                .optional()?)
+                Ok(key_table::table
+                    .inner_join(
+                        user_table::table.on(user_table::account_id
+                            .eq(key_table::account_id)
+                            .and(user_table::name.eq(key_table::user_name))),
+                    )
+                    .filter(key_table::access_key_id.eq(access_key))
+                    .select((
+                        key_table::account_id,
+                        user_table::name,
+                        user_table::user_id,
+                        user_table::path,
+                    ))
+                    .first::<(String, String, String, String)>(c)
+                    .optional()?
+                    .map(|(account_id, user_name, user_id, path)| KeyOwner {
+                        account_id,
+                        user_name,
+                        user_id,
+                        path,
+                    }))
             })
             .ok()
             .flatten()

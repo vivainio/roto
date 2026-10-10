@@ -1,35 +1,53 @@
 use crate::generated::*;
 use crate::misc::{load_tags, remove_tags, set_tags};
+use crate::models::ProfileRow;
 use crate::roles::{load_role, role_out};
+use crate::schema::*;
 use crate::util::*;
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::Db;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 fn load_profile(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &str,
 ) -> Result<InstanceProfile, AwsError> {
-    let mut profile = tx.query_row(
-        "SELECT name,path,profile_id,created_at FROM instance_profiles WHERE account_id=?1 AND name=?2",
-        params![ctx.account_id,name], |r| {
-            let name: String = r.get(0)?;
-            let path: String = r.get(1)?;
-            Ok(InstanceProfile {
-                arn: arn(ctx, &format!("instance-profile{path}{name}")),
-                instance_profile_name: name, path, instance_profile_id: r.get(2)?,
-                create_date: ts(r.get(3)?), roles: Vec::new(), tags: Vec::new(),
-            })
-        },
-    ).optional()?.ok_or_else(|| AwsError::sender(404, "NoSuchEntity", format!("Instance profile {name} not found")))?;
-    let mut stmt = tx.prepare("SELECT role FROM profile_roles WHERE account_id=?1 AND profile=?2 ORDER BY role COLLATE NOCASE")?;
-    let names = stmt
-        .query_map(params![ctx.account_id, name], |r| r.get(0))?
-        .collect::<Result<Vec<String>, _>>()?;
+    let mut profile = instance_profiles::table
+        .filter(instance_profiles::account_id.eq(&ctx.account_id))
+        .filter(instance_profiles::name.eq(&name))
+        .select(ProfileRow::as_select())
+        .first::<ProfileRow>(tx)
+        .map(|r| InstanceProfile {
+            arn: arn(ctx, &format!("instance-profile{}{}", r.path, r.name)),
+            instance_profile_name: r.name,
+            path: r.path,
+            instance_profile_id: r.profile_id,
+            create_date: ts(r.created_at),
+            roles: Vec::new(),
+            tags: Vec::new(),
+        })
+        .optional()?
+        .ok_or_else(|| {
+            AwsError::sender(
+                404,
+                "NoSuchEntity",
+                format!("Instance profile {name} not found"),
+            )
+        })?;
+    let names = profile_roles::table
+        .filter(profile_roles::account_id.eq(&ctx.account_id))
+        .filter(profile_roles::profile.eq(&name))
+        .order(profile_roles::role)
+        .select(profile_roles::role)
+        .load::<String>(tx)?;
     profile.roles = names
         .iter()
-        .map(|n| role_out(tx, ctx, &load_role(tx, &ctx.account_id, n)?))
+        .map(|n| {
+            let row = load_role(tx, &ctx.account_id, n)?;
+            role_out(tx, ctx, &row)
+        })
         .collect::<Result<_, _>>()?;
     profile.tags = load_tags(tx, &ctx.account_id, "instance-profile", name)?;
     Ok(profile)
@@ -42,11 +60,35 @@ pub fn create_instance_profile(
 ) -> Result<CreateInstanceProfileResponse, AwsError> {
     let path = normalize_path(i.path.as_deref())?;
     db.transaction(|tx| {
-        let taken: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM instance_profiles WHERE account_id=?1 AND name=?2)",params![ctx.account_id,i.instance_profile_name],|r|r.get(0))?;
-        if taken { return Err(exists("Instance profile",&i.instance_profile_name)); }
-        tx.execute("INSERT INTO instance_profiles(account_id,name,path,profile_id,created_at) VALUES(?1,?2,?3,?4,?5)",params![ctx.account_id,i.instance_profile_name,path,gen_id("AIPA",17),now()])?;
-        set_tags(tx,&ctx.account_id,"instance-profile",&i.instance_profile_name,&i.tags)?;
-        Ok(CreateInstanceProfileResponse {instance_profile:load_profile(tx,ctx,&i.instance_profile_name)?})
+        let taken: bool = diesel::select(diesel::dsl::exists(
+            instance_profiles::table
+                .filter(instance_profiles::account_id.eq(&ctx.account_id))
+                .filter(instance_profiles::name.eq(&i.instance_profile_name)),
+        ))
+        .first::<bool>(tx)?;
+        if taken {
+            return Err(exists("Instance profile", &i.instance_profile_name));
+        }
+        let row = ProfileRow {
+            account_id: ctx.account_id.clone(),
+            name: i.instance_profile_name.clone(),
+            path,
+            profile_id: gen_id("AIPA", 17),
+            created_at: now(),
+        };
+        diesel::insert_into(instance_profiles::table)
+            .values(&row)
+            .execute(tx)?;
+        set_tags(
+            tx,
+            &ctx.account_id,
+            "instance-profile",
+            &i.instance_profile_name,
+            &i.tags,
+        )?;
+        Ok(CreateInstanceProfileResponse {
+            instance_profile: load_profile(tx, ctx, &i.instance_profile_name)?,
+        })
     })
 }
 
@@ -74,14 +116,19 @@ pub fn delete_instance_profile(
                 "Cannot delete entity, must remove roles from instance profile first.",
             ));
         }
-        tx.execute(
-            "DELETE FROM tags WHERE account_id=?1 AND kind='instance-profile' AND entity=?2",
-            params![ctx.account_id, i.instance_profile_name],
-        )?;
-        tx.execute(
-            "DELETE FROM instance_profiles WHERE account_id=?1 AND name=?2",
-            params![ctx.account_id, i.instance_profile_name],
-        )?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("instance-profile"))
+                .filter(tags::entity.eq(&i.instance_profile_name)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            instance_profiles::table
+                .filter(instance_profiles::account_id.eq(&ctx.account_id))
+                .filter(instance_profiles::name.eq(&i.instance_profile_name)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -101,10 +148,13 @@ pub fn add_role_to_instance_profile(
                 "Cannot exceed quota for InstanceSessionsPerInstanceProfile: 1",
             ));
         }
-        tx.execute(
-            "INSERT INTO profile_roles(account_id,profile,role) VALUES(?1,?2,?3)",
-            params![ctx.account_id, profile.instance_profile_name, role.name],
-        )?;
+        diesel::insert_into(profile_roles::table)
+            .values((
+                profile_roles::account_id.eq(&ctx.account_id),
+                profile_roles::profile.eq(&profile.instance_profile_name),
+                profile_roles::role.eq(&role.name),
+            ))
+            .execute(tx)?;
         Ok(())
     })
 }
@@ -117,10 +167,13 @@ pub fn remove_role_from_instance_profile(
     db.transaction(|tx| {
         load_profile(tx, ctx, &i.instance_profile_name)?;
         load_role(tx, &ctx.account_id, &i.role_name)?;
-        let removed = tx.execute(
-            "DELETE FROM profile_roles WHERE account_id=?1 AND profile=?2 AND role=?3",
-            params![ctx.account_id, i.instance_profile_name, i.role_name],
-        )?;
+        let removed = diesel::delete(
+            profile_roles::table
+                .filter(profile_roles::account_id.eq(&ctx.account_id))
+                .filter(profile_roles::profile.eq(&i.instance_profile_name))
+                .filter(profile_roles::role.eq(&i.role_name)),
+        )
+        .execute(tx)?;
         if removed == 0 {
             return Err(no_such("role in instance profile", &i.role_name));
         }
@@ -134,11 +187,33 @@ pub fn list_instance_profiles(
     i: ListInstanceProfilesRequest,
 ) -> Result<ListInstanceProfilesResponse, AwsError> {
     db.transaction(|tx| {
-        let mut stmt=tx.prepare("SELECT name FROM instance_profiles WHERE account_id=?1 AND substr(path,1,length(?2))=?2 ORDER BY name COLLATE NOCASE")?;
-        let names=stmt.query_map(params![ctx.account_id,i.path_prefix.as_deref().unwrap_or("/")],|r|r.get(0))?.collect::<Result<Vec<String>,_>>()?;
-        let (names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        let instance_profiles=names.iter().map(|n|load_profile(tx,ctx,n)).collect::<Result<_,_>>()?;
-        Ok(ListInstanceProfilesResponse {instance_profiles,is_truncated:Some(truncated),marker})
+        let names = instance_profiles::table
+            .filter(
+                substr(
+                    instance_profiles::path,
+                    1,
+                    length(literal_prefix(Some(
+                        i.path_prefix.as_deref().unwrap_or("/"),
+                    ))),
+                )
+                .eq(literal_prefix(Some(
+                    i.path_prefix.as_deref().unwrap_or("/"),
+                ))),
+            )
+            .filter(instance_profiles::account_id.eq(&ctx.account_id))
+            .order(instance_profiles::name)
+            .select(instance_profiles::name)
+            .load::<String>(tx)?;
+        let (names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        let instance_profiles = names
+            .iter()
+            .map(|n| load_profile(tx, ctx, n))
+            .collect::<Result<_, _>>()?;
+        Ok(ListInstanceProfilesResponse {
+            instance_profiles,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 
@@ -148,12 +223,23 @@ pub fn list_instance_profiles_for_role(
     i: ListInstanceProfilesForRoleRequest,
 ) -> Result<ListInstanceProfilesForRoleResponse, AwsError> {
     db.transaction(|tx| {
-        load_role(tx,&ctx.account_id,&i.role_name)?;
-        let mut stmt=tx.prepare("SELECT profile FROM profile_roles WHERE account_id=?1 AND role=?2 ORDER BY profile COLLATE NOCASE")?;
-        let names=stmt.query_map(params![ctx.account_id,i.role_name],|r|r.get(0))?.collect::<Result<Vec<String>,_>>()?;
-        let (names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        let instance_profiles=names.iter().map(|n|load_profile(tx,ctx,n)).collect::<Result<_,_>>()?;
-        Ok(ListInstanceProfilesForRoleResponse {instance_profiles,is_truncated:Some(truncated),marker})
+        load_role(tx, &ctx.account_id, &i.role_name)?;
+        let names = profile_roles::table
+            .filter(profile_roles::account_id.eq(&ctx.account_id))
+            .filter(profile_roles::role.eq(&i.role_name))
+            .order(profile_roles::profile)
+            .select(profile_roles::profile)
+            .load::<String>(tx)?;
+        let (names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        let instance_profiles = names
+            .iter()
+            .map(|n| load_profile(tx, ctx, n))
+            .collect::<Result<_, _>>()?;
+        Ok(ListInstanceProfilesForRoleResponse {
+            instance_profiles,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 
@@ -371,6 +457,47 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn path_prefixes_are_literal_and_case_sensitive() {
+        let store = Store::ephemeral();
+        let iam = Iam::new(&store).unwrap();
+        let ctx = context();
+        for (name, path) in [("literal", "/App_%/"), ("other", "/AppXYZ/")] {
+            iam.create_instance_profile(
+                &ctx,
+                CreateInstanceProfileRequest {
+                    instance_profile_name: name.into(),
+                    path: Some(path.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let exact = iam
+            .list_instance_profiles(
+                &ctx,
+                ListInstanceProfilesRequest {
+                    path_prefix: Some("/App_%/".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(exact.instance_profiles.len(), 1);
+        assert_eq!(exact.instance_profiles[0].instance_profile_name, "literal");
+        assert!(
+            iam.list_instance_profiles(
+                &ctx,
+                ListInstanceProfilesRequest {
+                    path_prefix: Some("/app".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .instance_profiles
+            .is_empty()
         );
     }
 
