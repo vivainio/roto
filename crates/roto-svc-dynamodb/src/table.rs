@@ -1,11 +1,14 @@
 //! Table metadata: persistence, key-schema derivation and `TableDescription` building.
 
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{FromJson, Timestamp, ToJson};
 
 use crate::generated::*;
 use crate::keys::{KeyAttr, KeySchema};
+use crate::models::TableRow;
 
 pub fn ve(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "ValidationException", message)
@@ -87,7 +90,7 @@ impl Table {
     }
 
     pub fn load(
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         ctx: &RequestContext,
         name_or_arn: &str,
     ) -> Result<Table, AwsError> {
@@ -95,7 +98,7 @@ impl Table {
     }
 
     pub fn find(
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         ctx: &RequestContext,
         name_or_arn: &str,
     ) -> Result<Option<Table>, AwsError> {
@@ -111,37 +114,34 @@ impl Table {
             None => (ctx.account_id.clone(), ctx.region.clone()),
         };
         let name = table_name(name_or_arn);
-        Ok(tx
-            .query_row(
-                "SELECT table_id, created_at, key_schema, attr_defs, gsis, lsis, billing_mode, throughput, stream_spec,
-                        tags, ttl_attr, ttl_enabled, deletion_protection, sse, table_class, pitr
-                 FROM tables WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                params![account, region, name],
-                |r| {
-                    Ok(Table {
-                        id: r.get(0)?,
-                        account: account.clone(),
-                        region: region.clone(),
-                        name: name.to_string(),
-                        created_at: r.get(1)?,
-                        key_schema: from_list(&r.get::<_, String>(2)?),
-                        attr_defs: from_list(&r.get::<_, String>(3)?),
-                        gsis: from_list(&r.get::<_, String>(4)?),
-                        lsis: from_list(&r.get::<_, String>(5)?),
-                        billing_mode: r.get(6)?,
-                        throughput: from_opt(r.get(7)?),
-                        stream: from_opt(r.get(8)?),
-                        tags: from_list(&r.get::<_, String>(9)?),
-                        ttl_attr: r.get(10)?,
-                        ttl_enabled: r.get::<_, i64>(11)? != 0,
-                        deletion_protection: r.get::<_, i64>(12)? != 0,
-                        sse: from_opt(r.get(13)?),
-                        table_class: r.get(14)?,
-                        pitr: r.get::<_, i64>(15)? != 0,
-                    })
-                },
-            )
-            .optional()?)
+        Ok(tables::table
+            .filter(tables::account_id.eq(&account))
+            .filter(tables::region.eq(&region))
+            .filter(tables::name.eq(name))
+            .select(TableRow::as_select())
+            .first(tx)
+            .optional()?
+            .map(|r| Table {
+                id: r.table_id,
+                account: r.account_id,
+                region: r.region,
+                name: r.name,
+                created_at: r.created_at,
+                key_schema: from_list(&r.key_schema),
+                attr_defs: from_list(&r.attr_defs),
+                gsis: from_list(&r.gsis),
+                lsis: from_list(&r.lsis),
+                billing_mode: r.billing_mode,
+                throughput: from_opt(r.throughput),
+                stream: from_opt(r.stream_spec),
+                tags: from_list(&r.tags),
+                ttl_attr: r.ttl_attr,
+                ttl_enabled: r.ttl_enabled != 0,
+                deletion_protection: r.deletion_protection != 0,
+                sse: from_opt(r.sse),
+                table_class: r.table_class,
+                pitr: r.pitr != 0,
+            }))
     }
 
     /// The table definition as JSON (for backups).
@@ -205,60 +205,51 @@ impl Table {
         }
     }
 
-    pub fn insert(&self, tx: &Transaction) -> Result<(), AwsError> {
-        tx.execute(
-            "INSERT INTO tables (account_id, region, name, table_id, created_at, key_schema, attr_defs, gsis, lsis,
-                                 billing_mode, throughput, stream_spec, tags, ttl_attr, ttl_enabled, deletion_protection,
-                                 sse, table_class, pitr)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-            params![
-                self.account,
-                self.region,
-                self.name,
-                self.id,
-                self.created_at,
-                list_json(&self.key_schema),
-                list_json(&self.attr_defs),
-                list_json(&self.gsis),
-                list_json(&self.lsis),
-                self.billing_mode,
-                opt_json(&self.throughput),
-                opt_json(&self.stream),
-                list_json(&self.tags),
-                self.ttl_attr,
-                i64::from(self.ttl_enabled),
-                i64::from(self.deletion_protection),
-                opt_json(&self.sse),
-                self.table_class,
-                i64::from(self.pitr)
-            ],
-        )?;
+    pub fn insert(&self, tx: &mut SqliteConnection) -> Result<(), AwsError> {
+        diesel::insert_into(tables::table)
+            .values((
+                tables::account_id.eq(&(self.account)),
+                tables::region.eq(&(self.region)),
+                tables::name.eq(&(self.name)),
+                tables::table_id.eq(&(self.id)),
+                tables::created_at.eq(&(self.created_at)),
+                tables::key_schema.eq(&(list_json(&self.key_schema))),
+                tables::attr_defs.eq(&(list_json(&self.attr_defs))),
+                tables::gsis.eq(&(list_json(&self.gsis))),
+                tables::lsis.eq(&(list_json(&self.lsis))),
+                tables::billing_mode.eq(&(self.billing_mode)),
+                tables::throughput.eq(&(opt_json(&self.throughput))),
+                tables::stream_spec.eq(&(opt_json(&self.stream))),
+                tables::tags.eq(&(list_json(&self.tags))),
+                tables::ttl_attr.eq(&(self.ttl_attr)),
+                tables::ttl_enabled.eq(&(i64::from(self.ttl_enabled))),
+                tables::deletion_protection.eq(&(i64::from(self.deletion_protection))),
+                tables::sse.eq(&(opt_json(&self.sse))),
+                tables::table_class.eq(&(self.table_class)),
+                tables::pitr.eq(&(i64::from(self.pitr))),
+            ))
+            .execute(tx)?;
         Ok(())
     }
 
     /// Writes back everything that `UpdateTable`, tagging and TTL can change.
-    pub fn save(&self, tx: &Transaction) -> Result<(), AwsError> {
-        tx.execute(
-            "UPDATE tables SET attr_defs = ?1, gsis = ?2, billing_mode = ?3, throughput = ?4, stream_spec = ?5,
-                               tags = ?6, ttl_attr = ?7, ttl_enabled = ?8, deletion_protection = ?9, sse = ?10,
-                               table_class = ?11, pitr = ?12
-             WHERE table_id = ?13",
-            params![
-                list_json(&self.attr_defs),
-                list_json(&self.gsis),
-                self.billing_mode,
-                opt_json(&self.throughput),
-                opt_json(&self.stream),
-                list_json(&self.tags),
-                self.ttl_attr,
-                i64::from(self.ttl_enabled),
-                i64::from(self.deletion_protection),
-                opt_json(&self.sse),
-                self.table_class,
-                i64::from(self.pitr),
-                self.id
-            ],
-        )?;
+    pub fn save(&self, tx: &mut SqliteConnection) -> Result<(), AwsError> {
+        diesel::update(tables::table.filter(tables::table_id.eq(&(self.id))))
+            .set((
+                tables::attr_defs.eq(&(list_json(&self.attr_defs))),
+                tables::gsis.eq(&(list_json(&self.gsis))),
+                tables::billing_mode.eq(&(self.billing_mode)),
+                tables::throughput.eq(&(opt_json(&self.throughput))),
+                tables::stream_spec.eq(&(opt_json(&self.stream))),
+                tables::tags.eq(&(list_json(&self.tags))),
+                tables::ttl_attr.eq(&(self.ttl_attr)),
+                tables::ttl_enabled.eq(&(i64::from(self.ttl_enabled))),
+                tables::deletion_protection.eq(&(i64::from(self.deletion_protection))),
+                tables::sse.eq(&(opt_json(&self.sse))),
+                tables::table_class.eq(&(self.table_class)),
+                tables::pitr.eq(&(i64::from(self.pitr))),
+            ))
+            .execute(tx)?;
         Ok(())
     }
 
@@ -293,12 +284,15 @@ impl Table {
         self.schema_of(&self.key_schema)
     }
 
-    pub fn describe(&self, tx: &Transaction) -> Result<TableDescription, AwsError> {
-        let (count, size): (i64, i64) = tx.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(length(item)), 0) FROM items WHERE table_id = ?1",
-            params![self.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+    pub fn describe(&self, tx: &mut SqliteConnection) -> Result<TableDescription, AwsError> {
+        let (count, size): (i64, Option<i64>) = items::table
+            .filter(items::table_id.eq(&self.id))
+            .select((
+                diesel::dsl::count_star(),
+                diesel::dsl::sum(length(items::item)),
+            ))
+            .first(tx)?;
+        let size = size.unwrap_or(0);
         let pay_per_request = self.billing_mode == "PAY_PER_REQUEST";
         let throughput = |t: &Option<ProvisionedThroughput>| ProvisionedThroughputDescription {
             read_capacity_units: Some(if pay_per_request {

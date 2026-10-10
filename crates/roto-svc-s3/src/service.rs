@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::models::ObjectRow;
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use md5::{Digest, Md5};
-use roto_core::rusqlite::{OptionalExtension, Row, Transaction, params};
-use roto_core::store::{Db, Store};
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{Blob, Timestamp};
 
@@ -22,25 +25,22 @@ pub struct S3 {
 
 impl S3 {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
-        let db = store.db("s3", crate::MIGRATIONS)?;
+        let db = store.diesel_db("s3", crate::MIGRATIONS)?;
         let root = store.blob_dir("s3")?;
         let blobs = Blobs::new(root).map_err(io)?;
         Ok(Self { db, blobs })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
-        let buckets: Vec<String> = self.db.read(|c| {
-            let mut stmt = c.prepare("SELECT name FROM buckets")?;
-            Ok(stmt
-                .query_map([], |r| r.get(0))?
-                .collect::<Result<_, _>>()?)
-        })?;
+        let buckets: Vec<String> = self
+            .db
+            .read(|c| Ok(buckets::table.select(buckets::name).load::<String>(c)?))?;
         for b in buckets {
             self.blobs.remove_bucket(&b).map_err(io)?;
         }
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM buckets", [])?;
-            tx.execute("DELETE FROM notification_outbox", [])?;
+            diesel::delete(buckets::table).execute(tx)?;
+            diesel::delete(notification_outbox::table).execute(tx)?;
             Ok(())
         })
     }
@@ -86,6 +86,9 @@ pub(crate) fn invalid_argument(message: impl Into<String>) -> AwsError {
 
 // ---- rows --------------------------------------------------------------------------------
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name=buckets)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub(crate) struct BucketRow {
     pub name: String,
     pub account_id: String,
@@ -103,21 +106,13 @@ impl BucketRow {
     }
 }
 
-pub(crate) fn load_bucket(tx: &Transaction, name: &str) -> Result<BucketRow, AwsError> {
-    tx.query_row(
-        "SELECT name, account_id, region, versioning FROM buckets WHERE name = ?1",
-        params![name],
-        |r| {
-            Ok(BucketRow {
-                name: r.get(0)?,
-                account_id: r.get(1)?,
-                region: r.get(2)?,
-                versioning: r.get(3)?,
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| no_such_bucket(name))
+pub(crate) fn load_bucket(tx: &mut SqliteConnection, name: &str) -> Result<BucketRow, AwsError> {
+    buckets::table
+        .filter(buckets::name.eq(name))
+        .select(BucketRow::as_select())
+        .first(tx)
+        .optional()?
+        .ok_or_else(|| no_such_bucket(name))
 }
 
 #[derive(Clone)]
@@ -139,63 +134,63 @@ pub(crate) struct Obj {
     pub acl: Option<String>,
 }
 
-const OBJ_COLS: &str = "seq, key, version_id, is_latest, delete_marker, size, etag, content_type, last_modified, path, metadata, headers, tags, storage_class, acl";
-
 fn json_map(s: String) -> BTreeMap<String, String> {
     serde_json::from_str(&s).unwrap_or_default()
 }
 
-fn obj_from_row(r: &Row) -> roto_core::rusqlite::Result<Obj> {
-    Ok(Obj {
-        seq: r.get(0)?,
-        key: r.get(1)?,
-        version_id: r.get(2)?,
-        is_latest: r.get::<_, i64>(3)? != 0,
-        delete_marker: r.get::<_, i64>(4)? != 0,
-        size: r.get(5)?,
-        etag: r.get(6)?,
-        content_type: r.get(7)?,
-        last_modified: r.get(8)?,
-        path: r.get(9)?,
-        metadata: json_map(r.get(10)?),
-        headers: json_map(r.get(11)?),
-        tags: json_map(r.get(12)?),
-        storage_class: r.get(13)?,
-        acl: r.get(14)?,
-    })
+impl From<ObjectRow> for Obj {
+    fn from(r: ObjectRow) -> Self {
+        Self {
+            seq: r.seq,
+            key: r.key,
+            version_id: r.version_id,
+            is_latest: r.is_latest != 0,
+            delete_marker: r.delete_marker != 0,
+            size: r.size,
+            etag: r.etag,
+            content_type: r.content_type,
+            last_modified: r.last_modified,
+            path: r.path,
+            metadata: json_map(r.metadata),
+            headers: json_map(r.headers),
+            tags: json_map(r.tags),
+            storage_class: r.storage_class,
+            acl: r.acl,
+        }
+    }
 }
 
 pub(crate) fn latest_obj(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     bucket: &str,
     key: &str,
 ) -> Result<Option<Obj>, AwsError> {
-    Ok(tx
-        .query_row(
-            &format!(
-                "SELECT {OBJ_COLS} FROM objects WHERE bucket = ?1 AND key = ?2 AND is_latest = 1"
-            ),
-            params![bucket, key],
-            obj_from_row,
-        )
-        .optional()?)
+    Ok(objects::table
+        .filter(objects::bucket.eq(bucket))
+        .filter(objects::key.eq(key))
+        .filter(objects::is_latest.eq(1_i64))
+        .select(ObjectRow::as_select())
+        .first(tx)
+        .optional()?
+        .map(Into::into))
 }
 
 pub(crate) fn find_obj(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     bucket: &str,
     key: &str,
     version: Option<&str>,
 ) -> Result<Option<Obj>, AwsError> {
     match version {
         None => latest_obj(tx, bucket, key),
-        Some(v) => Ok(tx
-            .query_row(
-                &format!("SELECT {OBJ_COLS} FROM objects WHERE bucket = ?1 AND key = ?2 AND version_id = ?3"),
-                params![bucket, key, v],
-                obj_from_row,
-            )
-            .optional()?),
+        Some(v) => Ok(objects::table
+            .filter(objects::bucket.eq(bucket))
+            .filter(objects::key.eq(key))
+            .filter(objects::version_id.eq(v))
+            .select(ObjectRow::as_select())
+            .first(tx)
+            .optional()?
+            .map(Into::into)),
     }
 }
 
@@ -216,32 +211,44 @@ pub(crate) struct NewObj {
 }
 
 impl S3 {
-    fn fix_moved(&self, tx: &Transaction, bucket: &str, p: &Placement) -> Result<(), AwsError> {
+    fn fix_moved(
+        &self,
+        tx: &mut SqliteConnection,
+        bucket: &str,
+        p: &Placement,
+    ) -> Result<(), AwsError> {
         for (old, new) in &p.moved {
-            tx.execute(
-                "UPDATE objects SET path = ?1 WHERE bucket = ?2 AND path = ?3",
-                params![new, bucket, old],
-            )?;
+            diesel::update(
+                objects::table
+                    .filter(objects::bucket.eq(&(bucket)))
+                    .filter(objects::path.eq(&(old))),
+            )
+            .set(objects::path.eq(&(new)))
+            .execute(tx)?;
         }
         Ok(())
     }
 
     /// Makes the current latest version non-current, moving its file out of the live tree.
-    fn retire_latest(&self, tx: &Transaction, bucket: &str, cur: &Obj) -> Result<(), AwsError> {
+    fn retire_latest(
+        &self,
+        tx: &mut SqliteConnection,
+        bucket: &str,
+        cur: &Obj,
+    ) -> Result<(), AwsError> {
         let mut path = cur.path.clone();
         if !path.is_empty() {
             path = Blobs::version_rel(bucket, &cur.key, &cur.version_id);
             self.blobs.move_rel(&cur.path, &path).map_err(io)?;
         }
-        tx.execute(
-            "UPDATE objects SET is_latest = 0, path = ?1 WHERE seq = ?2",
-            params![path, cur.seq],
-        )?;
+        diesel::update(objects::table.filter(objects::seq.eq(&(cur.seq))))
+            .set((objects::is_latest.eq(0_i64), objects::path.eq(&(path))))
+            .execute(tx)?;
         Ok(())
     }
 
-    fn drop_row(&self, tx: &Transaction, o: &Obj) -> Result<(), AwsError> {
-        tx.execute("DELETE FROM objects WHERE seq = ?1", params![o.seq])?;
+    fn drop_row(&self, tx: &mut SqliteConnection, o: &Obj) -> Result<(), AwsError> {
+        diesel::delete(objects::table.filter(objects::seq.eq(&(o.seq)))).execute(tx)?;
         if !o.path.is_empty() {
             self.blobs.remove(&o.path).map_err(io)?;
         }
@@ -249,16 +256,20 @@ impl S3 {
     }
 
     /// After removing the latest version, the newest remaining one becomes current again.
-    fn promote_newest(&self, tx: &Transaction, bucket: &str, key: &str) -> Result<(), AwsError> {
-        let next = tx
-            .query_row(
-                &format!(
-                    "SELECT {OBJ_COLS} FROM objects WHERE bucket = ?1 AND key = ?2 ORDER BY last_modified DESC, seq DESC LIMIT 1"
-                ),
-                params![bucket, key],
-                obj_from_row,
-            )
-            .optional()?;
+    fn promote_newest(
+        &self,
+        tx: &mut SqliteConnection,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(), AwsError> {
+        let next: Option<Obj> = objects::table
+            .filter(objects::bucket.eq(bucket))
+            .filter(objects::key.eq(key))
+            .order((objects::last_modified.desc(), objects::seq.desc()))
+            .select(ObjectRow::as_select())
+            .first(tx)
+            .optional()?
+            .map(Into::into);
         let Some(o) = next else { return Ok(()) };
         let mut path = o.path.clone();
         if !path.is_empty() {
@@ -266,17 +277,16 @@ impl S3 {
             self.fix_moved(tx, bucket, &p)?;
             path = p.rel;
         }
-        tx.execute(
-            "UPDATE objects SET is_latest = 1, path = ?1 WHERE seq = ?2",
-            params![path, o.seq],
-        )?;
+        diesel::update(objects::table.filter(objects::seq.eq(&(o.seq))))
+            .set((objects::is_latest.eq(1_i64), objects::path.eq(&(path))))
+            .execute(tx)?;
         Ok(())
     }
 
     /// Stores a new version of `key`; returns the stored row.
     pub(crate) fn store_object(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         b: &BucketRow,
         key: &str,
         data: &[u8],
@@ -305,26 +315,25 @@ impl S3 {
             .clone()
             .unwrap_or_else(|| "STANDARD".into());
         let last_modified = now();
-        tx.execute(
-            "INSERT INTO objects (bucket, key, version_id, is_latest, delete_marker, size, etag, content_type,
-                                  last_modified, path, metadata, headers, tags, storage_class, acl)
-             VALUES (?1, ?2, ?3, 1, 0, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                b.name,
-                key,
-                version_id,
-                data.len() as i64,
-                etag,
-                content_type,
-                last_modified,
-                placement.rel,
-                json_string(&attrs.metadata),
-                json_string(&attrs.headers),
-                json_string(&attrs.tags),
-                storage_class,
-                attrs.acl
-            ],
-        )?;
+        diesel::insert_into(objects::table)
+            .values((
+                objects::bucket.eq(&(b.name)),
+                objects::key.eq(&(key)),
+                objects::version_id.eq(&(version_id)),
+                objects::is_latest.eq(1_i64),
+                objects::delete_marker.eq(0_i64),
+                objects::size.eq(&(data.len() as i64)),
+                objects::etag.eq(&(etag)),
+                objects::content_type.eq(&(content_type)),
+                objects::last_modified.eq(&(last_modified)),
+                objects::path.eq(&(placement.rel)),
+                objects::metadata.eq(&(json_string(&attrs.metadata))),
+                objects::headers.eq(&(json_string(&attrs.headers))),
+                objects::tags.eq(&(json_string(&attrs.tags))),
+                objects::storage_class.eq(&(storage_class)),
+                objects::acl.eq(&(attrs.acl)),
+            ))
+            .execute(tx)?;
         Ok(find_obj(tx, &b.name, key, Some(&version_id))?.expect("just inserted"))
     }
 
@@ -337,7 +346,7 @@ impl S3 {
 
     fn put_delete_marker(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         b: &BucketRow,
         key: &str,
     ) -> Result<String, AwsError> {
@@ -352,19 +361,28 @@ impl S3 {
         if let Some(cur) = latest_obj(tx, &b.name, key)? {
             self.retire_latest(tx, &b.name, &cur)?;
         }
-        tx.execute(
-            "INSERT INTO objects (bucket, key, version_id, is_latest, delete_marker, size, etag, content_type,
-                                  last_modified, path, storage_class)
-             VALUES (?1, ?2, ?3, 1, 1, 0, '', '', ?4, '', 'STANDARD')",
-            params![b.name, key, version_id, now()],
-        )?;
+        diesel::insert_into(objects::table)
+            .values((
+                objects::bucket.eq(&(b.name)),
+                objects::key.eq(&(key)),
+                objects::version_id.eq(&(version_id)),
+                objects::is_latest.eq(1_i64),
+                objects::delete_marker.eq(1_i64),
+                objects::size.eq(0_i64),
+                objects::etag.eq(""),
+                objects::content_type.eq(""),
+                objects::last_modified.eq(&(now())),
+                objects::path.eq(""),
+                objects::storage_class.eq("STANDARD"),
+            ))
+            .execute(tx)?;
         Ok(version_id)
     }
 
     /// Returns `(delete_marker, version_id)` for the response.
     pub(crate) fn delete_one(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         b: &BucketRow,
         key: &str,
         version: Option<&str>,
@@ -692,19 +710,19 @@ impl Service for S3 {
         _i: ListBucketsRequest,
     ) -> Result<ListBucketsOutput, AwsError> {
         self.db.transaction(|tx| {
-            let mut stmt = tx.prepare(
-                "SELECT name, created_at, region FROM buckets WHERE account_id = ?1 ORDER BY name",
-            )?;
-            let buckets = stmt
-                .query_map(params![ctx.account_id], |r| {
-                    Ok(Bucket {
-                        name: Some(r.get(0)?),
-                        creation_date: Some(Timestamp(r.get(1)?)),
-                        bucket_region: Some(r.get(2)?),
-                        bucket_arn: None,
-                    })
-                })?
-                .collect::<Result<_, _>>()?;
+            let buckets = buckets::table
+                .filter(buckets::account_id.eq(&ctx.account_id))
+                .order(buckets::name)
+                .select((buckets::name, buckets::created_at, buckets::region))
+                .load::<(String, i64, String)>(tx)?
+                .into_iter()
+                .map(|(name, created, region)| Bucket {
+                    name: Some(name),
+                    creation_date: Some(Timestamp(created)),
+                    bucket_region: Some(region),
+                    bucket_arn: None,
+                })
+                .collect();
             Ok(ListBucketsOutput {
                 buckets,
                 owner: Some(owner()),
@@ -772,10 +790,7 @@ impl Service for S3 {
             }
             let lock = i.object_lock_enabled_for_bucket.unwrap_or(false);
             let versioning = if lock { "Enabled" } else { "" };
-            tx.execute(
-                "INSERT INTO buckets (name, account_id, region, created_at, versioning) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![i.bucket, ctx.account_id, region, now(), versioning],
-            )?;
+            diesel::insert_into(buckets::table).values((buckets::name.eq(&(i.bucket)),buckets::account_id.eq(&(ctx.account_id)),buckets::region.eq(&(region)),buckets::created_at.eq(&(now())),buckets::versioning.eq(&(versioning)))).execute(tx)?;
             self.blobs.create_bucket(&i.bucket).map_err(io)?;
             let acl = crate::acl::build(
                 &i.acl,
@@ -789,10 +804,7 @@ impl Service for S3 {
                 ],
             )?;
             if let Some(p) = acl {
-                tx.execute(
-                    "INSERT INTO bucket_configs (bucket, kind, body) VALUES (?1, 'acl', ?2)",
-                    params![i.bucket, crate::acl::to_xml(&p)],
-                )?;
+                diesel::insert_into(bucket_configs::table).values((bucket_configs::bucket.eq(&(i.bucket)),bucket_configs::kind.eq("acl"),bucket_configs::body.eq(&(crate::acl::to_xml(&p))))).execute(tx)?;
             }
             Ok(CreateBucketOutput { location: Some(format!("/{}", i.bucket)), ..Default::default() })
         })
@@ -815,11 +827,10 @@ impl Service for S3 {
     fn delete_bucket(&self, _ctx: &RequestContext, i: DeleteBucketRequest) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             load_bucket(tx, &i.bucket)?;
-            let n: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM objects WHERE bucket = ?1",
-                params![i.bucket],
-                |r| r.get(0),
-            )?;
+            let n: i64 = objects::table
+                .filter(objects::bucket.eq(&(i.bucket)))
+                .count()
+                .first::<i64>(tx)?;
             if n > 0 {
                 return Err(AwsError::sender(
                     409,
@@ -828,7 +839,7 @@ impl Service for S3 {
                 )
                 .with("BucketName", i.bucket.clone()));
             }
-            tx.execute("DELETE FROM buckets WHERE name = ?1", params![i.bucket])?;
+            diesel::delete(buckets::table.filter(buckets::name.eq(&(i.bucket)))).execute(tx)?;
             self.blobs.remove_bucket(&i.bucket).map_err(io)?;
             Ok(())
         })
@@ -1346,10 +1357,9 @@ impl Service for S3 {
                 .iter()
                 .map(|t| (t.key.clone(), t.value.clone()))
                 .collect();
-            tx.execute(
-                "UPDATE objects SET tags = ?1 WHERE seq = ?2",
-                params![json_string(&tags), o.seq],
-            )?;
+            diesel::update(objects::table.filter(objects::seq.eq(&(o.seq))))
+                .set(objects::tags.eq(&(json_string(&tags))))
+                .execute(tx)?;
             Ok(PutObjectTaggingOutput {
                 version_id: (o.version_id != "null").then(|| o.version_id),
             })
@@ -1366,10 +1376,9 @@ impl Service for S3 {
             let o = find_obj(tx, &i.bucket, &i.key, i.version_id.as_deref())?
                 .filter(|o| !o.delete_marker)
                 .ok_or_else(|| no_such_key(&i.key))?;
-            tx.execute(
-                "UPDATE objects SET tags = '{}' WHERE seq = ?1",
-                params![o.seq],
-            )?;
+            diesel::update(objects::table.filter(objects::seq.eq(&(o.seq))))
+                .set(objects::tags.eq("{}"))
+                .execute(tx)?;
             Ok(DeleteObjectTaggingOutput {
                 version_id: (o.version_id != "null").then(|| o.version_id),
             })
@@ -1410,10 +1419,9 @@ impl Service for S3 {
         }
         self.db.transaction(|tx| {
             load_bucket(tx, &i.bucket)?;
-            tx.execute(
-                "UPDATE buckets SET versioning = ?1 WHERE name = ?2",
-                params![status, i.bucket],
-            )?;
+            diesel::update(buckets::table.filter(buckets::name.eq(&(i.bucket))))
+                .set(buckets::versioning.eq(&(status)))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -1981,10 +1989,9 @@ impl Service for S3 {
             let o = find_obj(tx, &i.bucket, &i.key, i.version_id.as_deref())?
                 .filter(|o| !o.delete_marker)
                 .ok_or_else(|| no_such_key(&i.key))?;
-            tx.execute(
-                "UPDATE objects SET acl = ?1 WHERE seq = ?2",
-                params![crate::acl::to_xml(&policy), o.seq],
-            )?;
+            diesel::update(objects::table.filter(objects::seq.eq(&(o.seq))))
+                .set(objects::acl.eq(&(crate::acl::to_xml(&policy))))
+                .execute(tx)?;
             Ok(PutObjectAclOutput::default())
         })
     }
@@ -2166,7 +2173,12 @@ impl S3 {
     ) -> Result<Page, AwsError> {
         self.db.transaction(|tx| {
             load_bucket(tx, bucket)?;
-            let mut page = Page { objects: Vec::new(), prefixes: Vec::new(), truncated: false, last: String::new() };
+            let mut page = Page {
+                objects: Vec::new(),
+                prefixes: Vec::new(),
+                truncated: false,
+                last: String::new(),
+            };
             if max == 0 {
                 return Ok(page);
             }
@@ -2175,18 +2187,31 @@ impl S3 {
             let mut exclusive = true; // key > cursor, or >= after a prefix skip
             let mut count = 0;
             loop {
-                let sql = format!(
-                    "SELECT {OBJ_COLS} FROM objects WHERE bucket = ?1 AND is_latest = 1 AND delete_marker = 0
-                       AND key {} ?2 AND substr(key, 1, length(?3)) = ?3 ORDER BY key LIMIT 200",
-                    if exclusive { ">" } else { ">=" }
-                );
-                let start = if cursor.as_str() < prefix { prefix.to_string() } else { cursor.clone() };
-                let ex = exclusive && cursor.as_str() >= prefix;
-                let sql = if ex { sql } else { sql.replace("key > ?2", "key >= ?2") };
-                let rows: Vec<Obj> = {
-                    let mut stmt = tx.prepare(&sql)?;
-                    stmt.query_map(params![bucket, start, prefix], obj_from_row)?.collect::<Result<_, _>>()?
+                let start = if cursor.as_str() < prefix {
+                    prefix.to_string()
+                } else {
+                    cursor.clone()
                 };
+                let ex = exclusive && cursor.as_str() >= prefix;
+                let mut q = objects::table
+                    .filter(objects::bucket.eq(bucket))
+                    .filter(objects::is_latest.eq(1_i64))
+                    .filter(objects::delete_marker.eq(0_i64))
+                    .filter(substr(objects::key, 1, length(prefix)).eq(prefix))
+                    .into_boxed();
+                q = if ex {
+                    q.filter(objects::key.gt(&start))
+                } else {
+                    q.filter(objects::key.ge(&start))
+                };
+                let rows: Vec<Obj> = q
+                    .order(objects::key)
+                    .limit(200)
+                    .select(ObjectRow::as_select())
+                    .load(tx)?
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 if rows.is_empty() {
                     return Ok(page);
                 }
@@ -2194,7 +2219,8 @@ impl S3 {
                 let mut skipped_to: Option<String> = None;
                 for o in rows {
                     let rest = &o.key[prefix.len()..];
-                    let group = delimiter.and_then(|d| rest.find(d).map(|i| format!("{prefix}{}{d}", &rest[..i])));
+                    let group = delimiter
+                        .and_then(|d| rest.find(d).map(|i| format!("{prefix}{}{d}", &rest[..i])));
                     if let Some(p) = &group {
                         if page.prefixes.last() == Some(p) {
                             continue;
@@ -2251,13 +2277,20 @@ impl S3 {
             let delimiter = i.delimiter.clone().filter(|d| !d.is_empty());
             let key_marker = i.key_marker.clone().unwrap_or_default();
             let vid_marker = i.version_id_marker.clone();
-            let rows: Vec<Obj> = {
-                let mut stmt = tx.prepare(&format!(
-                    "SELECT {OBJ_COLS} FROM objects WHERE bucket = ?1 AND substr(key, 1, length(?2)) = ?2
-                       AND key >= ?3 ORDER BY key, last_modified DESC, seq DESC"
-                ))?;
-                stmt.query_map(params![i.bucket, prefix, key_marker], obj_from_row)?.collect::<Result<_, _>>()?
-            };
+            let rows: Vec<Obj> = objects::table
+                .filter(objects::bucket.eq(&i.bucket))
+                .filter(substr(objects::key, 1, length(&prefix)).eq(&prefix))
+                .filter(objects::key.ge(&key_marker))
+                .order((
+                    objects::key,
+                    objects::last_modified.desc(),
+                    objects::seq.desc(),
+                ))
+                .select(ObjectRow::as_select())
+                .load(tx)?
+                .into_iter()
+                .map(Into::into)
+                .collect();
             let url = i.encoding_type.as_deref() == Some("url");
             let enc = |s: &str| if url { url_encode(s) } else { s.to_string() };
             let mut out = ListObjectVersionsOutput {
@@ -2291,7 +2324,11 @@ impl S3 {
                 if let Some(d) = &delimiter {
                     if let Some(p) = rest.find(d.as_str()) {
                         let cp = format!("{prefix}{}{d}", &rest[..p]);
-                        if out.common_prefixes.iter().any(|c| c.prefix.as_deref() == Some(&enc(&cp))) {
+                        if out
+                            .common_prefixes
+                            .iter()
+                            .any(|c| c.prefix.as_deref() == Some(&enc(&cp)))
+                        {
                             continue;
                         }
                         if count >= max {
@@ -2299,7 +2336,9 @@ impl S3 {
                             break;
                         }
                         count += 1;
-                        out.common_prefixes.push(CommonPrefix { prefix: Some(enc(&cp)) });
+                        out.common_prefixes.push(CommonPrefix {
+                            prefix: Some(enc(&cp)),
+                        });
                         last_key = cp;
                         last_vid = String::new();
                         continue;

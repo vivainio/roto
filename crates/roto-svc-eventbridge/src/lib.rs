@@ -2,6 +2,7 @@
 #[allow(clippy::all)]
 mod generated;
 mod pattern;
+mod schema;
 mod service;
 
 pub use generated::{OPERATIONS, Service, dispatch};

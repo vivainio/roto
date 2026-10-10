@@ -1,29 +1,30 @@
 //! Tags (shared by users, roles, policies, instance profiles) and account aliases.
 
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::Db;
+use crate::schema::*;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
 use crate::util::*;
 
 pub fn load_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     account: &str,
     kind: &str,
     entity: &str,
 ) -> Result<Vec<Tag>, AwsError> {
-    let mut stmt = tx.prepare(
-        "SELECT key, value FROM tags WHERE account_id = ?1 AND kind = ?2 AND entity = ?3 ORDER BY seq",
-    )?;
-    Ok(stmt
-        .query_map(params![account, kind, entity], |r| {
-            Ok(Tag {
-                key: r.get(0)?,
-                value: r.get(1)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
+    Ok(tags::table
+        .filter(tags::account_id.eq(account))
+        .filter(tags::kind.eq(kind))
+        .filter(tags::entity.eq(entity))
+        .order(tags::seq)
+        .select((tags::key, tags::value))
+        .load::<(String, String)>(tx)?
+        .into_iter()
+        .map(|(key, value)| Tag { key, value })
+        .collect())
 }
 
 pub fn check_tags(existing: usize, new: &[Tag]) -> Result<(), AwsError> {
@@ -58,7 +59,7 @@ pub fn check_tags(existing: usize, new: &[Tag]) -> Result<(), AwsError> {
 }
 
 pub fn set_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     account: &str,
     kind: &str,
     entity: &str,
@@ -67,32 +68,43 @@ pub fn set_tags(
     let existing = load_tags(tx, account, kind, entity)?;
     let new_keys = tags
         .iter()
-        .filter(|t| !existing.iter().any(|e| e.key.eq_ignore_ascii_case(&t.key)))
+        .filter(|t| !existing.iter().any(|e| e.key == t.key))
         .count();
-    check_tags(existing.len(), tags)?;
-    let _ = new_keys;
+    check_tags(0, tags)?;
+    check_tags(existing.len() + new_keys, &[])?;
     for t in tags {
-        tx.execute(
-            "INSERT INTO tags (account_id, kind, entity, key, value) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (account_id, kind, entity, key) DO UPDATE SET value = excluded.value",
-            params![account, kind, entity, t.key, t.value],
-        )?;
+        diesel::insert_into(tags::table)
+            .values((
+                tags::account_id.eq(&account),
+                tags::kind.eq(&kind),
+                tags::entity.eq(&entity),
+                tags::key.eq(&t.key),
+                tags::value.eq(&t.value),
+            ))
+            .on_conflict((tags::account_id, tags::kind, tags::entity, tags::key))
+            .do_update()
+            .set(tags::value.eq(diesel::upsert::excluded(tags::value)))
+            .execute(tx)?;
     }
     Ok(())
 }
 
 pub fn remove_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     account: &str,
     kind: &str,
     entity: &str,
     keys: &[String],
 ) -> Result<(), AwsError> {
     for k in keys {
-        tx.execute(
-            "DELETE FROM tags WHERE account_id = ?1 AND kind = ?2 AND entity = ?3 AND key = ?4",
-            params![account, kind, entity, k],
-        )?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&account))
+                .filter(tags::kind.eq(&kind))
+                .filter(tags::entity.eq(&entity))
+                .filter(tags::key.eq(&k)),
+        )
+        .execute(tx)?;
     }
     Ok(())
 }
@@ -103,22 +115,22 @@ pub fn create_account_alias(
     input: CreateAccountAliasRequest,
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
-        let taken: bool = tx
-            .query_row(
-                "SELECT 1 FROM account_aliases WHERE alias = ?1",
-                params![input.account_alias],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
+        let taken = diesel::select(diesel::dsl::exists(
+            account_aliases::table.filter(account_aliases::alias.eq(&input.account_alias)),
+        ))
+        .get_result::<bool>(tx)?;
         if taken {
             return Err(exists("Account Alias", &input.account_alias));
         }
-        tx.execute(
-            "INSERT INTO account_aliases (account_id, alias) VALUES (?1, ?2)
-             ON CONFLICT (account_id) DO UPDATE SET alias = excluded.alias",
-            params![ctx.account_id, input.account_alias],
-        )?;
+        diesel::insert_into(account_aliases::table)
+            .values((
+                account_aliases::account_id.eq(&ctx.account_id),
+                account_aliases::alias.eq(&input.account_alias),
+            ))
+            .on_conflict(account_aliases::account_id)
+            .do_update()
+            .set(account_aliases::alias.eq(diesel::upsert::excluded(account_aliases::alias)))
+            .execute(tx)?;
         Ok(())
     })
 }
@@ -129,12 +141,10 @@ pub fn list_account_aliases(
     _input: ListAccountAliasesRequest,
 ) -> Result<ListAccountAliasesResponse, AwsError> {
     db.transaction(|tx| {
-        let alias: Option<String> = tx
-            .query_row(
-                "SELECT alias FROM account_aliases WHERE account_id = ?1",
-                params![ctx.account_id],
-                |r| r.get(0),
-            )
+        let alias = account_aliases::table
+            .filter(account_aliases::account_id.eq(&ctx.account_id))
+            .select(account_aliases::alias)
+            .first::<String>(tx)
             .optional()?;
         Ok(ListAccountAliasesResponse {
             account_aliases: alias.into_iter().collect(),
@@ -150,10 +160,12 @@ pub fn delete_account_alias(
     input: DeleteAccountAliasRequest,
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
-        let n = tx.execute(
-            "DELETE FROM account_aliases WHERE account_id = ?1 AND alias = ?2",
-            params![ctx.account_id, input.account_alias],
-        )?;
+        let n = diesel::delete(
+            account_aliases::table
+                .filter(account_aliases::account_id.eq(&ctx.account_id))
+                .filter(account_aliases::alias.eq(&input.account_alias)),
+        )
+        .execute(tx)?;
         if n == 0 {
             return Err(no_such("Account Alias", &input.account_alias));
         }

@@ -1,33 +1,33 @@
 use crate::generated::*;
+use crate::models::GroupRow;
 use crate::roles::check_policy_document;
+use crate::schema::*;
 use crate::users::{load_user, user_out};
 use crate::util::*;
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::Db;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 pub(crate) fn load_group(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &str,
 ) -> Result<Group, AwsError> {
-    tx.query_row(
-        "SELECT name,path,group_id,created_at FROM groups WHERE account_id=?1 AND name=?2",
-        params![ctx.account_id, name],
-        |r| {
-            let name: String = r.get(0)?;
-            let path: String = r.get(1)?;
-            Ok(Group {
-                arn: arn(ctx, &format!("group{path}{name}")),
-                group_name: name,
-                path,
-                group_id: r.get(2)?,
-                create_date: ts(r.get(3)?),
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| AwsError::sender(404, "NoSuchEntity", format!("Group {name} not found")))
+    groups::table
+        .filter(groups::account_id.eq(&ctx.account_id))
+        .filter(groups::name.eq(&name))
+        .select(GroupRow::as_select())
+        .first::<GroupRow>(tx)
+        .map(|r| Group {
+            arn: arn(ctx, &format!("group{}{}", r.path, r.name)),
+            group_name: r.name,
+            path: r.path,
+            group_id: r.group_id,
+            create_date: ts(r.created_at),
+        })
+        .optional()?
+        .ok_or_else(|| AwsError::sender(404, "NoSuchEntity", format!("Group {name} not found")))
 }
 pub fn create_group(
     db: &Db,
@@ -36,24 +36,25 @@ pub fn create_group(
 ) -> Result<CreateGroupResponse, AwsError> {
     let path = normalize_path(i.path.as_deref())?;
     db.transaction(|tx| {
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM groups WHERE account_id=?1 AND name=?2)",
-            params![ctx.account_id, i.group_name],
-            |r| r.get(0),
-        )?;
+        let exists: bool = diesel::select(diesel::dsl::exists(
+            groups::table
+                .filter(groups::account_id.eq(&ctx.account_id))
+                .filter(groups::name.eq(&i.group_name)),
+        ))
+        .first::<bool>(tx)?;
         if exists {
             return Err(crate::util::exists("Group", &i.group_name));
         }
-        tx.execute(
-            "INSERT INTO groups(account_id,name,path,group_id,created_at) VALUES(?1,?2,?3,?4,?5)",
-            params![
-                ctx.account_id,
-                i.group_name,
-                path,
-                gen_id("AGPA", 17),
-                now()
-            ],
-        )?;
+        let row = GroupRow {
+            account_id: ctx.account_id.clone(),
+            name: i.group_name.clone(),
+            path,
+            group_id: gen_id("AGPA", 17),
+            created_at: now(),
+        };
+        diesel::insert_into(groups::table)
+            .values(&row)
+            .execute(tx)?;
         Ok(CreateGroupResponse {
             group: load_group(tx, ctx, &i.group_name)?,
         })
@@ -64,13 +65,28 @@ pub fn get_group(
     ctx: &RequestContext,
     i: GetGroupRequest,
 ) -> Result<GetGroupResponse, AwsError> {
-    db.transaction(|tx|{
-        let group=load_group(tx,ctx,&i.group_name)?;
-        let mut stmt=tx.prepare("SELECT user_name FROM group_members WHERE account_id=?1 AND group_name=?2 ORDER BY user_name COLLATE NOCASE")?;
-        let names:Vec<String>=stmt.query_map(params![ctx.account_id,i.group_name],|r|r.get(0))?.collect::<Result<_,_>>()?;
-        let (names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        let users=names.iter().map(|n|user_out(tx,ctx,&load_user(tx,&ctx.account_id,n)?)).collect::<Result<_,_>>()?;
-        Ok(GetGroupResponse {group,users,is_truncated:Some(truncated),marker})
+    db.transaction(|tx| {
+        let group = load_group(tx, ctx, &i.group_name)?;
+        let names = group_members::table
+            .filter(group_members::account_id.eq(&ctx.account_id))
+            .filter(group_members::group_name.eq(&i.group_name))
+            .order(group_members::user_name)
+            .select(group_members::user_name)
+            .load::<String>(tx)?;
+        let (names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        let users = names
+            .iter()
+            .map(|n| {
+                let row = load_user(tx, &ctx.account_id, n)?;
+                user_out(tx, ctx, &row)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(GetGroupResponse {
+            group,
+            users,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 pub fn list_groups(
@@ -78,12 +94,34 @@ pub fn list_groups(
     ctx: &RequestContext,
     i: ListGroupsRequest,
 ) -> Result<ListGroupsResponse, AwsError> {
-    db.transaction(|tx|{
-        let mut stmt=tx.prepare("SELECT name FROM groups WHERE account_id=?1 AND substr(path,1,length(?2))=?2 ORDER BY name COLLATE NOCASE")?;
-        let names:Vec<String>=stmt.query_map(params![ctx.account_id,i.path_prefix.as_deref().unwrap_or("/")],|r|r.get(0))?.collect::<Result<_,_>>()?;
-        let (names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        let groups=names.iter().map(|n|load_group(tx,ctx,n)).collect::<Result<_,_>>()?;
-        Ok(ListGroupsResponse {groups,is_truncated:Some(truncated),marker})
+    db.transaction(|tx| {
+        let names = groups::table
+            .filter(
+                substr(
+                    groups::path,
+                    1,
+                    length(literal_prefix(Some(
+                        i.path_prefix.as_deref().unwrap_or("/"),
+                    ))),
+                )
+                .eq(literal_prefix(Some(
+                    i.path_prefix.as_deref().unwrap_or("/"),
+                ))),
+            )
+            .filter(groups::account_id.eq(&ctx.account_id))
+            .order(groups::name)
+            .select(groups::name)
+            .load::<String>(tx)?;
+        let (names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        let groups = names
+            .iter()
+            .map(|n| load_group(tx, ctx, n))
+            .collect::<Result<_, _>>()?;
+        Ok(ListGroupsResponse {
+            groups,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 pub fn list_groups_for_user(
@@ -91,13 +129,24 @@ pub fn list_groups_for_user(
     ctx: &RequestContext,
     i: ListGroupsForUserRequest,
 ) -> Result<ListGroupsForUserResponse, AwsError> {
-    db.transaction(|tx|{
-        load_user(tx,&ctx.account_id,&i.user_name)?;
-        let mut stmt=tx.prepare("SELECT group_name FROM group_members WHERE account_id=?1 AND user_name=?2 ORDER BY group_name COLLATE NOCASE")?;
-        let names:Vec<String>=stmt.query_map(params![ctx.account_id,i.user_name],|r|r.get(0))?.collect::<Result<_,_>>()?;
-        let (names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        let groups=names.iter().map(|n|load_group(tx,ctx,n)).collect::<Result<_,_>>()?;
-        Ok(ListGroupsForUserResponse {groups,is_truncated:Some(truncated),marker})
+    db.transaction(|tx| {
+        load_user(tx, &ctx.account_id, &i.user_name)?;
+        let names = group_members::table
+            .filter(group_members::account_id.eq(&ctx.account_id))
+            .filter(group_members::user_name.eq(&i.user_name))
+            .order(group_members::group_name)
+            .select(group_members::group_name)
+            .load::<String>(tx)?;
+        let (names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        let groups = names
+            .iter()
+            .map(|n| load_group(tx, ctx, n))
+            .collect::<Result<_, _>>()?;
+        Ok(ListGroupsForUserResponse {
+            groups,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 pub fn add_user_to_group(
@@ -108,10 +157,14 @@ pub fn add_user_to_group(
     db.transaction(|tx| {
         load_user(tx, &ctx.account_id, &i.user_name)?;
         load_group(tx, ctx, &i.group_name)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO group_members(account_id,group_name,user_name) VALUES(?1,?2,?3)",
-            params![ctx.account_id, i.group_name, i.user_name],
-        )?;
+        diesel::insert_into(group_members::table)
+            .values((
+                group_members::account_id.eq(&ctx.account_id),
+                group_members::group_name.eq(&i.group_name),
+                group_members::user_name.eq(&i.user_name),
+            ))
+            .on_conflict_do_nothing()
+            .execute(tx)?;
         Ok(())
     })
 }
@@ -122,10 +175,13 @@ pub fn remove_user_from_group(
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
         load_group(tx, ctx, &i.group_name)?;
-        let n = tx.execute(
-            "DELETE FROM group_members WHERE account_id=?1 AND group_name=?2 AND user_name=?3",
-            params![ctx.account_id, i.group_name, i.user_name],
-        )?;
+        let n = diesel::delete(
+            group_members::table
+                .filter(group_members::account_id.eq(&ctx.account_id))
+                .filter(group_members::group_name.eq(&i.group_name))
+                .filter(group_members::user_name.eq(&i.user_name)),
+        )
+        .execute(tx)?;
         if n == 0 {
             return Err(AwsError::sender(
                 404,
@@ -137,22 +193,103 @@ pub fn remove_user_from_group(
     })
 }
 pub fn delete_group(db: &Db, ctx: &RequestContext, i: DeleteGroupRequest) -> Result<(), AwsError> {
-    db.transaction(|tx|{
-        load_group(tx,ctx,&i.group_name).map_err(|e|if e.code=="NoSuchEntity" {no_such("group",&i.group_name)}else{e})?;
-        let members:i64=tx.query_row("SELECT (SELECT COUNT(*) FROM group_members WHERE account_id=?1 AND group_name=?2)+(SELECT COUNT(*) FROM inline_policies WHERE account_id=?1 AND kind='group' AND entity=?2)+(SELECT COUNT(*) FROM attachments WHERE account_id=?1 AND kind='group' AND entity=?2)",params![ctx.account_id,i.group_name],|r|r.get(0))?;
-        if members>0{return Err(conflict("Cannot delete group, must remove users and policies first."));}
-        tx.execute("DELETE FROM groups WHERE account_id=?1 AND name=?2",params![ctx.account_id,i.group_name])?;Ok(())
+    db.transaction(|tx| {
+        load_group(tx, ctx, &i.group_name).map_err(|e| {
+            if e.code == "NoSuchEntity" {
+                no_such("group", &i.group_name)
+            } else {
+                e
+            }
+        })?;
+        let members = group_members::table
+            .filter(group_members::account_id.eq(&ctx.account_id))
+            .filter(group_members::group_name.eq(&i.group_name))
+            .count()
+            .get_result::<i64>(tx)?
+            + inline_policies::table
+                .filter(inline_policies::account_id.eq(&ctx.account_id))
+                .filter(inline_policies::kind.eq("group"))
+                .filter(inline_policies::entity.eq(&i.group_name))
+                .count()
+                .get_result::<i64>(tx)?
+            + attachments::table
+                .filter(attachments::account_id.eq(&ctx.account_id))
+                .filter(attachments::kind.eq("group"))
+                .filter(attachments::entity.eq(&i.group_name))
+                .count()
+                .get_result::<i64>(tx)?;
+        if members > 0 {
+            return Err(conflict(
+                "Cannot delete group, must remove users and policies first.",
+            ));
+        }
+        diesel::delete(
+            groups::table
+                .filter(groups::account_id.eq(&ctx.account_id))
+                .filter(groups::name.eq(&i.group_name)),
+        )
+        .execute(tx)?;
+        Ok(())
     })
 }
 pub fn update_group(db: &Db, ctx: &RequestContext, i: UpdateGroupRequest) -> Result<(), AwsError> {
-    db.transaction(|tx|{
-        let g=load_group(tx,ctx,&i.group_name).map_err(|e|if e.code=="NoSuchEntity" {no_such("group",&i.group_name)}else{e})?;
-        let name=i.new_group_name.unwrap_or(g.group_name.clone());
-        let path=match i.new_path {Some(p)=>normalize_path(Some(&p))?,None=>g.path};
-        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM groups WHERE account_id=?1 AND name=?2 AND name<>?3)",params![ctx.account_id,name,g.group_name],|r|r.get(0))?;
-        if exists{return Err(AwsError::sender(409,"Conflict",format!("Group {name} already exists")));}
-        tx.execute("UPDATE groups SET name=?1,path=?2 WHERE account_id=?3 AND name=?4",params![name,path,ctx.account_id,g.group_name])?;
-        for sql in ["UPDATE group_members SET group_name=?1 WHERE account_id=?2 AND group_name=?3","UPDATE inline_policies SET entity=?1 WHERE account_id=?2 AND kind='group' AND entity=?3","UPDATE attachments SET entity=?1 WHERE account_id=?2 AND kind='group' AND entity=?3"]{tx.execute(sql,params![name,ctx.account_id,g.group_name])?;}
+    db.transaction(|tx| {
+        let g = load_group(tx, ctx, &i.group_name).map_err(|e| {
+            if e.code == "NoSuchEntity" {
+                no_such("group", &i.group_name)
+            } else {
+                e
+            }
+        })?;
+        let name = i.new_group_name.unwrap_or(g.group_name.clone());
+        let path = match i.new_path {
+            Some(p) => normalize_path(Some(&p))?,
+            None => g.path,
+        };
+        let exists: bool = diesel::select(diesel::dsl::exists(
+            groups::table
+                .filter(groups::account_id.eq(&ctx.account_id))
+                .filter(groups::name.eq(&name))
+                .filter(groups::name.ne(&g.group_name)),
+        ))
+        .first::<bool>(tx)?;
+        if exists {
+            return Err(AwsError::sender(
+                409,
+                "Conflict",
+                format!("Group {name} already exists"),
+            ));
+        }
+        diesel::update(
+            groups::table
+                .filter(groups::account_id.eq(&ctx.account_id))
+                .filter(groups::name.eq(&g.group_name)),
+        )
+        .set((groups::name.eq(&name), groups::path.eq(&path)))
+        .execute(tx)?;
+        diesel::update(
+            group_members::table
+                .filter(group_members::account_id.eq(&ctx.account_id))
+                .filter(group_members::group_name.eq(&g.group_name)),
+        )
+        .set(group_members::group_name.eq(&name))
+        .execute(tx)?;
+        diesel::update(
+            inline_policies::table
+                .filter(inline_policies::account_id.eq(&ctx.account_id))
+                .filter(inline_policies::kind.eq("group"))
+                .filter(inline_policies::entity.eq(&g.group_name)),
+        )
+        .set(inline_policies::entity.eq(&name))
+        .execute(tx)?;
+        diesel::update(
+            attachments::table
+                .filter(attachments::account_id.eq(&ctx.account_id))
+                .filter(attachments::kind.eq("group"))
+                .filter(attachments::entity.eq(&g.group_name)),
+        )
+        .set(attachments::entity.eq(&name))
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -162,9 +299,26 @@ pub fn put_group_policy(
     i: PutGroupPolicyRequest,
 ) -> Result<(), AwsError> {
     check_policy_document(&i.policy_document)?;
-    db.transaction(|tx|{
-        load_group(tx,ctx,&i.group_name)?;
-        tx.execute("INSERT INTO inline_policies(account_id,kind,entity,name,document) VALUES(?1,'group',?2,?3,?4) ON CONFLICT(account_id,kind,entity,name) DO UPDATE SET document=excluded.document",params![ctx.account_id,i.group_name,i.policy_name,i.policy_document])?;Ok(())
+    db.transaction(|tx| {
+        load_group(tx, ctx, &i.group_name)?;
+        diesel::insert_into(inline_policies::table)
+            .values((
+                inline_policies::account_id.eq(&ctx.account_id),
+                inline_policies::kind.eq("group"),
+                inline_policies::entity.eq(&i.group_name),
+                inline_policies::name.eq(&i.policy_name),
+                inline_policies::document.eq(&i.policy_document),
+            ))
+            .on_conflict((
+                inline_policies::account_id,
+                inline_policies::kind,
+                inline_policies::entity,
+                inline_policies::name,
+            ))
+            .do_update()
+            .set(inline_policies::document.eq(diesel::upsert::excluded(inline_policies::document)))
+            .execute(tx)?;
+        Ok(())
     })
 }
 pub fn get_group_policy(
@@ -172,10 +326,28 @@ pub fn get_group_policy(
     ctx: &RequestContext,
     i: GetGroupPolicyRequest,
 ) -> Result<GetGroupPolicyResponse, AwsError> {
-    db.transaction(|tx|{
-        let g=load_group(tx,ctx,&i.group_name)?;
-        let document=tx.query_row("SELECT document FROM inline_policies WHERE account_id=?1 AND kind='group' AND entity=?2 AND name=?3",params![ctx.account_id,i.group_name,i.policy_name],|r|r.get(0)).optional()?.ok_or_else(||AwsError::sender(404,"NoSuchEntity",format!("Policy {} not found",i.policy_name)))?;
-        Ok(GetGroupPolicyResponse {group_name:g.group_name,policy_name:i.policy_name,policy_document:document})
+    db.transaction(|tx| {
+        let g = load_group(tx, ctx, &i.group_name)?;
+        let document = inline_policies::table
+            .filter(inline_policies::account_id.eq(&ctx.account_id))
+            .filter(inline_policies::kind.eq("group"))
+            .filter(inline_policies::entity.eq(&i.group_name))
+            .filter(inline_policies::name.eq(&i.policy_name))
+            .select(inline_policies::document)
+            .first::<String>(tx)
+            .optional()?
+            .ok_or_else(|| {
+                AwsError::sender(
+                    404,
+                    "NoSuchEntity",
+                    format!("Policy {} not found", i.policy_name),
+                )
+            })?;
+        Ok(GetGroupPolicyResponse {
+            group_name: g.group_name,
+            policy_name: i.policy_name,
+            policy_document: document,
+        })
     })
 }
 pub fn delete_group_policy(
@@ -183,10 +355,20 @@ pub fn delete_group_policy(
     ctx: &RequestContext,
     i: DeleteGroupPolicyRequest,
 ) -> Result<(), AwsError> {
-    db.transaction(|tx|{
-        load_group(tx,ctx,&i.group_name)?;
-        let n=tx.execute("DELETE FROM inline_policies WHERE account_id=?1 AND kind='group' AND entity=?2 AND name=?3",params![ctx.account_id,i.group_name,i.policy_name])?;
-        if n==0{return Err(no_such("policy",&i.policy_name));}Ok(())
+    db.transaction(|tx| {
+        load_group(tx, ctx, &i.group_name)?;
+        let n = diesel::delete(
+            inline_policies::table
+                .filter(inline_policies::account_id.eq(&ctx.account_id))
+                .filter(inline_policies::kind.eq("group"))
+                .filter(inline_policies::entity.eq(&i.group_name))
+                .filter(inline_policies::name.eq(&i.policy_name)),
+        )
+        .execute(tx)?;
+        if n == 0 {
+            return Err(no_such("policy", &i.policy_name));
+        }
+        Ok(())
     })
 }
 pub fn list_group_policies(
@@ -194,12 +376,21 @@ pub fn list_group_policies(
     ctx: &RequestContext,
     i: ListGroupPoliciesRequest,
 ) -> Result<ListGroupPoliciesResponse, AwsError> {
-    db.transaction(|tx|{
-        load_group(tx,ctx,&i.group_name)?;
-        let mut stmt=tx.prepare("SELECT name FROM inline_policies WHERE account_id=?1 AND kind='group' AND entity=?2 ORDER BY name")?;
-        let names=stmt.query_map(params![ctx.account_id,i.group_name],|r|r.get(0))?.collect::<Result<Vec<String>,_>>()?;
-        let (policy_names,truncated,marker)=paginate(names,i.marker.as_deref(),i.max_items)?;
-        Ok(ListGroupPoliciesResponse {policy_names,is_truncated:Some(truncated),marker})
+    db.transaction(|tx| {
+        load_group(tx, ctx, &i.group_name)?;
+        let names = inline_policies::table
+            .filter(inline_policies::account_id.eq(&ctx.account_id))
+            .filter(inline_policies::kind.eq("group"))
+            .filter(inline_policies::entity.eq(&i.group_name))
+            .order(inline_policies::name)
+            .select(inline_policies::name)
+            .load::<String>(tx)?;
+        let (policy_names, truncated, marker) = paginate(names, i.marker.as_deref(), i.max_items)?;
+        Ok(ListGroupPoliciesResponse {
+            policy_names,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 

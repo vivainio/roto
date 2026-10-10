@@ -5,16 +5,18 @@ mod change_sets;
 #[allow(clippy::all)]
 mod generated;
 mod resources;
+mod schema;
 mod spec;
 mod template;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use roto_core::rusqlite::{OptionalExtension, params};
-use roto_core::store::{Db, Migration, Store};
+use diesel::prelude::*;
+use roto_core::store::{DieselDb as Db, Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler, ids};
 use roto_protocol::{QueryParams, Timestamp, query_error};
+use schema::stacks;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -245,7 +247,7 @@ impl CloudFormation {
         handlers: HashMap<&'static str, Arc<dyn ServiceHandler>>,
     ) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("cloudformation", MIGRATIONS)?,
+            db: store.diesel_db("cloudformation", MIGRATIONS)?,
             resources: Resources::new(handlers),
             mutation: Mutex::new(()),
             spec: OnceLock::new(),
@@ -284,16 +286,34 @@ impl CloudFormation {
         let body =
             serde_json::to_string(&persisted).map_err(|e| AwsError::internal(e.to_string()))?;
         self.db.transaction(|tx| {
-            tx.execute("INSERT INTO stacks(account_id,region,name,stack_id,body) VALUES(?1,?2,?3,?4,?5)
-                ON CONFLICT(account_id,region,name) DO UPDATE SET stack_id=excluded.stack_id,body=excluded.body",
-                params![ctx.account_id,ctx.region,stack.name,stack.id,body])?;
+            diesel::insert_into(stacks::table)
+                .values((
+                    stacks::account_id.eq(&ctx.account_id),
+                    stacks::region.eq(&ctx.region),
+                    stacks::name.eq(&stack.name),
+                    stacks::stack_id.eq(&stack.id),
+                    stacks::body.eq(&body),
+                ))
+                .on_conflict((stacks::account_id, stacks::region, stacks::name))
+                .do_update()
+                .set((
+                    stacks::stack_id.eq(diesel::upsert::excluded(stacks::stack_id)),
+                    stacks::body.eq(diesel::upsert::excluded(stacks::body)),
+                ))
+                .execute(tx)?;
             Ok(())
         })
     }
     fn find(&self, ctx: &RequestContext, name: &str) -> Result<Option<StackState>, AwsError> {
-        let body: Option<String> = self.db.read(|c| Ok(c.query_row(
-            "SELECT body FROM stacks WHERE account_id=?1 AND region=?2 AND (name=?3 OR stack_id=?3)",
-            params![ctx.account_id,ctx.region,name], |r|r.get(0)).optional()?))?;
+        let body: Option<String> = self.db.read(|c| {
+            Ok(stacks::table
+                .filter(stacks::account_id.eq(&ctx.account_id))
+                .filter(stacks::region.eq(&ctx.region))
+                .filter(stacks::name.eq(name).or(stacks::stack_id.eq(name)))
+                .select(stacks::body)
+                .first(c)
+                .optional()?)
+        })?;
         body.map(|body| serde_json::from_str(&body).map_err(|e| AwsError::internal(e.to_string())))
             .transpose()
     }
@@ -304,16 +324,17 @@ impl CloudFormation {
     }
     fn all(&self, ctx: &RequestContext) -> Result<Vec<StackState>, AwsError> {
         self.db.read(|c| {
-            let mut statement = c.prepare(
-                "SELECT body FROM stacks WHERE account_id=?1 AND region=?2 ORDER BY name",
-            )?;
-            let rows = statement.query_map(params![ctx.account_id, ctx.region], |r| {
-                r.get::<_, String>(0)
-            })?;
-            rows.map(|row| {
-                serde_json::from_str(&row?).map_err(|e| AwsError::internal(e.to_string()))
-            })
-            .collect()
+            stacks::table
+                .filter(stacks::account_id.eq(&ctx.account_id))
+                .filter(stacks::region.eq(&ctx.region))
+                .order(stacks::name)
+                .select(stacks::body)
+                .load::<String>(c)?
+                .into_iter()
+                .map(|body| {
+                    serde_json::from_str(&body).map_err(|e| AwsError::internal(e.to_string()))
+                })
+                .collect()
         })
     }
     fn reconcile(&self, ctx: &RequestContext, stack: &mut StackState) -> Result<(), AwsError> {
@@ -1373,7 +1394,7 @@ impl ServiceHandler for CloudFormationHandler {
     fn reset(&self) -> Result<(), AwsError> {
         let _guard = self.0.mutation.lock().unwrap();
         self.0.db.transaction(|tx| {
-            tx.execute("DELETE FROM stacks", [])?;
+            diesel::delete(stacks::table).execute(tx)?;
             Ok(())
         })
     }

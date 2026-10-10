@@ -122,3 +122,8 @@ pub fn paginate<T>(
         Ok((page, false, None))
     }
 }
+
+/// Default path prefix for literal SQLite substring filters.
+pub fn literal_prefix(prefix: Option<&str>) -> &str {
+    prefix.unwrap_or("/")
+}

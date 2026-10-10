@@ -3,8 +3,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use md5::{Digest, Md5};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::Timestamp;
 
@@ -62,23 +64,23 @@ struct Upload {
 }
 
 fn load_upload(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     bucket: &str,
     key: &str,
     upload_id: &str,
 ) -> Result<Upload, AwsError> {
-    tx.query_row(
-        "SELECT key, attrs FROM uploads WHERE upload_id = ?1 AND bucket = ?2 AND key = ?3",
-        params![upload_id, bucket, key],
-        |r| {
-            Ok(Upload {
-                key: r.get(0)?,
-                attrs: attrs_from_json(&r.get::<_, String>(1)?),
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| no_such_upload(upload_id))
+    uploads::table
+        .filter(uploads::upload_id.eq(upload_id))
+        .filter(uploads::bucket.eq(bucket))
+        .filter(uploads::key.eq(key))
+        .select((uploads::key, uploads::attrs))
+        .first::<(String, String)>(tx)
+        .optional()?
+        .map(|(key, attrs)| Upload {
+            key,
+            attrs: attrs_from_json(&attrs),
+        })
+        .ok_or_else(|| no_such_upload(upload_id))
 }
 
 fn check_part_number(n: i32) -> Result<(), AwsError> {
@@ -102,10 +104,15 @@ pub(crate) fn create(
     s3.db.transaction(|tx| {
         load_bucket(tx, &i.bucket)?;
         let upload_id = uuid::Uuid::new_v4().simple().to_string();
-        tx.execute(
-            "INSERT INTO uploads (upload_id, bucket, key, created_at, attrs) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![upload_id, i.bucket, i.key, now_secs(), attrs_to_json(&attrs)],
-        )?;
+        diesel::insert_into(uploads::table)
+            .values((
+                uploads::upload_id.eq(&(upload_id)),
+                uploads::bucket.eq(&(i.bucket)),
+                uploads::key.eq(&(i.key)),
+                uploads::created_at.eq(&(now_secs())),
+                uploads::attrs.eq(&(attrs_to_json(&attrs))),
+            ))
+            .execute(tx)?;
         Ok(CreateMultipartUploadOutput {
             bucket: Some(i.bucket.clone()),
             key: Some(i.key.clone()),
@@ -118,7 +125,7 @@ pub(crate) fn create(
 
 fn store_part(
     s3: &S3,
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     bucket: &str,
     upload_id: &str,
     part: i32,
@@ -127,12 +134,24 @@ fn store_part(
     let etag = hex::encode(Md5::digest(data));
     let rel = Blobs::part_rel(bucket, upload_id, part);
     s3.blobs.write_rel(&rel, data).map_err(io)?;
-    tx.execute(
-        "INSERT INTO parts (upload_id, part_number, size, etag, path, last_modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT (upload_id, part_number) DO UPDATE SET size = excluded.size, etag = excluded.etag,
-                                                              path = excluded.path, last_modified = excluded.last_modified",
-        params![upload_id, part, data.len() as i64, etag, rel, now_secs()],
-    )?;
+    diesel::insert_into(parts::table)
+        .values((
+            parts::upload_id.eq(&(upload_id)),
+            parts::part_number.eq(&(part)),
+            parts::size.eq(&(data.len() as i64)),
+            parts::etag.eq(&(etag)),
+            parts::path.eq(&(rel)),
+            parts::last_modified.eq(&(now_secs())),
+        ))
+        .on_conflict((parts::upload_id, parts::part_number))
+        .do_update()
+        .set((
+            parts::size.eq(diesel::upsert::excluded(parts::size)),
+            parts::etag.eq(diesel::upsert::excluded(parts::etag)),
+            parts::path.eq(diesel::upsert::excluded(parts::path)),
+            parts::last_modified.eq(diesel::upsert::excluded(parts::last_modified)),
+        ))
+        .execute(tx)?;
     Ok(etag)
 }
 
@@ -225,12 +244,7 @@ pub(crate) fn complete(
                 .with("UploadId", i.upload_id.clone()));
             }
             last = n;
-            let row: Option<(i64, String, String)> = tx
-                .query_row(
-                    "SELECT size, etag, path FROM parts WHERE upload_id = ?1 AND part_number = ?2",
-                    params![i.upload_id, n],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
+            let row: Option<(i64, String, String)> = parts::table.filter(parts::upload_id.eq(&(i.upload_id))).filter(parts::part_number.eq(&(n))).select((parts::size,parts::etag,parts::path)).first::<(i64,String,String)>(tx)
                 .optional()?;
             let invalid = || {
                 AwsError::sender(
@@ -267,7 +281,7 @@ pub(crate) fn complete(
         attrs.headers.insert("mp_parts".into(), layout.join(","));
         let o = s3.store_object(tx, &b, &up.key, &data, etag.clone(), attrs)?;
         crate::notifications::record(tx, ctx, &b, &up.key, "ObjectCreated:CompleteMultipartUpload", Some(&o))?;
-        tx.execute("DELETE FROM uploads WHERE upload_id = ?1", params![i.upload_id])?;
+        diesel::delete(uploads::table.filter(uploads::upload_id.eq(&(i.upload_id)))).execute(tx)?;
         s3.blobs.remove_dir(&format!(".roto/{}/uploads/{}", i.bucket, i.upload_id)).map_err(io)?;
         Ok(CompleteMultipartUploadOutput {
             bucket: Some(i.bucket.clone()),
@@ -289,10 +303,7 @@ pub(crate) fn abort(
     s3.db.transaction(|tx| {
         load_bucket(tx, &i.bucket)?;
         load_upload(tx, &i.bucket, &i.key, &i.upload_id)?;
-        tx.execute(
-            "DELETE FROM uploads WHERE upload_id = ?1",
-            params![i.upload_id],
-        )?;
+        diesel::delete(uploads::table.filter(uploads::upload_id.eq(&(i.upload_id)))).execute(tx)?;
         s3.blobs
             .remove_dir(&format!(".roto/{}/uploads/{}", i.bucket, i.upload_id))
             .map_err(io)?;
@@ -317,21 +328,27 @@ pub(crate) fn list_parts(
         load_bucket(tx, &i.bucket)?;
         let up = load_upload(tx, &i.bucket, &i.key, &i.upload_id)?;
         let marker = i.part_number_marker.unwrap_or(0);
-        let mut stmt = tx.prepare(
-            "SELECT part_number, size, etag, last_modified FROM parts
-             WHERE upload_id = ?1 AND part_number > ?2 ORDER BY part_number LIMIT ?3",
-        )?;
-        let mut parts: Vec<Part> = stmt
-            .query_map(params![i.upload_id, marker, max + 1], |r| {
-                Ok(Part {
-                    part_number: Some(r.get(0)?),
-                    size: Some(r.get(1)?),
-                    e_tag: Some(format!("\"{}\"", r.get::<_, String>(2)?)),
-                    last_modified: Some(Timestamp(r.get(3)?)),
-                    ..Default::default()
-                })
-            })?
-            .collect::<Result<_, _>>()?;
+        let mut parts: Vec<Part> = parts::table
+            .filter(parts::upload_id.eq(&i.upload_id))
+            .filter(parts::part_number.gt(marker))
+            .order(parts::part_number)
+            .limit(i64::from(max) + 1)
+            .select((
+                parts::part_number,
+                parts::size,
+                parts::etag,
+                parts::last_modified,
+            ))
+            .load::<(i32, i64, String, i64)>(tx)?
+            .into_iter()
+            .map(|(n, size, etag, modified)| Part {
+                part_number: Some(n),
+                size: Some(size),
+                e_tag: Some(format!("\"{etag}\"")),
+                last_modified: Some(Timestamp(modified)),
+                ..Default::default()
+            })
+            .collect();
         let truncated = parts.len() as i32 > max;
         parts.truncate(max as usize);
         let next = parts.last().and_then(|p| p.part_number);
@@ -370,17 +387,22 @@ pub(crate) fn list_uploads(
         let prefix = i.prefix.clone().unwrap_or_default();
         let key_marker = i.key_marker.clone().unwrap_or_default();
         let id_marker = i.upload_id_marker.clone().unwrap_or_default();
-        let mut stmt = tx.prepare(
-            "SELECT upload_id, key, created_at, attrs FROM uploads
-             WHERE bucket = ?1 AND substr(key, 1, length(?2)) = ?2
-               AND (key > ?3 OR (key = ?3 AND upload_id > ?4))
-             ORDER BY key, upload_id",
-        )?;
-        let rows: Vec<(String, String, i64, String)> = stmt
-            .query_map(params![i.bucket, prefix, key_marker, id_marker], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })?
-            .collect::<Result<_, _>>()?;
+        let rows = uploads::table
+            .filter(uploads::bucket.eq(&i.bucket))
+            .filter(substr(uploads::key, 1, length(&prefix)).eq(&prefix))
+            .filter(
+                uploads::key.gt(&key_marker).or(uploads::key
+                    .eq(&key_marker)
+                    .and(uploads::upload_id.gt(&id_marker))),
+            )
+            .order((uploads::key, uploads::upload_id))
+            .select((
+                uploads::upload_id,
+                uploads::key,
+                uploads::created_at,
+                uploads::attrs,
+            ))
+            .load::<(String, String, i64, String)>(tx)?;
         let delimiter = i.delimiter.clone().filter(|d| !d.is_empty());
         let mut out = ListMultipartUploadsOutput {
             bucket: Some(i.bucket.clone()),

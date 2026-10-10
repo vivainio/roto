@@ -7,14 +7,16 @@
 
 #[allow(clippy::all)]
 mod generated;
+mod schema;
 
 use std::sync::Arc;
 
-use roto_core::rusqlite::{OptionalExtension, params};
-use roto_core::store::{Db, Migration, Store};
+use diesel::prelude::*;
+use roto_core::store::{DieselDb as Db, Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
 use roto_protocol::{QueryParams, Timestamp, base64, query_error};
 use roto_svc_iam::Iam;
+use schema::sessions;
 
 use generated::*;
 pub use generated::{NAMESPACE, OPERATIONS, Service, dispatch};
@@ -60,14 +62,14 @@ pub struct Sts {
 impl Sts {
     pub fn new(store: &Store, iam: Arc<Iam>) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("sts", MIGRATIONS)?,
+            db: store.diesel_db("sts", MIGRATIONS)?,
             iam,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM sessions", [])?;
+            diesel::delete(sessions::table).execute(tx)?;
             Ok(())
         })
     }
@@ -75,12 +77,11 @@ impl Sts {
     fn session_account(&self, access_key: &str) -> Option<String> {
         self.db
             .read(|c| {
-                Ok(c.query_row(
-                    "SELECT account_id FROM sessions WHERE access_key_id = ?1",
-                    params![access_key],
-                    |r| r.get(0),
-                )
-                .optional()?)
+                Ok(sessions::table
+                    .filter(sessions::access_key_id.eq(access_key))
+                    .select(sessions::account_id)
+                    .first::<String>(c)
+                    .optional()?)
             })
             .ok()
             .flatten()
@@ -115,11 +116,16 @@ impl Sts {
         );
         let expires = now() + duration;
         self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO sessions (access_key_id, account_id, role_arn, session_name, role_id, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![access_key, account, role_arn, session_name, role_id, expires],
-            )?;
+            diesel::insert_into(sessions::table)
+                .values((
+                    sessions::access_key_id.eq(&access_key),
+                    sessions::account_id.eq(&account),
+                    sessions::role_arn.eq(role_arn),
+                    sessions::session_name.eq(session_name),
+                    sessions::role_id.eq(&role_id),
+                    sessions::expires_at.eq(expires),
+                ))
+                .execute(tx)?;
             Ok(())
         })?;
         let partition = partition(&ctx.region);
@@ -215,12 +221,16 @@ impl Service for Sts {
         let partition = partition(&ctx.region);
         if let Some(key) = ctx.access_key.as_deref() {
             let session = self.db.read(|c| {
-                Ok(c.query_row(
-                    "SELECT account_id, role_arn, session_name, role_id FROM sessions WHERE access_key_id = ?1",
-                    params![key],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
-                )
-                .optional()?)
+                Ok(sessions::table
+                    .filter(sessions::access_key_id.eq(key))
+                    .select((
+                        sessions::account_id,
+                        sessions::role_arn,
+                        sessions::session_name,
+                        sessions::role_id,
+                    ))
+                    .first::<(String, String, String, String)>(c)
+                    .optional()?)
             })?;
             if let Some((account, role_arn, session, role_id)) = session {
                 let role_name = role_arn.rsplit('/').next().unwrap_or(&role_arn);

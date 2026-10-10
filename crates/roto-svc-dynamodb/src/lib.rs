@@ -9,6 +9,8 @@
 
 #[allow(clippy::all)]
 mod generated;
+mod models;
+mod schema;
 
 mod backups;
 mod batch;

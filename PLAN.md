@@ -21,7 +21,7 @@ Key decision: generate types from botocore models; services only implement busin
 Request flow: route (SigV4 credential scope / X-Amz-Target / host / path) -> decode -> handler against store -> encode output or error.
 
 ## Storage (persistent)
-- SQLite (rusqlite, bundled) for metadata and structured state; one DB file per service, `account_id` + `region` key columns.
+- SQLite (Diesel for typed CRUD, rusqlite for migrations and inspection) for metadata and structured state; one DB file per service, `account_id` + `region` key columns.
 - WAL, `synchronous=NORMAL` (`--durable` for FULL), busy_timeout; dedicated writer thread / spawn_blocking so tokio never blocks.
 - Typed tables per service (e.g. SQS `queues`, `messages(visible_at, ...)`), not generic KV.
 - Versioned migrations per DB. On-disk format unstable until v1.0 (explicit wipe-on-incompatible option).
@@ -78,7 +78,7 @@ $ROTO_DATA_DIR/s3/
 
 ## Open items
 - Compatibility target: exact moto error messages/IDs vs "good enough for SDKs".
-- Default libs: tokio, hyper/axum, serde, quick-xml, rusqlite, dashmap-free (state is in SQLite).
+- Default libs: tokio, hyper/axum, serde, quick-xml, Diesel/SQLite, dashmap-free (state is in SQLite).
 - Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
 
 ## Target services (what the user's stack actually uses)
@@ -181,3 +181,107 @@ are implemented, bringing coverage to 62/180 operations and 127/349 portable Mot
 tests passing. Group renames preserve memberships and both kinds of policies;
 deletion requires removing users and policies first. Native checks cover account
 isolation, idempotent membership, pagination and renamed relationships across restart.
+
+
+## IAM instance profiles (2026-10-10)
+
+Instance profiles now support create/get/list/delete, add/remove a role, listing by
+role, and tags, bringing IAM to 72/180 operations and 133/349 portable Moto tests
+passing (13 skipped). Profiles enforce a one-role limit, block deletion while a role
+is attached, and prevent deleting an attached role. Native checks cover account
+isolation, case-insensitive names, role/tag persistence, scoped and paginated listings,
+cleanup/reset, tag replacement at capacity and rollback of invalid creation. The shared
+tag updater now counts new keys rather than replacements toward the 50-tag limit.
+Some remaining Moto profile tests use invalid paths or non-JSON trust policies that
+Roto deliberately rejects. CloudFormation instance-profile resources remain unsupported.
+
+## Diesel adoption (2026-10-10)
+
+The shared store now provides typed Diesel SQLite connections, sharing the service
+lock and database with existing migrations and read-only inspection. IAM's entire
+implemented handler surface uses Diesel queries, with table declarations and stored
+row models separate from generated AWS models. Persistence, rollback, ephemeral-store
+isolation and inspection access have native coverage. The IAM Moto baseline remains
+133 passing, 13 skipped and 216 excluded; the seeded demo and workspace tests pass.
+Remaining services retain `rusqlite` for incremental conversion.
+
+
+## SSM Diesel port (2026-10-10)
+
+Parameter Store now uses typed Diesel records and queries for parameter versions,
+labels, resource tags and scoped latest-version selection. The Moto baseline stays
+75 passing, 2 skipped and 81 excluded. Native tests cover restart persistence,
+account/region isolation with identical names, SecureString reads, label moves,
+tag updates, history pagination, reset and the labeled-oldest-version pruning guard.
+Secrets Manager and KMS are the next small CRUD candidates; S3, DynamoDB, SQS and
+Lambda need more care around storage and delivery behavior.
+
+## KMS and STS Diesel port (2026-10-10)
+
+Key metadata, aliases and role sessions now use typed Diesel queries. Scoped alias
+joins and credential account routing retain their existing behavior. Native tests
+and service Clippy pass; Moto remains 152 passing for KMS and 25 for STS.
+
+## Secrets Manager Diesel port (2026-10-10)
+
+Secret metadata and version records now use named Diesel row models. All CRUD,
+version-stage updates, deletion, filters and batch reads use typed queries.
+Moto remains 104 passing, 2 skipped and 30 excluded; service Clippy passes.
+
+## CloudFormation and EventBridge Diesel port (2026-10-10)
+
+Stack snapshots and EventBridge buses, rules, targets and delivery queues now use
+typed queries. Delivery retry ordering remains SQLite rowid order. CloudFormation
+has 22 passing native tests (one existing ignored); EventBridge keeps its 23-pass,
+5-skip Moto baseline. Service Clippy and the seeded demo smoke pass.
+
+## Kinesis Diesel port (2026-10-10)
+
+Streams, records, shard sequences and iterator tokens now use typed queries,
+including record retention and stream token invalidation. All 76 Moto tests,
+five native tests and service Clippy pass.
+
+## SNS Diesel port (2026-10-10)
+
+Topics and subscriptions use named Diesel rows and typed CRUD, preserving
+creation order and fan-out behavior. Moto remains 126 passing, 1 skipped and
+58 excluded. Native tests and service Clippy pass.
+
+## SQS Diesel port (2026-10-10)
+
+Queues, messages and receipt history use typed queries. FIFO blocking uses a
+correlated alias; inserted messages return their sequence directly. Dead-letter
+moves and receipt tombstones retain their behavior. All 139 Moto tests (6 skipped),
+eight native tests and service Clippy pass.
+
+## Lambda Diesel port (2026-10-10)
+
+Functions, invocation jobs/results and event-source mappings now use typed CRUD.
+Restart recovery, async claim order and mapping filters preserve their behavior.
+Thirteen native tests and service Clippy pass; Moto retains 8 passing, 30 skipped
+and 117 excluded tests.
+
+## DynamoDB Diesel port (2026-10-10)
+
+Table metadata uses named records; items, backups and restores use typed CRUD.
+Query/Scan key conditions and continuation filters use boxed Diesel queries
+instead of constructing SQL and positional bindings. Backup copies remain single
+INSERT SELECT statements. Moto remains 414 passing, 2 skipped and 115 excluded;
+21 native tests and service Clippy pass.
+
+## S3 Diesel port and service conversion complete (2026-10-10)
+
+Buckets, object versions, configs, multipart uploads/parts and notification
+outbox records now use typed CRUD and named row models. Literal listing prefixes
+and version order are preserved; notification inserts return their sequencer
+directly. Fifteen native tests and service Clippy pass. S3 Moto has 240 passing,
+59 skipped, 127 excluded, 2 xfailed and one HTTP response-parsing timeout in
+`test_list_object_versions_with_delimiter`. The same focused test times out with
+the pre-port S3 implementation in this Python 3.9 environment; no exclusions were
+changed to hide it.
+
+Every service's database CRUD now uses Diesel. `rusqlite` remains in the shared
+store for existing migrations and dynamic inspection, sharing locks and database
+contents with Diesel. Workspace tests, the locked server build and seeded demo
+smoke pass. Workspace Clippy only reports the existing argument-count lint in
+`roto-server/src/trace.rs`; converted service crates pass Clippy.

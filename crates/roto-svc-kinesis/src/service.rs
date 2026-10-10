@@ -1,7 +1,9 @@
+use crate::schema::*;
 use crate::{MIGRATIONS, generated::*};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::{Db, Store};
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{FromJson, ToJson};
 use serde_json::{Value, json};
@@ -13,13 +15,13 @@ pub struct Kinesis {
 impl Kinesis {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("kinesis", MIGRATIONS)?,
+            db: store.diesel_db("kinesis", MIGRATIONS)?,
         })
     }
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM streams", [])?;
-            tx.execute("DELETE FROM tokens", [])?;
+            diesel::delete(streams::table).execute(tx)?;
+            diesel::delete(tokens::table).execute(tx)?;
             Ok(())
         })
     }
@@ -64,7 +66,7 @@ fn missing(ctx: &RequestContext, name: &str) -> AwsError {
         format!("Stream {name} under account {} not found.", ctx.account_id),
     )
 }
-fn load(tx: &Transaction, ctx: &RequestContext, input: &Value) -> Result<Value, AwsError> {
+fn load(tx: &mut SqliteConnection, ctx: &RequestContext, input: &Value) -> Result<Value, AwsError> {
     let name = text(input, "StreamName");
     let id = if name.is_empty() {
         text(input, "StreamARN").to_string()
@@ -74,12 +76,12 @@ fn load(tx: &Transaction, ctx: &RequestContext, input: &Value) -> Result<Value, 
     if id.is_empty() {
         return Err(invalid("StreamName or StreamARN is required"));
     }
-    let data: Option<String> = tx
-        .query_row(
-            "SELECT metadata FROM streams WHERE arn=?1 AND account_id=?2 AND region=?3",
-            params![id, ctx.account_id, ctx.region],
-            |r| r.get(0),
-        )
+    let data: Option<String> = streams::table
+        .filter(streams::arn.eq(&(id)))
+        .filter(streams::account_id.eq(&(ctx.account_id)))
+        .filter(streams::region.eq(&(ctx.region)))
+        .select(streams::metadata)
+        .first::<String>(tx)
         .optional()?;
     let s: Value = data
         .map(|s| serde_json::from_str(&s).map_err(|e| AwsError::internal(e.to_string())))
@@ -99,20 +101,16 @@ fn load(tx: &Transaction, ctx: &RequestContext, input: &Value) -> Result<Value, 
         ));
     }
     // Expire against the current retention before a later increase can expose old records.
-    tx.execute(
-        "DELETE FROM records WHERE stream_arn=?1 AND arrived<?2",
-        params![
-            id,
-            now() - s["RetentionPeriodHours"].as_f64().unwrap_or(24.) * 3600.
-        ],
-    )?;
+    diesel::delete(records::table.filter(records::stream_arn.eq(&(id))).filter(
+        records::arrived.lt(&(now() - s["RetentionPeriodHours"].as_f64().unwrap_or(24.) * 3600.)),
+    ))
+    .execute(tx)?;
     Ok(s)
 }
-fn save(tx: &Transaction, s: &Value) -> Result<(), AwsError> {
-    tx.execute(
-        "UPDATE streams SET metadata=?1 WHERE arn=?2",
-        params![s.to_string(), text(s, "StreamARN")],
-    )?;
+fn save(tx: &mut SqliteConnection, s: &Value) -> Result<(), AwsError> {
+    diesel::update(streams::table.filter(streams::arn.eq(&(text(s, "StreamARN")))))
+        .set(streams::metadata.eq(&(s.to_string())))
+        .execute(tx)?;
     Ok(())
 }
 fn shard(id: usize, start: u128, end: u128) -> Value {
@@ -146,7 +144,7 @@ fn hash(s: &Value, key: &str) -> Result<u128, AwsError> {
         .map_err(|_| AwsError::internal("invalid stored shard hash range"))
 }
 fn token(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     payload: Value,
@@ -154,27 +152,33 @@ fn token(
 ) -> Result<String, AwsError> {
     let id = uuid::Uuid::new_v4().to_string();
     let current = now();
-    tx.execute("DELETE FROM tokens WHERE expires<?1", [current])?;
-    tx.execute(
-        "INSERT INTO tokens VALUES (?1,?2,?3,?4,?5,?6)",
-        params![
-            id,
-            ctx.account_id,
-            ctx.region,
-            kind,
-            payload.to_string(),
-            current + ttl
-        ],
-    )?;
+    diesel::delete(tokens::table.filter(tokens::expires.lt(&(current)))).execute(tx)?;
+    diesel::insert_into(tokens::table)
+        .values((
+            tokens::token.eq(&(id)),
+            tokens::account_id.eq(&(ctx.account_id)),
+            tokens::region.eq(&(ctx.region)),
+            tokens::kind.eq(&(kind)),
+            tokens::payload.eq(&(payload.to_string())),
+            tokens::expires.eq(&(current + ttl)),
+        ))
+        .execute(tx)?;
     Ok(id)
 }
 fn read_token(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     id: &str,
 ) -> Result<Value, AwsError> {
-    let found: Option<(String,f64)>=tx.query_row("SELECT payload,expires FROM tokens WHERE token=?1 AND account_id=?2 AND region=?3 AND kind=?4",params![id,ctx.account_id,ctx.region,kind],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let found: Option<(String, f64)> = tokens::table
+        .filter(tokens::token.eq(&(id)))
+        .filter(tokens::account_id.eq(&(ctx.account_id)))
+        .filter(tokens::region.eq(&(ctx.region)))
+        .filter(tokens::kind.eq(&(kind)))
+        .select((tokens::payload, tokens::expires))
+        .first::<(String, f64)>(tx)
+        .optional()?;
     let (payload, expires) = found.ok_or_else(|| invalid("Invalid token"))?;
     if expires < now() {
         return Err(err(
@@ -188,13 +192,12 @@ fn read_token(
     }
     serde_json::from_str(&payload).map_err(|e| AwsError::internal(e.to_string()))
 }
-fn next_sequence(tx: &Transaction, stream: &str, shard: &str) -> Result<i64, AwsError> {
-    Ok(tx
-        .query_row(
-            "SELECT sequence + 1 FROM shard_sequences WHERE stream_arn=?1 AND shard_id=?2",
-            params![stream, shard],
-            |r| r.get(0),
-        )
+fn next_sequence(tx: &mut SqliteConnection, stream: &str, shard: &str) -> Result<i64, AwsError> {
+    Ok(shard_sequences::table
+        .filter(shard_sequences::stream_arn.eq(&(stream)))
+        .filter(shard_sequences::shard_id.eq(&(shard)))
+        .select(shard_sequences::sequence + 1_i64)
+        .first::<i64>(tx)
         .optional()?
         .unwrap_or(1))
 }
@@ -231,7 +234,7 @@ fn validate_record(v: &Value, index: Option<usize>) -> Result<Vec<u8>, AwsError>
     }
     Ok(data)
 }
-fn put(tx: &Transaction, s: &Value, v: &Value, data: &[u8]) -> Result<Value, AwsError> {
+fn put(tx: &mut SqliteConnection, s: &Value, v: &Value, data: &[u8]) -> Result<Value, AwsError> {
     let key = text(v, "PartitionKey");
     let h = if let Some(explicit) = v.get("ExplicitHashKey") {
         explicit
@@ -254,20 +257,35 @@ fn put(tx: &Transaction, s: &Value, v: &Value, data: &[u8]) -> Result<Value, Aws
     let id = text(target, "ShardId");
     let stream = text(s, "StreamARN");
     let seq = next_sequence(tx, stream, id)?;
-    tx.execute("INSERT INTO shard_sequences VALUES (?1,?2,?3) ON CONFLICT(stream_arn,shard_id) DO UPDATE SET sequence=excluded.sequence",params![stream,id,seq])?;
-    tx.execute(
-        "INSERT INTO records VALUES (?1,?2,?3,?4,?5,?6)",
-        params![stream, id, seq, data, key, now()],
-    )?;
+    diesel::insert_into(shard_sequences::table)
+        .values((
+            shard_sequences::stream_arn.eq(&(stream)),
+            shard_sequences::shard_id.eq(&(id)),
+            shard_sequences::sequence.eq(&(seq)),
+        ))
+        .on_conflict((shard_sequences::stream_arn, shard_sequences::shard_id))
+        .do_update()
+        .set(shard_sequences::sequence.eq(diesel::upsert::excluded(shard_sequences::sequence)))
+        .execute(tx)?;
+    diesel::insert_into(records::table)
+        .values((
+            records::stream_arn.eq(&(stream)),
+            records::shard_id.eq(&(id)),
+            records::sequence.eq(&(seq)),
+            records::data.eq(&(data)),
+            records::partition_key.eq(&(key)),
+            records::arrived.eq(&(now())),
+        ))
+        .execute(tx)?;
     Ok(json!({"ShardId":id,"SequenceNumber":seq.to_string(),"EncryptionType":s["EncryptionType"]}))
 }
-fn close(tx: &Transaction, stream: &str, shard: &mut Value) -> Result<(), AwsError> {
+fn close(tx: &mut SqliteConnection, stream: &str, shard: &mut Value) -> Result<(), AwsError> {
     let seq = next_sequence(tx, stream, text(shard, "ShardId"))? - 1;
     shard["SequenceNumberRange"]["EndingSequenceNumber"] = json!(seq.to_string());
     Ok(())
 }
 fn call(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     op: &str,
     input: &Value,
@@ -297,9 +315,11 @@ fn call(
                 ));
             }
             let id = arn(ctx, name);
-            if tx.query_row("SELECT COUNT(*) FROM streams WHERE arn=?1", [&id], |r| {
-                r.get::<_, i64>(0)
-            })? > 0
+            if streams::table
+                .filter(streams::arn.eq(&(&id)))
+                .count()
+                .first::<i64>(tx)?
+                > 0
             {
                 return Err(err(
                     "ResourceInUseException",
@@ -315,10 +335,15 @@ fn call(
                 .map(|(i, (start, end))| shard(i, start, end))
                 .collect();
             let s = json!({"StreamName":name,"StreamARN":id,"StreamStatus":"ACTIVE","StreamCreationTimestamp":now(),"RetentionPeriodHours":24,"StreamModeDetails":{"StreamMode":mode},"EncryptionType":"NONE","EnhancedMonitoring":[{"ShardLevelMetrics":[]}],"Shards":shards,"Tags":{},"Consumers":[]});
-            tx.execute(
-                "INSERT INTO streams VALUES (?1,?2,?3,?4,?5)",
-                params![id, ctx.account_id, ctx.region, name, s.to_string()],
-            )?;
+            diesel::insert_into(streams::table)
+                .values((
+                    streams::arn.eq(&(id)),
+                    streams::account_id.eq(&(ctx.account_id)),
+                    streams::region.eq(&(ctx.region)),
+                    streams::name.eq(&(name)),
+                    streams::metadata.eq(&(s.to_string())),
+                ))
+                .execute(tx)?;
             return Ok(json!({}));
         }
         "ListStreams" => {
@@ -334,12 +359,13 @@ fn call(
             } else {
                 text(input, "ExclusiveStartStreamName").to_string()
             };
-            let mut stmt=tx.prepare("SELECT metadata FROM streams WHERE account_id=?1 AND region=?2 AND name>?3 ORDER BY name")?;
-            let raw = stmt
-                .query_map(params![ctx.account_id, ctx.region, start], |r| {
-                    r.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+            let raw = streams::table
+                .filter(streams::account_id.eq(&(ctx.account_id)))
+                .filter(streams::region.eq(&(ctx.region)))
+                .filter(streams::name.gt(&(start)))
+                .order(streams::name)
+                .select(streams::metadata)
+                .load::<String>(tx)?;
             let more = raw.len() > limit;
             let mut names = Vec::new();
             let mut summaries = Vec::new();
@@ -363,13 +389,11 @@ fn call(
             return Ok(result);
         }
         "DescribeLimits" => {
-            let mut stmt =
-                tx.prepare("SELECT metadata FROM streams WHERE account_id=?1 AND region=?2")?;
-            let streams = stmt
-                .query_map(params![ctx.account_id, ctx.region], |r| {
-                    r.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+            let streams = streams::table
+                .filter(streams::account_id.eq(&(ctx.account_id)))
+                .filter(streams::region.eq(&(ctx.region)))
+                .select(streams::metadata)
+                .load::<String>(tx)?;
             let mut shards = 0;
             let mut demand = 0;
             for raw in streams {
@@ -403,27 +427,21 @@ fn call(
             let id = text(&cursor, "shard");
             let position = cursor["sequence"].as_i64().unwrap_or(1);
             let cutoff = now() - s["RetentionPeriodHours"].as_f64().unwrap_or(24.) * 3600.;
-            let mut stmt=tx.prepare("SELECT sequence,data,partition_key,arrived FROM records WHERE stream_arn=?1 AND shard_id=?2 AND sequence>=?3 AND arrived>=?4 AND arrived>=?5 ORDER BY sequence LIMIT ?6")?;
-            let rows = stmt
-                .query_map(
-                    params![
-                        stream,
-                        id,
-                        position,
-                        cutoff,
-                        cursor["timestamp"].as_f64().unwrap_or(0.),
-                        limit as i64
-                    ],
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, Vec<u8>>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, f64>(3)?,
-                        ))
-                    },
-                )?
-                .collect::<Result<Vec<_>, _>>()?;
+            let rows = records::table
+                .filter(records::stream_arn.eq(&(stream)))
+                .filter(records::shard_id.eq(&(id)))
+                .filter(records::sequence.ge(&(position)))
+                .filter(records::arrived.ge(&(cutoff)))
+                .filter(records::arrived.ge(&(cursor["timestamp"].as_f64().unwrap_or(0.))))
+                .order(records::sequence)
+                .limit(limit as i64)
+                .select((
+                    records::sequence,
+                    records::data,
+                    records::partition_key,
+                    records::arrived,
+                ))
+                .load::<(i64, Vec<u8>, String, f64)>(tx)?;
             let mut records = Vec::new();
             let mut size = 0;
             let mut next = position;
@@ -437,7 +455,12 @@ fn call(
                 last_time = Some(time);
                 records.push(json!({"SequenceNumber":seq.to_string(),"Data":STANDARD.encode(data),"PartitionKey":key,"ApproximateArrivalTimestamp":time,"EncryptionType":s["EncryptionType"]}));
             }
-            let latest:Option<f64>=tx.query_row("SELECT MAX(arrived) FROM records WHERE stream_arn=?1 AND shard_id=?2 AND arrived>=?3",params![stream,id,cutoff],|r|r.get(0))?;
+            let latest: Option<f64> = records::table
+                .filter(records::stream_arn.eq(&(stream)))
+                .filter(records::shard_id.eq(&(id)))
+                .filter(records::arrived.ge(&(cutoff)))
+                .select(diesel::dsl::max(records::arrived))
+                .first::<Option<f64>>(tx)?;
             let lag = latest
                 .zip(last_time)
                 .map(|(latest, last)| ((latest - last).max(0.) * 1000.) as i64)
@@ -492,8 +515,8 @@ fn call(
     let mut result = json!({});
     match op {
         "DeleteStream" => {
-            tx.execute("DELETE FROM tokens WHERE json_extract(payload,'$.stream')=?1 OR json_extract(payload,'$.StreamARN')=?1", [&stream])?;
-            tx.execute("DELETE FROM streams WHERE arn=?1", [&stream])?;
+            diesel::delete(tokens::table.filter(crate::schema::json_extract(tokens::payload,"$.stream").eq(&stream).or(crate::schema::json_extract(tokens::payload,"$.StreamARN").eq(&stream)))).execute(tx)?;
+            diesel::delete(streams::table.filter(streams::arn.eq(&(&stream)))).execute(tx)?;
             return Ok(result);
         }
         "DescribeStream" | "DescribeStreamSummary" => {
@@ -680,10 +703,12 @@ fn call(
                 )));
             }
             s["RetentionPeriodHours"] = json!(n);
-            tx.execute(
-                "DELETE FROM records WHERE stream_arn=?1 AND arrived<?2",
-                params![stream, now() - n as f64 * 3600.],
-            )?;
+            diesel::delete(
+                records::table
+                    .filter(records::stream_arn.eq(&(stream)))
+                    .filter(records::arrived.lt(&(now() - n as f64 * 3600.))),
+            )
+            .execute(tx)?;
         }
         "AddTagsToStream" => {
             let tags = input["Tags"]
@@ -1256,7 +1281,9 @@ mod tests {
             json!([])
         );
         k.db.transaction(|tx| {
-            tx.execute("UPDATE tokens SET expires=0", [])?;
+            diesel::update(tokens::table)
+                .set(tokens::expires.eq(0_f64))
+                .execute(tx)?;
             Ok(())
         })
         .unwrap();
@@ -1280,7 +1307,9 @@ mod tests {
             "1"
         );
         k.db.transaction(|tx| {
-            tx.execute("UPDATE records SET arrived=?1", [now() - 25. * 3600.])?;
+            diesel::update(records::table)
+                .set(records::arrived.eq(&(now() - 25. * 3600.)))
+                .execute(tx)?;
             Ok(())
         })
         .unwrap();

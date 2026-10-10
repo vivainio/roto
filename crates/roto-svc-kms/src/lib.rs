@@ -1,13 +1,16 @@
 //! Lightweight symmetric KMS simulation. Ciphertexts contain plaintext; no cryptography.
 #[allow(clippy::all)]
 mod generated;
+mod schema;
 use base64::{Engine, engine::general_purpose::STANDARD};
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use generated::*;
 pub use generated::{OPERATIONS, Service, dispatch};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::{Db, Migration, Store};
+use roto_core::store::{DieselDb as Db, Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
 use roto_protocol::{FromJson, ToJson, json_error};
+use schema::{aliases, keys};
 use serde_json::{Value, json};
 use std::sync::Arc;
 const MIGRATIONS: &[Migration] = &[Migration {
@@ -21,7 +24,7 @@ pub struct KmsHandler(pub Arc<Kms>);
 impl KmsHandler {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self(Arc::new(Kms {
-            db: store.db("kms", MIGRATIONS)?,
+            db: store.diesel_db("kms", MIGRATIONS)?,
         })))
     }
 }
@@ -48,8 +51,8 @@ impl ServiceHandler for KmsHandler {
     }
     fn reset(&self) -> Result<(), AwsError> {
         self.0.db.transaction(|tx| {
-            tx.execute("DELETE FROM aliases", [])?;
-            tx.execute("DELETE FROM keys", [])?;
+            diesel::delete(aliases::table).execute(tx)?;
+            diesel::delete(keys::table).execute(tx)?;
             Ok(())
         })
     }
@@ -69,32 +72,32 @@ fn now() -> f64 {
         .unwrap_or_default()
         .as_secs_f64()
 }
-fn save_key(tx: &Transaction<'_>, ctx: &RequestContext, key: &Value) -> Result<(), AwsError> {
-    tx.execute(
-        "UPDATE keys SET metadata=?1 WHERE account=?2 AND region=?3 AND id=?4",
-        params![
-            key.to_string(),
-            ctx.account_id,
-            ctx.region,
-            text(key, "KeyId")
-        ],
-    )?;
+fn save_key(tx: &mut SqliteConnection, ctx: &RequestContext, key: &Value) -> Result<(), AwsError> {
+    diesel::update(
+        keys::table
+            .filter(keys::account.eq(&ctx.account_id))
+            .filter(keys::region.eq(&ctx.region))
+            .filter(keys::id.eq(&text(key, "KeyId"))),
+    )
+    .set(keys::metadata.eq(&key.to_string()))
+    .execute(tx)?;
     Ok(())
 }
-fn load(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Value, AwsError> {
+fn load(tx: &mut SqliteConnection, ctx: &RequestContext, id: &str) -> Result<Value, AwsError> {
     let id = id
         .split(":alias/")
         .nth(1)
         .map(|s| format!("alias/{s}"))
         .unwrap_or_else(|| id.to_owned());
     let id = if id.starts_with("alias/") {
-        tx.query_row(
-            "SELECT key_id FROM aliases WHERE account=?1 AND region=?2 AND name=?3",
-            params![ctx.account_id, ctx.region, id],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()?
-        .ok_or_else(|| error("NotFoundException", "Alias not found"))?
+        aliases::table
+            .filter(aliases::account.eq(&ctx.account_id))
+            .filter(aliases::region.eq(&ctx.region))
+            .filter(aliases::name.eq(&id))
+            .select(aliases::key_id)
+            .first::<String>(tx)
+            .optional()?
+            .ok_or_else(|| error("NotFoundException", "Alias not found"))?
     } else {
         id.strip_prefix(&format!(
             "arn:aws:kms:{}:{}:key/",
@@ -103,12 +106,12 @@ fn load(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Value, AwsEr
         .unwrap_or(&id)
         .to_owned()
     };
-    let data: String = tx
-        .query_row(
-            "SELECT metadata FROM keys WHERE account=?1 AND region=?2 AND id=?3",
-            params![ctx.account_id, ctx.region, id],
-            |r| r.get(0),
-        )
+    let data: String = keys::table
+        .filter(keys::account.eq(&ctx.account_id))
+        .filter(keys::region.eq(&ctx.region))
+        .filter(keys::id.eq(&id))
+        .select(keys::metadata)
+        .first::<String>(tx)
         .optional()?
         .ok_or_else(|| error("NotFoundException", format!("Invalid keyId {id}")))?;
     serde_json::from_str(&data).map_err(|_| error("InternalException", "Invalid stored key"))
@@ -137,7 +140,7 @@ fn encrypt(key: &Value, plain: &[u8], ctx: Value) -> String {
     STANDARD.encode(serde_json::to_vec(&json!({"roto_kms":1,"key_id":key["Arn"],"context":ctx,"plaintext":STANDARD.encode(plain)})).unwrap())
 }
 fn decrypt(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     v: &Value,
     context_key: &str,
@@ -182,11 +185,11 @@ impl Kms {
   let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
   let policy=v.get("Policy").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||json!({"Version":"2012-10-17","Id":"key-default-1","Statement":[{"Sid":"Enable IAM User Permissions","Effect":"Allow","Principal":{"AWS":format!("arn:aws:iam::{}:root",ctx.account_id)},"Action":"kms:*","Resource":"*"}]}).to_string());
   let key=json!({"AWSAccountId":ctx.account_id,"KeyId":id,"Arn":format!("arn:aws:kms:{}:{}:key/{id}",ctx.region,ctx.account_id),"CreationDate":now,"Enabled":true,"KeyState":"Enabled","Description":text(v,"Description"),"KeyUsage":"ENCRYPT_DECRYPT","KeySpec":"SYMMETRIC_DEFAULT","CustomerMasterKeySpec":"SYMMETRIC_DEFAULT","Origin":"AWS_KMS","KeyManager":"CUSTOMER","EncryptionAlgorithms":["SYMMETRIC_DEFAULT"],"MultiRegion":false,"Tags":v.get("Tags").cloned().unwrap_or_else(||json!([])),"Policy":policy,"KeyRotationEnabled":false,"RotationPeriodInDays":365});
-  tx.execute("INSERT INTO keys VALUES (?1,?2,?3,?4)",params![ctx.account_id,ctx.region,id,key.to_string()])?;
+  diesel::insert_into(keys::table).values((keys::account.eq(&ctx.account_id),keys::region.eq(&ctx.region),keys::id.eq(&id),keys::metadata.eq(&key.to_string()))).execute(tx)?;
   Ok(json!({"KeyMetadata":key}))
  },
  "DescribeKey"=>Ok(json!({"KeyMetadata":load(tx,ctx,text(v,"KeyId"))?})),
- "EnableKey"|"DisableKey"=> { let mut key=load(tx,ctx,text(v,"KeyId"))?; let enabled=op=="EnableKey"; key["Enabled"]=json!(enabled); key["KeyState"]=json!(if enabled {"Enabled"} else {"Disabled"}); tx.execute("UPDATE keys SET metadata=?1 WHERE account=?2 AND region=?3 AND id=?4",params![key.to_string(),ctx.account_id,ctx.region,text(&key,"KeyId")])?; Ok(json!({})) },
+ "EnableKey"|"DisableKey"=> { let mut key=load(tx,ctx,text(v,"KeyId"))?; let enabled=op=="EnableKey"; key["Enabled"]=json!(enabled); key["KeyState"]=json!(if enabled {"Enabled"} else {"Disabled"}); diesel::update(keys::table.filter(keys::account.eq(&ctx.account_id)).filter(keys::region.eq(&ctx.region)).filter(keys::id.eq(&text(&key,"KeyId")))).set(keys::metadata.eq(&key.to_string())).execute(tx)?; Ok(json!({})) },
  "CreateAlias"=> {
   let name=text(v,"AliasName");
   if !name.starts_with("alias/") || name.len()<=6 { return Err(error("ValidationException","Invalid identifier")); }
@@ -194,30 +197,28 @@ impl Kms {
   if name.bytes().any(|b| !(b.is_ascii_alphanumeric() || b"/_-".contains(&b))) { return Err(error("ValidationException","Alias contains invalid characters")); }
   if text(v,"TargetKeyId").starts_with("alias/") || text(v,"TargetKeyId").contains(":alias/") { return Err(error("ValidationException","Aliases must refer to keys. Not aliases")); }
   let key=load(tx,ctx,text(v,"TargetKeyId"))?;
-  let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM aliases WHERE account=?1 AND region=?2 AND name=?3)",params![ctx.account_id,ctx.region,name],|r|r.get(0))?;
+  let exists:bool=diesel::select(diesel::dsl::exists(aliases::table.filter(aliases::account.eq(&ctx.account_id)).filter(aliases::region.eq(&ctx.region)).filter(aliases::name.eq(name)))).get_result(tx)?;
   if exists { return Err(error("AlreadyExistsException",format!("An alias with the name arn:aws:kms:{}:{}:{} already exists",ctx.region,ctx.account_id,name))); }
-  tx.execute("INSERT INTO aliases(account,region,name,key_id,created_at) VALUES (?1,?2,?3,?4,?5)",params![ctx.account_id,ctx.region,name,text(&key,"KeyId"),now()])?; Ok(json!({}))
+  diesel::insert_into(aliases::table).values((aliases::account.eq(&ctx.account_id),aliases::region.eq(&ctx.region),aliases::name.eq(&name),aliases::key_id.eq(&text(&key,"KeyId")),aliases::created_at.eq(&now()))).execute(tx)?; Ok(json!({}))
  },
  "DeleteAlias"=> {
-  let name=text(v,"AliasName"); if !name.starts_with("alias/") {return Err(error("ValidationException","Invalid identifier"));} let changed=tx.execute("DELETE FROM aliases WHERE account=?1 AND region=?2 AND name=?3",params![ctx.account_id,ctx.region,name])?;
+  let name=text(v,"AliasName"); if !name.starts_with("alias/") {return Err(error("ValidationException","Invalid identifier"));} let changed=diesel::delete(aliases::table.filter(aliases::account.eq(&ctx.account_id)).filter(aliases::region.eq(&ctx.region)).filter(aliases::name.eq(&name))).execute(tx)?;
   if changed==0 { return Err(error("NotFoundException",format!("Alias arn:aws:kms:{}:{}:{} is not found.",ctx.region,ctx.account_id,name))); } Ok(json!({}))
  },
  "UpdateAlias"=> {
   let name=text(v,"AliasName"); let target=load(tx,ctx,text(v,"TargetKeyId"))?;
-  let changed=tx.execute("UPDATE aliases SET key_id=?1 WHERE account=?2 AND region=?3 AND name=?4",params![text(&target,"KeyId"),ctx.account_id,ctx.region,name])?;
+  let changed=diesel::update(aliases::table.filter(aliases::account.eq(&ctx.account_id)).filter(aliases::region.eq(&ctx.region)).filter(aliases::name.eq(&name))).set(aliases::key_id.eq(&text(&target,"KeyId"))).execute(tx)?;
   if changed==0 { return Err(error("NotFoundException",format!("Alias arn:aws:kms:{}:{}:{} is not found.",ctx.region,ctx.account_id,name))); } Ok(json!({}))
  },
  "ListKeys"=> {
-  let mut stmt=tx.prepare("SELECT metadata FROM keys WHERE account=?1 AND region=?2 ORDER BY id")?;
-  let rows=stmt.query_map(params![ctx.account_id,ctx.region],|r|r.get::<_,String>(0))?;
-  let mut keys=Vec::new(); for row in rows { let k:Value=serde_json::from_str(&row?).map_err(|_| error("InternalException", "Invalid stored key"))?; keys.push(json!({"KeyId":k["KeyId"],"KeyArn":k["Arn"]})); }
+  let rows=keys::table.filter(keys::account.eq(&ctx.account_id)).filter(keys::region.eq(&ctx.region)).order(keys::id).select(keys::metadata).load::<String>(tx)?;
+  let mut keys=Vec::new(); for row in rows { let k:Value=serde_json::from_str(&row).map_err(|_| error("InternalException", "Invalid stored key"))?; keys.push(json!({"KeyId":k["KeyId"],"KeyArn":k["Arn"]})); }
   Ok(json!({"Keys":keys,"Truncated":false}))
  },
  "ListAliases"=> {
   let filter=if text(v,"KeyId").is_empty(){None}else{Some(text(v,"KeyId"))};
-  let mut stmt=tx.prepare("SELECT a.name,a.key_id,a.created_at,k.metadata FROM aliases a JOIN keys k ON k.account=a.account AND k.region=a.region AND k.id=a.key_id WHERE a.account=?1 AND a.region=?2 ORDER BY a.name")?;
-  let rows=stmt.query_map(params![ctx.account_id,ctx.region],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,String>(3)?)))?;
-  let mut aliases=Vec::new(); for row in rows { let (name,id,_created,metadata)=row?; let k:Value=serde_json::from_str(&metadata).map_err(|_| error("InternalException", "Invalid stored key"))?; if filter.is_some_and(|f| f!=id && f!=text(&k,"Arn")) {continue;} aliases.push(json!({"AliasName":name,"AliasArn":format!("arn:aws:kms:{}:{}:{}",ctx.region,ctx.account_id,name),"TargetKeyId":id})); }
+  let rows=aliases::table.inner_join(keys::table.on(keys::account.eq(aliases::account).and(keys::region.eq(aliases::region)).and(keys::id.eq(aliases::key_id)))).filter(aliases::account.eq(&ctx.account_id)).filter(aliases::region.eq(&ctx.region)).order(aliases::name).select((aliases::name,aliases::key_id,aliases::created_at,keys::metadata)).load::<(String,String,f64,String)>(tx)?;
+  let mut aliases=Vec::new(); for row in rows { let (name,id,_created,metadata)=row; let k:Value=serde_json::from_str(&metadata).map_err(|_| error("InternalException", "Invalid stored key"))?; if filter.is_some_and(|f| f!=id && f!=text(&k,"Arn")) {continue;} aliases.push(json!({"AliasName":name,"AliasArn":format!("arn:aws:kms:{}:{}:{}",ctx.region,ctx.account_id,name),"TargetKeyId":id})); }
   Ok(json!({"Aliases":aliases,"Truncated":false}))
  },
  "UpdateKeyDescription"=> { let mut k=load(tx,ctx,text(v,"KeyId"))?; k["Description"]=json!(text(v,"Description")); save_key(tx,ctx,&k)?; Ok(json!({})) },

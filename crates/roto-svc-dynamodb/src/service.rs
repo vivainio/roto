@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::{Db, Store};
+use crate::schema::*;
+use crate::table::Table;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::JsonValue;
 use serde_json::{Map, Value};
@@ -23,16 +26,16 @@ pub struct DynamoDb {
 impl DynamoDb {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("dynamodb", crate::MIGRATIONS)?,
+            db: store.diesel_db("dynamodb", crate::MIGRATIONS)?,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM items", [])?;
-            tx.execute("DELETE FROM tables", [])?;
-            tx.execute("DELETE FROM backup_items", [])?;
-            tx.execute("DELETE FROM backups", [])?;
+            diesel::delete(items::table).execute(tx)?;
+            diesel::delete(tables::table).execute(tx)?;
+            diesel::delete(backup_items::table).execute(tx)?;
+            diesel::delete(backups::table).execute(tx)?;
             Ok(())
         })
     }
@@ -237,17 +240,17 @@ fn eval_expected(
 // ---- storage helpers ---------------------------------------------------------------------
 
 pub(crate) fn load_item_pub(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     t: &Table,
     hk: &[u8],
     rk: &[u8],
 ) -> Result<Option<Item>, AwsError> {
-    let text: Option<String> = tx
-        .query_row(
-            "SELECT item FROM items WHERE table_id = ?1 AND hk = ?2 AND rk = ?3",
-            params![t.id, hk, rk],
-            |r| r.get(0),
-        )
+    let text: Option<String> = items::table
+        .filter(items::table_id.eq(&(t.id)))
+        .filter(items::hk.eq(&(hk)))
+        .filter(items::rk.eq(&(rk)))
+        .select(items::item)
+        .first::<String>(tx)
         .optional()?;
     Ok(text
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -255,25 +258,34 @@ pub(crate) fn load_item_pub(
 }
 
 fn store_item(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     t: &Table,
     hk: &[u8],
     rk: &[u8],
     item: &Item,
 ) -> Result<(), AwsError> {
-    tx.execute(
-        "INSERT INTO items (table_id, hk, rk, item) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (table_id, hk, rk) DO UPDATE SET item = excluded.item",
-        params![t.id, hk, rk, Value::Object(item.clone()).to_string()],
-    )?;
+    diesel::insert_into(items::table)
+        .values((
+            items::table_id.eq(&(t.id)),
+            items::hk.eq(&(hk)),
+            items::rk.eq(&(rk)),
+            items::item.eq(&(Value::Object(item.clone()).to_string())),
+        ))
+        .on_conflict((items::table_id, items::hk, items::rk))
+        .do_update()
+        .set(items::item.eq(diesel::upsert::excluded(items::item)))
+        .execute(tx)?;
     Ok(())
 }
 
-fn remove_item(tx: &Transaction, t: &Table, hk: &[u8], rk: &[u8]) -> Result<(), AwsError> {
-    tx.execute(
-        "DELETE FROM items WHERE table_id = ?1 AND hk = ?2 AND rk = ?3",
-        params![t.id, hk, rk],
-    )?;
+fn remove_item(tx: &mut SqliteConnection, t: &Table, hk: &[u8], rk: &[u8]) -> Result<(), AwsError> {
+    diesel::delete(
+        items::table
+            .filter(items::table_id.eq(&(t.id)))
+            .filter(items::hk.eq(&(hk)))
+            .filter(items::rk.eq(&(rk))),
+    )
+    .execute(tx)?;
     Ok(())
 }
 
@@ -568,7 +580,7 @@ fn consumed(table: &str, requested: &Option<String>, units: f64) -> Option<Consu
 impl DynamoDb {
     pub(crate) fn put_item_tx(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         ctx: &RequestContext,
         i: &PutItemInput,
     ) -> Result<(PutItemOutput, Option<Item>), AwsError> {
@@ -610,7 +622,7 @@ impl DynamoDb {
 
     pub(crate) fn delete_item_tx(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         ctx: &RequestContext,
         i: &DeleteItemInput,
     ) -> Result<DeleteItemOutput, AwsError> {
@@ -649,7 +661,7 @@ impl DynamoDb {
 
     pub(crate) fn update_item_tx(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         ctx: &RequestContext,
         i: &UpdateItemInput,
     ) -> Result<UpdateItemOutput, AwsError> {

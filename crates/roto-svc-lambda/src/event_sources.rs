@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use roto_core::rusqlite::{OptionalExtension, params};
+use crate::schema::*;
+use diesel::prelude::*;
 use roto_core::{AwsError, RequestContext, ids};
 use roto_protocol::{FromJson, ToJson};
 use serde_json::{Value, json};
@@ -106,9 +107,33 @@ impl Lambda {
         let value = json!({"UUID":id,"EventSourceArn":i.event_source_arn,"FunctionArn":function,"BatchSize":i.batch_size.unwrap_or(10),"MaximumBatchingWindowInSeconds":0,"FunctionResponseTypes":i.function_response_types,"State":if i.enabled.unwrap_or(true) {"Enabled"} else {"Disabled"},"StateTransitionReason":"USER_INITIATED","LastModified":now()/1000,"LastProcessingResult":"No records processed", "EventSourceMappingArn":format!("arn:aws:lambda:{}:{}:event-source-mapping:{id}",ctx.region,ctx.account_id)});
         self.validate_mapping(ctx, &value)?;
         self.db.transaction(|tx| {
-            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM event_source_mappings WHERE account=?1 AND region=?2 AND source=?3 AND function=?4)", params![ctx.account_id,ctx.region,value["EventSourceArn"].as_str(),function], |r| r.get(0))?;
-            if exists { return Err(conflict("An event source mapping already exists for this queue and function")); }
-            tx.execute("INSERT INTO event_source_mappings(uuid,account,region,source,function,config) VALUES (?1,?2,?3,?4,?5,?6)", params![id,ctx.account_id,ctx.region,value["EventSourceArn"].as_str(),function,value.to_string()])?;
+            let exists: bool = diesel::select(diesel::dsl::exists(
+                event_source_mappings::table
+                    .filter(event_source_mappings::account.eq(&(ctx.account_id)))
+                    .filter(event_source_mappings::region.eq(&(ctx.region)))
+                    .filter(
+                        event_source_mappings::source
+                            .eq(value["EventSourceArn"].as_str().unwrap_or_default()),
+                    )
+                    .filter(event_source_mappings::function.eq(&(function))),
+            ))
+            .first::<bool>(tx)?;
+            if exists {
+                return Err(conflict(
+                    "An event source mapping already exists for this queue and function",
+                ));
+            }
+            diesel::insert_into(event_source_mappings::table)
+                .values((
+                    event_source_mappings::uuid.eq(&(id)),
+                    event_source_mappings::account.eq(&(ctx.account_id)),
+                    event_source_mappings::region.eq(&(ctx.region)),
+                    event_source_mappings::source
+                        .eq(value["EventSourceArn"].as_str().unwrap_or_default()),
+                    event_source_mappings::function.eq(&(function)),
+                    event_source_mappings::config.eq(&(value.to_string())),
+                ))
+                .execute(tx)?;
             Ok(())
         })?;
         mapping(&value)
@@ -119,8 +144,17 @@ impl Lambda {
         id: &str,
     ) -> Result<EventSourceMappingConfiguration, AwsError> {
         self.db.read(|c| {
-            let text: Option<String> = c.query_row("SELECT config FROM event_source_mappings WHERE uuid=?1 AND account=?2 AND region=?3",params![id,ctx.account_id,ctx.region],|r| r.get(0)).optional()?;
-            mapping(&serde_json::from_str::<Value>(&text.ok_or_else(|| missing(id))?).map_err(|e| AwsError::internal(e.to_string()))?)
+            let text: Option<String> = event_source_mappings::table
+                .filter(event_source_mappings::uuid.eq(&(id)))
+                .filter(event_source_mappings::account.eq(&(ctx.account_id)))
+                .filter(event_source_mappings::region.eq(&(ctx.region)))
+                .select(event_source_mappings::config)
+                .first::<String>(c)
+                .optional()?;
+            mapping(
+                &serde_json::from_str::<Value>(&text.ok_or_else(|| missing(id))?)
+                    .map_err(|e| AwsError::internal(e.to_string()))?,
+            )
         })
     }
     pub(crate) fn delete_mapping(
@@ -130,10 +164,13 @@ impl Lambda {
     ) -> Result<EventSourceMappingConfiguration, AwsError> {
         let mut m = self.get_mapping(ctx, id)?;
         self.db.transaction(|tx| {
-            tx.execute(
-                "DELETE FROM event_source_mappings WHERE uuid=?1 AND account=?2 AND region=?3",
-                params![id, ctx.account_id, ctx.region],
-            )?;
+            diesel::delete(
+                event_source_mappings::table
+                    .filter(event_source_mappings::uuid.eq(&(id)))
+                    .filter(event_source_mappings::account.eq(&(ctx.account_id)))
+                    .filter(event_source_mappings::region.eq(&(ctx.region))),
+            )
+            .execute(tx)?;
             Ok(())
         })?;
         m.state = Some("Deleting".into());
@@ -181,9 +218,42 @@ impl Lambda {
         value["LastModified"] = json!(now() / 1000);
         self.validate_mapping(ctx, &value)?;
         self.db.transaction(|tx| {
-            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM event_source_mappings WHERE account=?1 AND region=?2 AND source=?3 AND function=?4 AND uuid!=?5)",params![ctx.account_id,ctx.region,value["EventSourceArn"].as_str(),value["FunctionArn"].as_str(),i.uuid],|r| r.get(0))?;
-            if exists { return Err(conflict("An event source mapping already exists for this queue and function")); }
-            if tx.execute("UPDATE event_source_mappings SET function=?2,config=?3 WHERE uuid=?1 AND account=?4 AND region=?5",params![i.uuid,value["FunctionArn"].as_str(),value.to_string(),ctx.account_id,ctx.region])? == 0 { return Err(missing(&i.uuid)); }
+            let exists: bool = diesel::select(diesel::dsl::exists(
+                event_source_mappings::table
+                    .filter(event_source_mappings::account.eq(&(ctx.account_id)))
+                    .filter(event_source_mappings::region.eq(&(ctx.region)))
+                    .filter(
+                        event_source_mappings::source
+                            .eq(value["EventSourceArn"].as_str().unwrap_or_default()),
+                    )
+                    .filter(
+                        event_source_mappings::function
+                            .eq(value["FunctionArn"].as_str().unwrap_or_default()),
+                    )
+                    .filter(event_source_mappings::uuid.ne(&(i.uuid))),
+            ))
+            .first::<bool>(tx)?;
+            if exists {
+                return Err(conflict(
+                    "An event source mapping already exists for this queue and function",
+                ));
+            }
+            if diesel::update(
+                event_source_mappings::table
+                    .filter(event_source_mappings::uuid.eq(&(i.uuid)))
+                    .filter(event_source_mappings::account.eq(&(ctx.account_id)))
+                    .filter(event_source_mappings::region.eq(&(ctx.region))),
+            )
+            .set((
+                event_source_mappings::function
+                    .eq(value["FunctionArn"].as_str().unwrap_or_default()),
+                event_source_mappings::config.eq(&(value.to_string())),
+            ))
+            .execute(tx)?
+                == 0
+            {
+                return Err(missing(&i.uuid));
+            }
             Ok(())
         })?;
         mapping(&value)
@@ -199,12 +269,39 @@ impl Lambda {
             return Err(invalid("MaxItems must be between 1 and 10000"));
         }
         self.db.read(|c| {
-            let mut stmt = c.prepare("SELECT config FROM event_source_mappings WHERE account=?1 AND region=?2 AND (?3 IS NULL OR source=?3) AND (?4 IS NULL OR function=?4) AND uuid>?5 ORDER BY uuid LIMIT ?6")?;
-            let rows = stmt.query_map(params![ctx.account_id,ctx.region,i.event_source_arn,function,i.marker.unwrap_or_default(),limit+1], |r| r.get::<_,String>(0))?;
+            let mut q = event_source_mappings::table
+                .filter(event_source_mappings::account.eq(&ctx.account_id))
+                .filter(event_source_mappings::region.eq(&ctx.region))
+                .into_boxed();
+            if let Some(source) = &i.event_source_arn {
+                q = q.filter(event_source_mappings::source.eq(source));
+            }
+            if let Some(function) = &function {
+                q = q.filter(event_source_mappings::function.eq(function));
+            }
+            let rows = q
+                .filter(event_source_mappings::uuid.gt(i.marker.unwrap_or_default()))
+                .order(event_source_mappings::uuid)
+                .limit(i64::from(limit) + 1)
+                .select(event_source_mappings::config)
+                .load::<String>(c)?;
             let mut values = Vec::new();
-            for text in rows { values.push(mapping(&serde_json::from_str::<Value>(&text?).map_err(|e| AwsError::internal(e.to_string()))?)?); }
-            let next_marker = if values.len() > limit as usize { values.pop(); values.last().and_then(|v| v.uuid.clone()) } else { None };
-            Ok(ListEventSourceMappingsResponse { event_source_mappings:values,next_marker })
+            for text in rows {
+                values.push(mapping(
+                    &serde_json::from_str::<Value>(&text)
+                        .map_err(|e| AwsError::internal(e.to_string()))?,
+                )?);
+            }
+            let next_marker = if values.len() > limit as usize {
+                values.pop();
+                values.last().and_then(|v| v.uuid.clone())
+            } else {
+                None
+            };
+            Ok(ListEventSourceMappingsResponse {
+                event_source_mappings: values,
+                next_marker,
+            })
         })
     }
     pub(crate) fn start_sqs_worker(this: &Arc<Self>, endpoint: String) {
@@ -221,18 +318,14 @@ impl Lambda {
                     .expect("SQS Lambda runtime");
                 while let Some(lambda) = weak.upgrade() {
                     let ids = lambda.db.read(|c| {
-                        let mut stmt = c.prepare(
-                            "SELECT uuid,account,region FROM event_source_mappings ORDER BY uuid",
-                        )?;
-                        Ok(stmt
-                            .query_map([], |r| {
-                                Ok((
-                                    r.get::<_, String>(0)?,
-                                    r.get::<_, String>(1)?,
-                                    r.get::<_, String>(2)?,
-                                ))
-                            })?
-                            .collect::<Result<Vec<_>, _>>()?)
+                        Ok(event_source_mappings::table
+                            .order(event_source_mappings::uuid)
+                            .select((
+                                event_source_mappings::uuid,
+                                event_source_mappings::account,
+                                event_source_mappings::region,
+                            ))
+                            .load::<(String, String, String)>(c)?)
                     });
                     match ids {
                         Ok(ids) => {
@@ -259,9 +352,22 @@ impl Lambda {
     }
     fn processing_result(&self, ctx: &RequestContext, id: &str, result: &str) {
         if let Err(e) = self.db.transaction(|tx| {
-            tx.execute("UPDATE event_source_mappings SET config=json_set(config,'$.LastProcessingResult',?2) WHERE uuid=?1 AND account=?3 AND region=?4",params![id,result,ctx.account_id,ctx.region])?;
+            diesel::update(
+                event_source_mappings::table
+                    .filter(event_source_mappings::uuid.eq(id))
+                    .filter(event_source_mappings::account.eq(&ctx.account_id))
+                    .filter(event_source_mappings::region.eq(&ctx.region)),
+            )
+            .set(event_source_mappings::config.eq(json_set(
+                event_source_mappings::config,
+                "$.LastProcessingResult",
+                result,
+            )))
+            .execute(tx)?;
             Ok(())
-        }) { eprintln!("SQS Lambda status persistence: {e}"); }
+        }) {
+            eprintln!("SQS Lambda status persistence: {e}");
+        }
     }
     pub(crate) fn process_sqs_batch(
         &self,

@@ -3,6 +3,7 @@
 
 #[allow(clippy::all)]
 mod generated;
+mod schema;
 mod service;
 
 use std::sync::Arc;

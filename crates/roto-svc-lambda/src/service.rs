@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use roto_core::rusqlite::{OptionalExtension, params};
-use roto_core::store::{Db, Store};
+use crate::schema::*;
+use diesel::prelude::*;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext, ids};
 use roto_protocol::{Blob, FromJson, ToJson, base64};
 use serde_json::{Value, json};
@@ -104,16 +105,28 @@ impl Lambda {
         for executor in executors.functions.values() {
             executor.validate().map_err(invalid)?;
         }
-        let db = store.db("lambda", crate::MIGRATIONS)?;
+        let db = store.diesel_db("lambda", crate::MIGRATIONS)?;
         db.transaction(|tx| {
-            tx.execute(
-                "UPDATE invocations SET state='queued' WHERE state='running' AND origin='async'",
-                [],
-            )?;
+            diesel::update(
+                invocations::table
+                    .filter(invocations::state.eq("running"))
+                    .filter(invocations::origin.eq("async")),
+            )
+            .set(invocations::state.eq("queued"))
+            .execute(tx)?;
             Ok(())
         })?;
         db.transaction(|tx| {
-            tx.execute("UPDATE invocations SET state='failed', logs='Execution interrupted by server restart' WHERE state='running' AND origin='direct'", [])?;
+            diesel::update(
+                invocations::table
+                    .filter(invocations::state.eq("running"))
+                    .filter(invocations::origin.eq("direct")),
+            )
+            .set((
+                invocations::state.eq("failed"),
+                invocations::logs.eq("Execution interrupted by server restart"),
+            ))
+            .execute(tx)?;
             Ok(())
         })?;
         Ok(Self {
@@ -143,18 +156,18 @@ impl Lambda {
     }
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM event_source_mappings", [])?;
-            tx.execute("DELETE FROM functions", [])?;
-            tx.execute("DELETE FROM invocations", [])?;
+            diesel::delete(event_source_mappings::table).execute(tx)?;
+            diesel::delete(functions::table).execute(tx)?;
+            diesel::delete(invocations::table).execute(tx)?;
             Ok(())
         })
     }
     pub(crate) fn load(&self, arn: &str) -> Result<Value, AwsError> {
         self.db.read(|c| {
-            let value: Option<String> = c
-                .query_row("SELECT config FROM functions WHERE arn=?1", [arn], |r| {
-                    r.get(0)
-                })
+            let value: Option<String> = functions::table
+                .filter(functions::arn.eq(&(arn)))
+                .select(functions::config)
+                .first::<String>(c)
                 .optional()?;
             serde_json::from_str(&value.ok_or_else(|| missing(arn))?)
                 .map_err(|e| AwsError::internal(e.to_string()))
@@ -163,10 +176,10 @@ impl Lambda {
     fn save_config(&self, arn: &str, value: &Value) -> Result<(), AwsError> {
         validate_config(value)?;
         self.db.transaction(|tx| {
-            if tx.execute(
-                "UPDATE functions SET config=?2 WHERE arn=?1",
-                params![arn, value.to_string()],
-            )? == 0
+            if diesel::update(functions::table.filter(functions::arn.eq(&(arn))))
+                .set(functions::config.eq(&(value.to_string())))
+                .execute(tx)?
+                == 0
             {
                 return Err(missing(arn));
             }
@@ -219,17 +232,16 @@ impl Lambda {
     }
     pub(crate) fn record(&self, job: &Job, state: &str) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute(
-                "INSERT INTO invocations (id,arn,job,state,created,origin) VALUES (?1,?2,?3,?4,?5,?6)",
-                params![
-                    job.request_id,
-                    job.arn,
-                    serde_json::to_string(job).unwrap(),
-                    state,
-                    now(),
-                    if state == "queued" { "async" } else { "direct" }
-                ],
-            )?;
+            diesel::insert_into(invocations::table)
+                .values((
+                    invocations::id.eq(&(job.request_id)),
+                    invocations::arn.eq(&(job.arn)),
+                    invocations::job.eq(&(serde_json::to_string(job).unwrap())),
+                    invocations::state.eq(&(state)),
+                    invocations::created.eq(&(now())),
+                    invocations::origin.eq(&(if state == "queued" { "async" } else { "direct" })),
+                ))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -247,7 +259,18 @@ impl Lambda {
         } else {
             "succeeded"
         };
-        self.db.transaction(|tx| { tx.execute("UPDATE invocations SET state=?2, attempts=?3, due=?4, result=?5, logs=?6 WHERE id=?1", params![job.request_id,state,attempts,now()+i64::from(attempts)*1000,outcome.payload.to_string(),outcome.logs])?; Ok(()) })
+        self.db.transaction(|tx| {
+            diesel::update(invocations::table.filter(invocations::id.eq(&(job.request_id))))
+                .set((
+                    invocations::state.eq(&(state)),
+                    invocations::attempts.eq(&(attempts)),
+                    invocations::due.eq(&(now() + i64::from(attempts) * 1000)),
+                    invocations::result.eq(&(outcome.payload.to_string())),
+                    invocations::logs.eq(&(outcome.logs)),
+                ))
+                .execute(tx)?;
+            Ok(())
+        })
     }
     /// Used by service event sources after their transaction commits.
     pub fn enqueue(
@@ -266,33 +289,65 @@ impl Lambda {
             ctx.region, ctx.account_id
         );
         self.db.read(|c| {
-            let mut stmt = c.prepare("SELECT id,arn,state,attempts,result,logs,created FROM invocations WHERE arn LIKE ?1 ORDER BY created DESC, rowid DESC LIMIT 100")?;
-            let rows = stmt.query_map([prefix], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i32>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,i64>(6)?)))?;
+            let rows=invocations::table.filter(invocations::arn.like(&prefix)).order((invocations::created.desc(),diesel::dsl::sql::<diesel::sql_types::BigInt>("rowid").desc())).limit(100).select((invocations::id,invocations::arn,invocations::state,invocations::attempts,invocations::result,invocations::logs,invocations::created)).load::<(String,String,String,i32,Option<String>,Option<String>,i64)>(c)?;
             let mut values = Vec::new();
-            for row in rows { let (id,arn,state,attempts,result,logs,created) = row?; values.push(json!({"id":id,"functionArn":arn,"state":state,"attempts":attempts,"result":result.and_then(|s| serde_json::from_str::<Value>(&s).ok()),"logs":logs,"created":created})); }
+            for row in rows { let (id,arn,state,attempts,result,logs,created) = row; values.push(json!({"id":id,"functionArn":arn,"state":state,"attempts":attempts,"result":result.and_then(|s| serde_json::from_str::<Value>(&s).ok()),"logs":logs,"created":created})); }
             Ok(json!({"invocations":values}))
         })
     }
     pub(crate) fn start_worker(this: &Arc<Self>) {
         let weak: Weak<Self> = Arc::downgrade(this);
-        std::thread::Builder::new().name("roto-lambda".into()).spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("Lambda runtime");
-            while let Some(lambda) = weak.upgrade() {
-                let next = lambda.db.transaction(|tx| {
-                    let row: Option<(String,String,i32)> = tx.query_row("SELECT id,job,attempts FROM invocations WHERE state='queued' AND due<=?1 ORDER BY created LIMIT 1", [now()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-                    if let Some((id,_,_)) = &row { tx.execute("UPDATE invocations SET state='running' WHERE id=?1", [id])?; }
-                    Ok(row)
-                });
-                match next {
-                    Ok(Some((_,source,attempts))) => match serde_json::from_str::<Job>(&source) {
-                        Ok(job) => { let outcome = runtime.block_on(execute(&job)); if let Err(e) = lambda.finish(&job, &outcome, attempts+1, true) { eprintln!("Lambda result persistence: {e}"); } }
-                        Err(e) => eprintln!("Invalid persisted Lambda job: {e}"),
-                    },
-                    Ok(None) => { drop(lambda); std::thread::sleep(Duration::from_millis(50)); }
-                    Err(e) => { eprintln!("Lambda queue: {e}"); drop(lambda); std::thread::sleep(Duration::from_millis(100)); }
+        std::thread::Builder::new()
+            .name("roto-lambda".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Lambda runtime");
+                while let Some(lambda) = weak.upgrade() {
+                    let next = lambda.db.transaction(|tx| {
+                        let row: Option<(String, String, i32)> = invocations::table
+                            .filter(invocations::state.eq("queued"))
+                            .filter(invocations::due.le(&(now())))
+                            .order(invocations::created)
+                            .limit(1_i64)
+                            .select((invocations::id, invocations::job, invocations::attempts))
+                            .first::<(String, String, i32)>(tx)
+                            .optional()?;
+                        if let Some((id, _, _)) = &row {
+                            diesel::update(invocations::table.filter(invocations::id.eq(&(id))))
+                                .set(invocations::state.eq("running"))
+                                .execute(tx)?;
+                        }
+                        Ok(row)
+                    });
+                    match next {
+                        Ok(Some((_, source, attempts))) => {
+                            match serde_json::from_str::<Job>(&source) {
+                                Ok(job) => {
+                                    let outcome = runtime.block_on(execute(&job));
+                                    if let Err(e) =
+                                        lambda.finish(&job, &outcome, attempts + 1, true)
+                                    {
+                                        eprintln!("Lambda result persistence: {e}");
+                                    }
+                                }
+                                Err(e) => eprintln!("Invalid persisted Lambda job: {e}"),
+                            }
+                        }
+                        Ok(None) => {
+                            drop(lambda);
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        Err(e) => {
+                            eprintln!("Lambda queue: {e}");
+                            drop(lambda);
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                    }
                 }
-            }
-        }).expect("Lambda worker");
+            })
+            .expect("Lambda worker");
     }
 }
 
@@ -370,16 +425,22 @@ impl Service for Lambda {
         stamp(&mut value);
         validate_config(&value)?;
         self.db.transaction(|tx| {
-            if tx.query_row("SELECT COUNT(*) FROM functions WHERE arn=?1", [&arn], |r| {
-                r.get::<_, i64>(0)
-            })? > 0
+            if functions::table
+                .filter(functions::arn.eq(&(&arn)))
+                .count()
+                .first::<i64>(tx)?
+                > 0
             {
                 return Err(conflict(format!("Function already exists: {arn}")));
             }
-            tx.execute(
-                "INSERT INTO functions (arn,config,code,tags) VALUES (?1,?2,?3,?4)",
-                params![arn, value.to_string(), code.to_string(), tags.to_string()],
-            )?;
+            diesel::insert_into(functions::table)
+                .values((
+                    functions::arn.eq(&(arn)),
+                    functions::config.eq(&(value.to_string())),
+                    functions::code.eq(&(code.to_string())),
+                    functions::tags.eq(&(tags.to_string())),
+                ))
+                .execute(tx)?;
             Ok(())
         })?;
         config(&value)
@@ -401,11 +462,10 @@ impl Service for Lambda {
         let arn = arn(ctx, &i.function_name)?;
         let value = self.load(&arn)?;
         let tags: String = self.db.read(|c| {
-            Ok(
-                c.query_row("SELECT tags FROM functions WHERE arn=?1", [&arn], |r| {
-                    r.get(0)
-                })?,
-            )
+            Ok(functions::table
+                .filter(functions::arn.eq(&(&arn)))
+                .select(functions::tags)
+                .first::<String>(c)?)
         })?;
         GetFunctionResponse::from_json(
             &json!({"Configuration":value,"Code":{"RepositoryType":"Local"},"Tags":serde_json::from_str::<Value>(&tags).unwrap()}),
@@ -429,15 +489,13 @@ impl Service for Lambda {
             ctx.region, ctx.account_id
         );
         let mut values = self.db.read(|c| {
-            let mut stmt = c.prepare(
-                "SELECT config FROM functions WHERE arn LIKE ?1 AND arn>?2 ORDER BY arn LIMIT ?3",
-            )?;
-            Ok(stmt
-                .query_map(
-                    params![prefix, i.marker.unwrap_or_default(), limit + 1],
-                    |r| r.get::<_, String>(0),
-                )?
-                .collect::<Result<Vec<_>, _>>()?)
+            Ok(functions::table
+                .filter(functions::arn.like(&prefix))
+                .filter(functions::arn.gt(i.marker.unwrap_or_default()))
+                .order(functions::arn)
+                .limit(i64::from(limit) + 1)
+                .select(functions::config)
+                .load::<String>(c)?)
         })?;
         let more = values.len() > limit as usize;
         values.truncate(limit as usize);
@@ -511,10 +569,12 @@ impl Service for Lambda {
         value["CodeSha256"] = json!(base64::encode(&Sha256::digest(bytes)));
         stamp(&mut value);
         self.db.transaction(|tx| {
-            tx.execute(
-                "UPDATE functions SET config=?2,code=?3 WHERE arn=?1",
-                params![arn, value.to_string(), i.to_json().to_string()],
-            )?;
+            diesel::update(functions::table.filter(functions::arn.eq(&(arn))))
+                .set((
+                    functions::config.eq(&(value.to_string())),
+                    functions::code.eq(&(i.to_json().to_string())),
+                ))
+                .execute(tx)?;
             Ok(())
         })?;
         config(&value)
@@ -527,7 +587,8 @@ impl Service for Lambda {
         qualifier(&i.qualifier)?;
         let arn = arn(ctx, &i.function_name)?;
         self.db.transaction(|tx| {
-            if tx.execute("DELETE FROM functions WHERE arn=?1", [arn])? == 0 {
+            if diesel::delete(functions::table.filter(functions::arn.eq(&(arn)))).execute(tx)? == 0
+            {
                 return Err(missing(&i.function_name));
             }
             Ok(())
@@ -629,19 +690,18 @@ impl Service for Lambda {
             statement["Condition"]["StringEquals"]["AWS:SourceAccount"] = json!(account);
         }
         self.db.transaction(|tx| {
-            let source: String =
-                tx.query_row("SELECT policy FROM functions WHERE arn=?1", [&arn], |r| {
-                    r.get(0)
-                })?;
+            let source: String = functions::table
+                .filter(functions::arn.eq(&(&arn)))
+                .select(functions::policy)
+                .first::<String>(tx)?;
             let mut statements: Vec<Value> = serde_json::from_str(&source).unwrap();
             if statements.iter().any(|s| s["Sid"] == statement["Sid"]) {
                 return Err(conflict("StatementId already exists"));
             }
             statements.push(statement.clone());
-            tx.execute(
-                "UPDATE functions SET policy=?2 WHERE arn=?1",
-                params![arn, serde_json::to_string(&statements).unwrap()],
-            )?;
+            diesel::update(functions::table.filter(functions::arn.eq(&(arn))))
+                .set(functions::policy.eq(&(serde_json::to_string(&statements).unwrap())))
+                .execute(tx)?;
             Ok(())
         })?;
         Ok(AddPermissionResponse {
@@ -657,11 +717,10 @@ impl Service for Lambda {
         let arn = arn(ctx, &i.function_name)?;
         let value = self.load(&arn)?;
         let source: String = self.db.read(|c| {
-            Ok(
-                c.query_row("SELECT policy FROM functions WHERE arn=?1", [arn], |r| {
-                    r.get(0)
-                })?,
-            )
+            Ok(functions::table
+                .filter(functions::arn.eq(&(arn)))
+                .select(functions::policy)
+                .first::<String>(c)?)
         })?;
         let statements: Value = serde_json::from_str(&source).unwrap();
         if statements.as_array().unwrap().is_empty() {
@@ -683,20 +742,19 @@ impl Service for Lambda {
         let arn = arn(ctx, &i.function_name)?;
         self.load(&arn)?;
         self.db.transaction(|tx| {
-            let source: String =
-                tx.query_row("SELECT policy FROM functions WHERE arn=?1", [&arn], |r| {
-                    r.get(0)
-                })?;
+            let source: String = functions::table
+                .filter(functions::arn.eq(&(&arn)))
+                .select(functions::policy)
+                .first::<String>(tx)?;
             let mut statements: Vec<Value> = serde_json::from_str(&source).unwrap();
             let old = statements.len();
             statements.retain(|s| s["Sid"].as_str() != Some(&i.statement_id));
             if old == statements.len() {
                 return Err(missing("policy statement"));
             }
-            tx.execute(
-                "UPDATE functions SET policy=?2 WHERE arn=?1",
-                params![arn, serde_json::to_string(&statements).unwrap()],
-            )?;
+            diesel::update(functions::table.filter(functions::arn.eq(&(arn))))
+                .set(functions::policy.eq(&(serde_json::to_string(&statements).unwrap())))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -708,11 +766,10 @@ impl Service for Lambda {
         let arn = arn(ctx, &i.resource)?;
         self.load(&arn)?;
         let tags: String = self.db.read(|c| {
-            Ok(
-                c.query_row("SELECT tags FROM functions WHERE arn=?1", [arn], |r| {
-                    r.get(0)
-                })?,
-            )
+            Ok(functions::table
+                .filter(functions::arn.eq(&(arn)))
+                .select(functions::tags)
+                .first::<String>(c)?)
         })?;
         ListTagsResponse::from_json(
             &json!({"Tags":serde_json::from_str::<Value>(&tags).unwrap()}),
@@ -741,19 +798,18 @@ impl Lambda {
         let arn = arn(ctx, resource)?;
         self.load(&arn)?;
         self.db.transaction(|tx| {
-            let source: String =
-                tx.query_row("SELECT tags FROM functions WHERE arn=?1", [&arn], |r| {
-                    r.get(0)
-                })?;
+            let source: String = functions::table
+                .filter(functions::arn.eq(&(&arn)))
+                .select(functions::tags)
+                .first::<String>(tx)?;
             let mut tags: BTreeMap<String, String> = serde_json::from_str(&source).unwrap();
             tags.extend(add);
             for k in remove {
                 tags.remove(&k);
             }
-            tx.execute(
-                "UPDATE functions SET tags=?2 WHERE arn=?1",
-                params![arn, serde_json::to_string(&tags).unwrap()],
-            )?;
+            diesel::update(functions::table.filter(functions::arn.eq(&(arn))))
+                .set(functions::tags.eq(&(serde_json::to_string(&tags).unwrap())))
+                .execute(tx)?;
             Ok(())
         })
     }

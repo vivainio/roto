@@ -1,6 +1,4 @@
 # Known failures for test_iam (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_iam)
-tests/test_iam/test_iam.py::test_create_add_additional_roles_to_instance_profile_error
-tests/test_iam/test_iam.py::test_create_instance_profile_should_throw_when_name_is_not_unique
 tests/test_iam/test_iam.py::test_create_login_profile__duplicate
 tests/test_iam/test_iam.py::test_create_login_profile_with_unknown_user
 tests/test_iam/test_iam.py::test_create_role_and_instance_profile
@@ -27,7 +25,6 @@ tests/test_iam/test_iam.py::test_delete_login_profile
 tests/test_iam/test_iam.py::test_delete_login_profile_with_unknown_user
 tests/test_iam/test_iam.py::test_delete_nonexistent_login_profile
 tests/test_iam/test_iam.py::test_delete_role
-tests/test_iam/test_iam.py::test_delete_role_with_instance_profiles_present
 tests/test_iam/test_iam.py::test_delete_saml_provider
 tests/test_iam/test_iam.py::test_delete_service_linked_role
 tests/test_iam/test_iam.py::test_delete_ssh_public_key
@@ -43,7 +40,6 @@ tests/test_iam/test_iam.py::test_get_account_summary
 tests/test_iam/test_iam.py::test_get_credential_report
 tests/test_iam/test_iam.py::test_get_credential_report_content
 tests/test_iam/test_iam.py::test_get_current_user
-tests/test_iam/test_iam.py::test_get_instance_profile__should_throw__when_instance_profile_does_not_exist
 tests/test_iam/test_iam.py::test_get_login_profile
 tests/test_iam/test_iam.py::test_get_role__should_contain_last_used
 tests/test_iam/test_iam.py::test_get_role__should_throw__when_role_does_not_exist
@@ -69,9 +65,7 @@ tests/test_iam/test_iam.py::test_put_role_policy
 tests/test_iam/test_iam.py::test_remove_role_from_instance_profile
 tests/test_iam/test_iam.py::test_role_config_client
 tests/test_iam/test_iam.py::test_signing_certs
-tests/test_iam/test_iam.py::test_tag_instance_profile
 tests/test_iam/test_iam.py::test_tag_role
-tests/test_iam/test_iam.py::test_untag_instance_profile
 tests/test_iam/test_iam.py::test_untag_role
 tests/test_iam/test_iam.py::test_update_access_key
 tests/test_iam/test_iam.py::test_update_account_password_policy
