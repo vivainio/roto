@@ -1,13 +1,15 @@
 //! On-demand backups and restores. A backup is a full copy of the table definition and items;
 //! point-in-time restore copies the current state (there is no change history).
 
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
+use crate::schema::*;
+use crate::table::Table;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::Timestamp;
 
 use crate::generated::*;
 use crate::service::*;
-use crate::table::*;
 
 fn backup_not_found(arn: &str) -> AwsError {
     AwsError::sender(
@@ -25,6 +27,9 @@ fn table_not_found(name: &str) -> AwsError {
     )
 }
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name=backups)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 struct BackupRow {
     arn: String,
     name: String,
@@ -34,23 +39,13 @@ struct BackupRow {
     meta: String,
 }
 
-fn load_backup(tx: &Transaction, arn: &str) -> Result<BackupRow, AwsError> {
-    tx.query_row(
-        "SELECT arn, name, table_name, table_id, created_at, meta FROM backups WHERE arn = ?1",
-        params![arn],
-        |r| {
-            Ok(BackupRow {
-                arn: r.get(0)?,
-                name: r.get(1)?,
-                table_name: r.get(2)?,
-                table_id: r.get(3)?,
-                created_at: r.get(4)?,
-                meta: r.get(5)?,
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| backup_not_found(arn))
+fn load_backup(tx: &mut SqliteConnection, arn: &str) -> Result<BackupRow, AwsError> {
+    backups::table
+        .filter(backups::arn.eq(arn))
+        .select(BackupRow::as_select())
+        .first(tx)
+        .optional()?
+        .ok_or_else(|| backup_not_found(arn))
 }
 
 fn details(b: &BackupRow) -> BackupDetails {
@@ -92,12 +87,11 @@ fn description(
     })
 }
 
-fn item_count(tx: &Transaction, arn: &str) -> Result<i64, AwsError> {
-    Ok(tx.query_row(
-        "SELECT COUNT(*) FROM backup_items WHERE arn = ?1",
-        params![arn],
-        |r| r.get(0),
-    )?)
+fn item_count(tx: &mut SqliteConnection, arn: &str) -> Result<i64, AwsError> {
+    Ok(backup_items::table
+        .filter(backup_items::arn.eq(&(arn)))
+        .count()
+        .first::<i64>(tx)?)
 }
 
 pub(crate) fn create(
@@ -106,19 +100,43 @@ pub(crate) fn create(
     i: CreateBackupInput,
 ) -> Result<CreateBackupOutput, AwsError> {
     d.db.transaction(|tx| {
-        let t = Table::find(tx, ctx, &i.table_name)?.ok_or_else(|| table_not_found(&i.table_name))?;
+        let t =
+            Table::find(tx, ctx, &i.table_name)?.ok_or_else(|| table_not_found(&i.table_name))?;
         let created = now();
-        let arn = format!("{}/backup/{:010}-{}", t.arn(), created, &uuid::Uuid::new_v4().simple().to_string()[..8]);
-        tx.execute(
-            "INSERT INTO backups (arn, name, table_name, table_id, created_at, meta) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![arn, i.backup_name, t.name, t.id, created, t.to_meta()],
-        )?;
-        tx.execute(
-            "INSERT INTO backup_items (arn, hk, rk, item) SELECT ?1, hk, rk, item FROM items WHERE table_id = ?2",
-            params![arn, t.id],
-        )?;
+        let arn = format!(
+            "{}/backup/{:010}-{}",
+            t.arn(),
+            created,
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
+        diesel::insert_into(backups::table)
+            .values((
+                backups::arn.eq(&(arn)),
+                backups::name.eq(&(i.backup_name)),
+                backups::table_name.eq(&(t.name)),
+                backups::table_id.eq(&(t.id)),
+                backups::created_at.eq(&(created)),
+                backups::meta.eq(&(t.to_meta())),
+            ))
+            .execute(tx)?;
+        diesel::insert_into(backup_items::table)
+            .values(items::table.filter(items::table_id.eq(&t.id)).select((
+                (&arn).into_sql::<diesel::sql_types::Text>(),
+                items::hk,
+                items::rk,
+                items::item,
+            )))
+            .into_columns((
+                backup_items::arn,
+                backup_items::hk,
+                backup_items::rk,
+                backup_items::item,
+            ))
+            .execute(tx)?;
         let b = load_backup(tx, &arn)?;
-        Ok(CreateBackupOutput { backup_details: Some(details(&b)) })
+        Ok(CreateBackupOutput {
+            backup_details: Some(details(&b)),
+        })
     })
 }
 
@@ -147,10 +165,10 @@ pub(crate) fn list(
                 return Err(table_not_found(name));
             }
         }
-        let mut stmt = tx.prepare("SELECT arn FROM backups ORDER BY created_at, arn")?;
-        let arns: Vec<String> = stmt
-            .query_map([], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
+        let arns = backups::table
+            .order((backups::created_at, backups::arn))
+            .select(backups::arn)
+            .load::<String>(tx)?;
         let mut out = ListBackupsOutput::default();
         for arn in arns {
             let b = load_backup(tx, &arn)?;
@@ -200,8 +218,8 @@ pub(crate) fn delete(
         if let Some(det) = desc.backup_details.as_mut() {
             det.backup_status = "DELETED".into();
         }
-        tx.execute("DELETE FROM backup_items WHERE arn = ?1", params![b.arn])?;
-        tx.execute("DELETE FROM backups WHERE arn = ?1", params![b.arn])?;
+        diesel::delete(backup_items::table.filter(backup_items::arn.eq(&(b.arn)))).execute(tx)?;
+        diesel::delete(backups::table.filter(backups::arn.eq(&(b.arn)))).execute(tx)?;
         Ok(DeleteBackupOutput {
             backup_description: Some(desc),
         })
@@ -209,11 +227,11 @@ pub(crate) fn delete(
 }
 
 fn restore_into(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     mut t: Table,
     target: &str,
-    copy_items: impl Fn(&Table) -> Result<(), AwsError>,
+    copy_items: impl FnOnce(&mut SqliteConnection, &Table) -> Result<(), AwsError>,
 ) -> Result<TableDescription, AwsError> {
     if Table::find(tx, ctx, target)?.is_some() {
         return Err(AwsError::sender(
@@ -228,7 +246,7 @@ fn restore_into(
     t.region = ctx.region.clone();
     t.created_at = now();
     t.insert(tx)?;
-    copy_items(&t)?;
+    copy_items(tx, &t)?;
     t.describe(tx)
 }
 
@@ -252,14 +270,25 @@ pub(crate) fn restore_from_backup(
         if !i.local_secondary_index_override.is_empty() {
             t.lsis = i.local_secondary_index_override.clone();
         }
-        let desc = restore_into(tx, ctx, t, &i.target_table_name, |nt| {
-            tx.execute(
-                "INSERT INTO items (table_id, hk, rk, item) SELECT ?1, hk, rk, item FROM backup_items WHERE arn = ?2",
-                params![nt.id, b.arn],
-            )?;
+        let desc = restore_into(tx, ctx, t, &i.target_table_name, |tx, nt| {
+            diesel::insert_into(items::table)
+                .values(
+                    backup_items::table
+                        .filter(backup_items::arn.eq(&b.arn))
+                        .select((
+                            (&nt.id).into_sql::<diesel::sql_types::Text>(),
+                            backup_items::hk,
+                            backup_items::rk,
+                            backup_items::item,
+                        )),
+                )
+                .into_columns((items::table_id, items::hk, items::rk, items::item))
+                .execute(tx)?;
             Ok(())
         })?;
-        Ok(RestoreTableFromBackupOutput { table_description: Some(desc) })
+        Ok(RestoreTableFromBackupOutput {
+            table_description: Some(desc),
+        })
     })
 }
 
@@ -269,13 +298,20 @@ pub(crate) fn restore_to_point_in_time(
     i: RestoreTableToPointInTimeInput,
 ) -> Result<RestoreTableToPointInTimeOutput, AwsError> {
     d.db.transaction(|tx| {
-        let source = i.source_table_name.clone().or(i.source_table_arn.clone()).unwrap_or_default();
+        let source = i
+            .source_table_name
+            .clone()
+            .or(i.source_table_arn.clone())
+            .unwrap_or_default();
         let src = Table::find(tx, ctx, &source)?.ok_or_else(|| table_not_found(&source))?;
         if !src.pitr {
             return Err(AwsError::sender(
                 400,
                 "PointInTimeRecoveryUnavailableException",
-                format!("Point in time recovery is not enabled for table '{}'", src.name),
+                format!(
+                    "Point in time recovery is not enabled for table '{}'",
+                    src.name
+                ),
             ));
         }
         let src_id = src.id.clone();
@@ -287,13 +323,20 @@ pub(crate) fn restore_to_point_in_time(
             t.throughput = Some(p.clone());
         }
         t.pitr = false;
-        let desc = restore_into(tx, ctx, t, &i.target_table_name, |nt| {
-            tx.execute(
-                "INSERT INTO items (table_id, hk, rk, item) SELECT ?1, hk, rk, item FROM items WHERE table_id = ?2",
-                params![nt.id, src_id],
-            )?;
+        let desc = restore_into(tx, ctx, t, &i.target_table_name, |tx, nt| {
+            diesel::insert_into(items::table)
+                .values(items::table.filter(items::table_id.eq(&src_id)).select((
+                    (&nt.id).into_sql::<diesel::sql_types::Text>(),
+                    items::hk,
+                    items::rk,
+                    items::item,
+                )))
+                .into_columns((items::table_id, items::hk, items::rk, items::item))
+                .execute(tx)?;
             Ok(())
         })?;
-        Ok(RestoreTableToPointInTimeOutput { table_description: Some(desc) })
+        Ok(RestoreTableToPointInTimeOutput {
+            table_description: Some(desc),
+        })
     })
 }

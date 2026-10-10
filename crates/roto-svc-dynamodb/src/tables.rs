@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use roto_core::rusqlite::params;
+use crate::schema::*;
+use crate::table::Table;
+use diesel::prelude::*;
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
@@ -200,8 +202,8 @@ pub(crate) fn delete_table(
         }
         let mut desc = t.describe(tx)?;
         desc.table_status = Some("DELETING".into());
-        tx.execute("DELETE FROM items WHERE table_id = ?1", params![t.id])?;
-        tx.execute("DELETE FROM tables WHERE table_id = ?1", params![t.id])?;
+        diesel::delete(items::table.filter(items::table_id.eq(&(t.id)))).execute(tx)?;
+        diesel::delete(tables::table.filter(tables::table_id.eq(&(t.id)))).execute(tx)?;
         Ok(DeleteTableOutput { table_description: Some(desc) })
     })
 }
@@ -224,12 +226,20 @@ pub(crate) fn list_tables(
     }
     d.db.transaction(|tx| {
         let after = i.exclusive_start_table_name.clone().unwrap_or_default();
-        let mut stmt = tx.prepare("SELECT name FROM tables WHERE account_id = ?1 AND region = ?2 AND name > ?3 ORDER BY name LIMIT ?4")?;
-        let mut names: Vec<String> =
-            stmt.query_map(params![ctx.account_id, ctx.region, after, limit + 1], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let mut names = tables::table
+            .filter(tables::account_id.eq(&ctx.account_id))
+            .filter(tables::region.eq(&ctx.region))
+            .filter(tables::name.gt(after))
+            .order(tables::name)
+            .limit(i64::from(limit) + 1)
+            .select(tables::name)
+            .load::<String>(tx)?;
         let more = names.len() as i32 > limit;
         names.truncate(limit as usize);
-        Ok(ListTablesOutput { last_evaluated_table_name: more.then(|| names.last().cloned()).flatten(), table_names: names })
+        Ok(ListTablesOutput {
+            last_evaluated_table_name: more.then(|| names.last().cloned()).flatten(),
+            table_names: names,
+        })
     })
 }
 

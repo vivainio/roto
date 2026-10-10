@@ -3,7 +3,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use roto_core::rusqlite::params;
+use crate::schema::*;
+use crate::table::Table;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use roto_core::{AwsError, RequestContext};
 use serde_json::Value;
 
@@ -450,7 +453,7 @@ fn select_mode(
 
 /// Reads all items of the table in key order (base table) or sorted by index keys.
 fn gather(
-    tx: &roto_core::rusqlite::Transaction,
+    tx: &mut SqliteConnection,
     t: &Table,
     table_schema: &KeySchema,
     index: Option<(&KeySchema, &Projection)>,
@@ -461,85 +464,75 @@ fn gather(
     let mut cands: Vec<Cand> = Vec::new();
     match index {
         None => {
-            let mut sql = String::from("SELECT hk, rk, item FROM items WHERE table_id = ?1");
-            let mut binds: Vec<Vec<u8>> = Vec::new();
+            let mut q = items::table.filter(items::table_id.eq(&t.id)).into_boxed();
             if let Some(kc) = key_cond {
-                sql.push_str(" AND hk = ?2");
-                binds.push(keys::encode(&table_schema.hash, &kc.hash).map_err(ve)?);
+                q = q.filter(items::hk.eq(keys::encode(&table_schema.hash, &kc.hash).map_err(ve)?));
                 if let (Some(rc), Some(rattr)) = (&kc.range, &table_schema.range) {
                     let enc = |v: &Value| keys::encode(rattr, v).map_err(ve);
                     match rc {
                         RangeCond::Cmp(op, v) => {
-                            let sym = match op {
-                                CmpOp::Eq => "=",
-                                CmpOp::Ne => "<>",
-                                CmpOp::Lt => "<",
-                                CmpOp::Le => "<=",
-                                CmpOp::Gt => ">",
-                                CmpOp::Ge => ">=",
+                            let v = enc(v)?;
+                            q = match op {
+                                CmpOp::Eq => q.filter(items::rk.eq(v)),
+                                CmpOp::Ne => q.filter(items::rk.ne(v)),
+                                CmpOp::Lt => q.filter(items::rk.lt(v)),
+                                CmpOp::Le => q.filter(items::rk.le(v)),
+                                CmpOp::Gt => q.filter(items::rk.gt(v)),
+                                CmpOp::Ge => q.filter(items::rk.ge(v)),
                             };
-                            sql.push_str(&format!(" AND rk {sym} ?{}", binds.len() + 2));
-                            binds.push(enc(v)?);
                         }
                         RangeCond::Between(a, b) => {
-                            sql.push_str(&format!(
-                                " AND rk >= ?{} AND rk <= ?{}",
-                                binds.len() + 2,
-                                binds.len() + 3
-                            ));
-                            binds.push(enc(a)?);
-                            binds.push(enc(b)?);
+                            q = q
+                                .filter(items::rk.ge(enc(a)?))
+                                .filter(items::rk.le(enc(b)?));
                         }
                         RangeCond::BeginsWith(p) => {
                             let lo = enc(p)?;
-                            sql.push_str(&format!(" AND rk >= ?{}", binds.len() + 2));
-                            if let Some(up) = prefix_upper(&lo) {
-                                sql.push_str(&format!(" AND rk < ?{}", binds.len() + 3));
-                                binds.push(lo);
-                                binds.push(up);
-                            } else {
-                                binds.push(lo);
+                            let up = prefix_upper(&lo);
+                            q = q.filter(items::rk.ge(lo));
+                            if let Some(up) = up {
+                                q = q.filter(items::rk.lt(up));
                             }
                         }
                     }
                 }
             }
             if let Some(s) = start {
-                let (shk, srk) = table_schema
+                let (hk, rk) = table_schema
                     .item_keys(s)
                     .map_err(|_| ve("The provided starting key is invalid"))?;
-                let n = binds.len() + 2;
                 if key_cond.is_some() {
-                    sql.push_str(&format!(" AND rk {} ?{n}", if forward { ">" } else { "<" }));
-                    binds.push(srk);
-                    let _ = shk;
+                    q = if forward {
+                        q.filter(items::rk.gt(rk))
+                    } else {
+                        q.filter(items::rk.lt(rk))
+                    };
                 } else {
-                    sql.push_str(&format!(
-                        " AND (hk, rk) {} (?{n}, ?{})",
-                        if forward { ">" } else { "<" },
-                        n + 1
-                    ));
-                    binds.push(shk);
-                    binds.push(srk);
+                    q = if forward {
+                        q.filter(
+                            items::hk
+                                .gt(hk.clone())
+                                .or(items::hk.eq(hk).and(items::rk.gt(rk))),
+                        )
+                    } else {
+                        q.filter(
+                            items::hk
+                                .lt(hk.clone())
+                                .or(items::hk.eq(hk).and(items::rk.lt(rk))),
+                        )
+                    };
                 }
             }
-            sql.push_str(if forward {
-                " ORDER BY hk, rk"
+            q = if forward {
+                q.order((items::hk, items::rk))
             } else {
-                " ORDER BY hk DESC, rk DESC"
-            });
-            let mut stmt = tx.prepare(&sql)?;
-            let mut all: Vec<&dyn roto_core::rusqlite::ToSql> = vec![&t.id];
-            all.extend(binds.iter().map(|b| b as &dyn roto_core::rusqlite::ToSql));
-            let rows = stmt.query_map(all.as_slice(), |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?;
+                q.order((items::hk.desc(), items::rk.desc()))
+            };
+            let rows = q
+                .select((items::hk, items::rk, items::item))
+                .load::<(Vec<u8>, Vec<u8>, String)>(tx)?;
             for row in rows {
-                let (hk, rk, text) = row?;
+                let (hk, rk, text) = row;
                 cands.push(Cand {
                     item: parse_item(&text),
                     ihk: hk.clone(),
@@ -550,16 +543,12 @@ fn gather(
             }
         }
         Some((ischema, proj)) => {
-            let mut stmt = tx.prepare("SELECT hk, rk, item FROM items WHERE table_id = ?1")?;
-            let rows = stmt.query_map(params![t.id], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?;
+            let rows = items::table
+                .filter(items::table_id.eq(&t.id))
+                .select((items::hk, items::rk, items::item))
+                .load::<(Vec<u8>, Vec<u8>, String)>(tx)?;
             for row in rows {
-                let (hk, rk, text) = row?;
+                let (hk, rk, text) = row;
                 let item = parse_item(&text);
                 // Items missing an index key attribute are not in the index.
                 let Ok((ihk, irk)) = ischema.item_keys(&item) else {

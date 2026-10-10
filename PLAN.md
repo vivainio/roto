@@ -260,3 +260,11 @@ Functions, invocation jobs/results and event-source mappings now use typed CRUD.
 Restart recovery, async claim order and mapping filters preserve their behavior.
 Thirteen native tests and service Clippy pass; Moto retains 8 passing, 30 skipped
 and 117 excluded tests.
+
+## DynamoDB Diesel port (2026-10-10)
+
+Table metadata uses named records; items, backups and restores use typed CRUD.
+Query/Scan key conditions and continuation filters use boxed Diesel queries
+instead of constructing SQL and positional bindings. Backup copies remain single
+INSERT SELECT statements. Moto remains 414 passing, 2 skipped and 115 excluded;
+21 native tests and service Clippy pass.
