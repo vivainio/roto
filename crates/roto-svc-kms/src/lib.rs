@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
-    sql: "CREATE TABLE keys (account TEXT, region TEXT, id TEXT, metadata TEXT NOT NULL, PRIMARY KEY(account,region,id)); CREATE TABLE aliases (account TEXT, region TEXT, name TEXT, key_id TEXT NOT NULL, PRIMARY KEY(account,region,name));",
+    sql: "CREATE TABLE keys (account TEXT, region TEXT, id TEXT, metadata TEXT NOT NULL, PRIMARY KEY(account,region,id)); CREATE TABLE aliases (account TEXT, region TEXT, name TEXT, key_id TEXT NOT NULL, created_at REAL NOT NULL, PRIMARY KEY(account,region,name));",
 }];
 pub struct Kms {
     db: Arc<Db>,
@@ -54,7 +54,7 @@ impl ServiceHandler for KmsHandler {
         })
     }
 }
-fn error(code: &str, msg: &str) -> AwsError {
+fn error(code: &str, msg: impl Into<String>) -> AwsError {
     AwsError::sender(400, code, msg)
 }
 fn text<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -62,6 +62,24 @@ fn text<'a>(v: &'a Value, k: &str) -> &'a str {
 }
 fn context(v: &Value, k: &str) -> Value {
     v.get(k).cloned().unwrap_or_else(|| json!({}))
+}
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+fn save_key(tx: &Transaction<'_>, ctx: &RequestContext, key: &Value) -> Result<(), AwsError> {
+    tx.execute(
+        "UPDATE keys SET metadata=?1 WHERE account=?2 AND region=?3 AND id=?4",
+        params![
+            key.to_string(),
+            ctx.account_id,
+            ctx.region,
+            text(key, "KeyId")
+        ],
+    )?;
+    Ok(())
 }
 fn load(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Value, AwsError> {
     let id = id
@@ -92,7 +110,7 @@ fn load(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Value, AwsEr
             |r| r.get(0),
         )
         .optional()?
-        .ok_or_else(|| error("NotFoundException", "Key not found"))?;
+        .ok_or_else(|| error("NotFoundException", format!("Invalid keyId {id}")))?;
     serde_json::from_str(&data).map_err(|_| error("InternalException", "Invalid stored key"))
 }
 fn usable(key: &Value) -> Result<(), AwsError> {
@@ -162,22 +180,60 @@ impl Kms {
   if v["MultiRegion"]==true { return Err(error("ValidationException","Multi-region keys are unsupported")); }
   let id=uuid::Uuid::new_v4().to_string();
   let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-  let key=json!({"AWSAccountId":ctx.account_id,"KeyId":id,"Arn":format!("arn:aws:kms:{}:{}:key/{id}",ctx.region,ctx.account_id),"CreationDate":now,"Enabled":true,"KeyState":"Enabled","Description":text(v,"Description"),"KeyUsage":"ENCRYPT_DECRYPT","KeySpec":"SYMMETRIC_DEFAULT","CustomerMasterKeySpec":"SYMMETRIC_DEFAULT","Origin":"AWS_KMS","KeyManager":"CUSTOMER","EncryptionAlgorithms":["SYMMETRIC_DEFAULT"],"MultiRegion":false});
+  let policy=v.get("Policy").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(||json!({"Version":"2012-10-17","Id":"key-default-1","Statement":[{"Sid":"Enable IAM User Permissions","Effect":"Allow","Principal":{"AWS":format!("arn:aws:iam::{}:root",ctx.account_id)},"Action":"kms:*","Resource":"*"}]}).to_string());
+  let key=json!({"AWSAccountId":ctx.account_id,"KeyId":id,"Arn":format!("arn:aws:kms:{}:{}:key/{id}",ctx.region,ctx.account_id),"CreationDate":now,"Enabled":true,"KeyState":"Enabled","Description":text(v,"Description"),"KeyUsage":"ENCRYPT_DECRYPT","KeySpec":"SYMMETRIC_DEFAULT","CustomerMasterKeySpec":"SYMMETRIC_DEFAULT","Origin":"AWS_KMS","KeyManager":"CUSTOMER","EncryptionAlgorithms":["SYMMETRIC_DEFAULT"],"MultiRegion":false,"Tags":v.get("Tags").cloned().unwrap_or_else(||json!([])),"Policy":policy,"KeyRotationEnabled":false,"RotationPeriodInDays":365});
   tx.execute("INSERT INTO keys VALUES (?1,?2,?3,?4)",params![ctx.account_id,ctx.region,id,key.to_string()])?;
   Ok(json!({"KeyMetadata":key}))
  },
  "DescribeKey"=>Ok(json!({"KeyMetadata":load(tx,ctx,text(v,"KeyId"))?})),
  "EnableKey"|"DisableKey"=> { let mut key=load(tx,ctx,text(v,"KeyId"))?; let enabled=op=="EnableKey"; key["Enabled"]=json!(enabled); key["KeyState"]=json!(if enabled {"Enabled"} else {"Disabled"}); tx.execute("UPDATE keys SET metadata=?1 WHERE account=?2 AND region=?3 AND id=?4",params![key.to_string(),ctx.account_id,ctx.region,text(&key,"KeyId")])?; Ok(json!({})) },
  "CreateAlias"=> {
-  let name=text(v,"AliasName"); if !name.starts_with("alias/") || name.starts_with("alias/aws/") || name.len()<=6 { return Err(error("ValidationException","Invalid alias name")); }
+  let name=text(v,"AliasName");
+  if !name.starts_with("alias/") || name.len()<=6 { return Err(error("ValidationException","Invalid identifier")); }
+  if name.starts_with("alias/aws/") { return Err(error("NotAuthorizedException","")); }
+  if name.bytes().any(|b| !(b.is_ascii_alphanumeric() || b"/_-".contains(&b))) { return Err(error("ValidationException","Alias contains invalid characters")); }
+  if text(v,"TargetKeyId").starts_with("alias/") || text(v,"TargetKeyId").contains(":alias/") { return Err(error("ValidationException","Aliases must refer to keys. Not aliases")); }
   let key=load(tx,ctx,text(v,"TargetKeyId"))?;
   let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM aliases WHERE account=?1 AND region=?2 AND name=?3)",params![ctx.account_id,ctx.region,name],|r|r.get(0))?;
-  if exists { return Err(error("AlreadyExistsException","Alias already exists")); }
-  tx.execute("INSERT INTO aliases VALUES (?1,?2,?3,?4)",params![ctx.account_id,ctx.region,name,text(&key,"KeyId")])?; Ok(json!({}))
+  if exists { return Err(error("AlreadyExistsException",format!("An alias with the name arn:aws:kms:{}:{}:{} already exists",ctx.region,ctx.account_id,name))); }
+  tx.execute("INSERT INTO aliases(account,region,name,key_id,created_at) VALUES (?1,?2,?3,?4,?5)",params![ctx.account_id,ctx.region,name,text(&key,"KeyId"),now()])?; Ok(json!({}))
  },
+ "DeleteAlias"=> {
+  let name=text(v,"AliasName"); if !name.starts_with("alias/") {return Err(error("ValidationException","Invalid identifier"));} let changed=tx.execute("DELETE FROM aliases WHERE account=?1 AND region=?2 AND name=?3",params![ctx.account_id,ctx.region,name])?;
+  if changed==0 { return Err(error("NotFoundException",format!("Alias arn:aws:kms:{}:{}:{} is not found.",ctx.region,ctx.account_id,name))); } Ok(json!({}))
+ },
+ "UpdateAlias"=> {
+  let name=text(v,"AliasName"); let target=load(tx,ctx,text(v,"TargetKeyId"))?;
+  let changed=tx.execute("UPDATE aliases SET key_id=?1 WHERE account=?2 AND region=?3 AND name=?4",params![text(&target,"KeyId"),ctx.account_id,ctx.region,name])?;
+  if changed==0 { return Err(error("NotFoundException",format!("Alias arn:aws:kms:{}:{}:{} is not found.",ctx.region,ctx.account_id,name))); } Ok(json!({}))
+ },
+ "ListKeys"=> {
+  let mut stmt=tx.prepare("SELECT metadata FROM keys WHERE account=?1 AND region=?2 ORDER BY id")?;
+  let rows=stmt.query_map(params![ctx.account_id,ctx.region],|r|r.get::<_,String>(0))?;
+  let mut keys=Vec::new(); for row in rows { let k:Value=serde_json::from_str(&row?).map_err(|_| error("InternalException", "Invalid stored key"))?; keys.push(json!({"KeyId":k["KeyId"],"KeyArn":k["Arn"]})); }
+  Ok(json!({"Keys":keys,"Truncated":false}))
+ },
+ "ListAliases"=> {
+  let filter=if text(v,"KeyId").is_empty(){None}else{Some(text(v,"KeyId"))};
+  let mut stmt=tx.prepare("SELECT a.name,a.key_id,a.created_at,k.metadata FROM aliases a JOIN keys k ON k.account=a.account AND k.region=a.region AND k.id=a.key_id WHERE a.account=?1 AND a.region=?2 ORDER BY a.name")?;
+  let rows=stmt.query_map(params![ctx.account_id,ctx.region],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,f64>(2)?,r.get::<_,String>(3)?)))?;
+  let mut aliases=Vec::new(); for row in rows { let (name,id,_created,metadata)=row?; let k:Value=serde_json::from_str(&metadata).map_err(|_| error("InternalException", "Invalid stored key"))?; if filter.is_some_and(|f| f!=id && f!=text(&k,"Arn")) {continue;} aliases.push(json!({"AliasName":name,"AliasArn":format!("arn:aws:kms:{}:{}:{}",ctx.region,ctx.account_id,name),"TargetKeyId":id})); }
+  Ok(json!({"Aliases":aliases,"Truncated":false}))
+ },
+ "UpdateKeyDescription"=> { let mut k=load(tx,ctx,text(v,"KeyId"))?; k["Description"]=json!(text(v,"Description")); save_key(tx,ctx,&k)?; Ok(json!({})) },
+ "ScheduleKeyDeletion"=> { let mut k=load(tx,ctx,text(v,"KeyId"))?; let days=v["PendingWindowInDays"].as_i64().unwrap_or(30); if !(7..=30).contains(&days) {return Err(error("ValidationException","PendingWindowInDays must be between 7 and 30"));} let when=now()+days as f64*86400.0; k["Enabled"]=json!(false); k["KeyState"]=json!("PendingDeletion"); k["DeletionDate"]=json!(when); k["PendingWindowInDays"]=json!(days); save_key(tx,ctx,&k)?; Ok(json!({"KeyId":k["KeyId"],"KeyState":k["KeyState"],"DeletionDate":when,"PendingWindowInDays":days})) },
+ "CancelKeyDeletion"=> { let mut k=load(tx,ctx,text(v,"KeyId"))?; if k["KeyState"]!="PendingDeletion" {return Err(error("KMSInvalidStateException","Key is not pending deletion"));} k["Enabled"]=json!(false); k["KeyState"]=json!("Disabled"); k.as_object_mut().unwrap().remove("DeletionDate"); k.as_object_mut().unwrap().remove("PendingWindowInDays"); save_key(tx,ctx,&k)?; Ok(json!({"KeyId":k["KeyId"]})) },
+ "EnableKeyRotation"|"DisableKeyRotation"=> { if text(v,"KeyId").starts_with("alias/") || text(v,"KeyId").contains(":alias/") {return Err(error("NotFoundException",format!("Invalid keyId {}",text(v,"KeyId"))));} let mut k=load(tx,ctx,text(v,"KeyId"))?; let enabled=op=="EnableKeyRotation"; k["KeyRotationEnabled"]=json!(enabled); if let Some(days)=v.get("RotationPeriodInDays") {let n=days.as_i64().unwrap_or(0); if !(90..=2560).contains(&n){return Err(error("ValidationException","RotationPeriodInDays must be between 90 and 2560"));} k["RotationPeriodInDays"]=json!(n);} save_key(tx,ctx,&k)?; Ok(json!({})) },
+ "GetKeyRotationStatus"=> {let k=load(tx,ctx,text(v,"KeyId"))?; Ok(json!({"KeyId":k["KeyId"],"KeyRotationEnabled":k["KeyRotationEnabled"],"RotationPeriodInDays":k["RotationPeriodInDays"]}))},
+ "TagResource"|"UntagResource"=> {let mut k=load(tx,ctx,text(v,"KeyId"))?; let mut tags=k["Tags"].as_array().cloned().unwrap_or_default(); if op=="TagResource" {for tag in v["Tags"].as_array().into_iter().flatten(){let key=text(tag,"TagKey"); if key.is_empty(){continue;} tags.retain(|t|text(t,"TagKey")!=key); tags.push(tag.clone());}} else {let remove:Vec<&str>=v["TagKeys"].as_array().into_iter().flatten().filter_map(Value::as_str).collect(); tags.retain(|t|!remove.contains(&text(t,"TagKey")));} k["Tags"]=json!(tags); save_key(tx,ctx,&k)?; Ok(json!({})) },
+ "ListResourceTags"=> {let k=load(tx,ctx,text(v,"KeyId"))?; Ok(json!({"Tags":k["Tags"].as_array().cloned().unwrap_or_default(),"Truncated":false}))},
+ "GetKeyPolicy"=> {let k=load(tx,ctx,text(v,"KeyId"))?; let name=if text(v,"PolicyName").is_empty(){"default"}else{text(v,"PolicyName")}; if name!="default" {return Err(error("NotFoundException","Policy not found"));} Ok(json!({"Policy":k["Policy"],"PolicyName":"default"}))},
+ "PutKeyPolicy"=> {if text(v,"KeyId").starts_with("alias/") || text(v,"KeyId").contains(":alias/") {return Err(error("NotFoundException",format!("Invalid keyId {}",text(v,"KeyId"))));} let mut k=load(tx,ctx,text(v,"KeyId"))?; if text(v,"PolicyName")!="default" {return Err(error("NotFoundException","Policy not found"));} k["Policy"]=json!(text(v,"Policy")); save_key(tx,ctx,&k)?; Ok(json!({}))},
+ "ListKeyPolicies"=> {let _=load(tx,ctx,text(v,"KeyId"))?; Ok(json!({"PolicyNames":["default"],"Truncated":false}))},
+ "GenerateRandom"=> {let n=v.get("NumberOfBytes").and_then(Value::as_u64).unwrap_or(32); if n==0 || n>1024 {return Err(error("ValidationException","NumberOfBytes must be between 1 and 1024"));} let mut bytes=vec![0;n as usize]; getrandom::fill(&mut bytes).map_err(|_|error("InternalException","Random byte generation failed"))?; Ok(json!({"Plaintext":STANDARD.encode(bytes)}))},
  "Encrypt"|"GenerateDataKey"|"GenerateDataKeyWithoutPlaintext"=> {
   algorithm(v,"EncryptionAlgorithm")?; let key=load(tx,ctx,text(v,"KeyId"))?; usable(&key)?;
-  let plain=if op=="Encrypt" { let b=blob(v,"Plaintext")?; if b.is_empty() || b.len()>4096 { return Err(error("ValidationException","Plaintext must contain 1 to 4096 bytes")); } b } else {
+  let plain=if op=="Encrypt" { let b=blob(v,"Plaintext")?; if b.len()>4096 { return Err(error("ValidationException","Plaintext must contain no more than 4096 bytes")); } b } else {
    let length=match (v.get("KeySpec"),v.get("NumberOfBytes")) { (Some(s),None) if s=="AES_256"=>32, (Some(s),None) if s=="AES_128"=>16, (None,Some(n))=>n.as_u64().filter(|n|*n>0 && *n<=1024).ok_or_else(||error("ValidationException","Invalid NumberOfBytes"))? as usize, _=>return Err(error("ValidationException","Specify either AES_128/AES_256 KeySpec or NumberOfBytes")) };
    let mut bytes=vec![0;length]; getrandom::fill(&mut bytes).map_err(|_|error("InternalException","Random byte generation failed"))?; bytes
   };
@@ -198,6 +254,23 @@ pub const IMPLEMENTED: &[&str] = &[
     "EnableKey",
     "DisableKey",
     "CreateAlias",
+    "DeleteAlias",
+    "UpdateAlias",
+    "ListAliases",
+    "ListKeys",
+    "UpdateKeyDescription",
+    "ScheduleKeyDeletion",
+    "CancelKeyDeletion",
+    "EnableKeyRotation",
+    "DisableKeyRotation",
+    "GetKeyRotationStatus",
+    "TagResource",
+    "UntagResource",
+    "ListResourceTags",
+    "GetKeyPolicy",
+    "PutKeyPolicy",
+    "ListKeyPolicies",
+    "GenerateRandom",
     "Encrypt",
     "Decrypt",
     "ReEncrypt",
@@ -275,6 +348,148 @@ impl Service for Kms {
         input: ReEncryptRequest,
     ) -> Result<ReEncryptResponse, AwsError> {
         ReEncryptResponse::from_json(&self.call(ctx, "ReEncrypt", &input.to_json())?, "")
+    }
+    fn cancel_key_deletion(
+        &self,
+        ctx: &RequestContext,
+        input: CancelKeyDeletionRequest,
+    ) -> Result<CancelKeyDeletionResponse, AwsError> {
+        CancelKeyDeletionResponse::from_json(
+            &self.call(ctx, "CancelKeyDeletion", &input.to_json())?,
+            "",
+        )
+    }
+    fn delete_alias(
+        &self,
+        ctx: &RequestContext,
+        input: DeleteAliasRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "DeleteAlias", &input.to_json())?;
+        Ok(())
+    }
+    fn disable_key_rotation(
+        &self,
+        ctx: &RequestContext,
+        input: DisableKeyRotationRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "DisableKeyRotation", &input.to_json())?;
+        Ok(())
+    }
+    fn enable_key_rotation(
+        &self,
+        ctx: &RequestContext,
+        input: EnableKeyRotationRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "EnableKeyRotation", &input.to_json())?;
+        Ok(())
+    }
+    fn generate_random(
+        &self,
+        ctx: &RequestContext,
+        input: GenerateRandomRequest,
+    ) -> Result<GenerateRandomResponse, AwsError> {
+        GenerateRandomResponse::from_json(&self.call(ctx, "GenerateRandom", &input.to_json())?, "")
+    }
+    fn get_key_policy(
+        &self,
+        ctx: &RequestContext,
+        input: GetKeyPolicyRequest,
+    ) -> Result<GetKeyPolicyResponse, AwsError> {
+        GetKeyPolicyResponse::from_json(&self.call(ctx, "GetKeyPolicy", &input.to_json())?, "")
+    }
+    fn get_key_rotation_status(
+        &self,
+        ctx: &RequestContext,
+        input: GetKeyRotationStatusRequest,
+    ) -> Result<GetKeyRotationStatusResponse, AwsError> {
+        GetKeyRotationStatusResponse::from_json(
+            &self.call(ctx, "GetKeyRotationStatus", &input.to_json())?,
+            "",
+        )
+    }
+    fn list_aliases(
+        &self,
+        ctx: &RequestContext,
+        input: ListAliasesRequest,
+    ) -> Result<ListAliasesResponse, AwsError> {
+        ListAliasesResponse::from_json(&self.call(ctx, "ListAliases", &input.to_json())?, "")
+    }
+    fn list_key_policies(
+        &self,
+        ctx: &RequestContext,
+        input: ListKeyPoliciesRequest,
+    ) -> Result<ListKeyPoliciesResponse, AwsError> {
+        ListKeyPoliciesResponse::from_json(
+            &self.call(ctx, "ListKeyPolicies", &input.to_json())?,
+            "",
+        )
+    }
+    fn list_keys(
+        &self,
+        ctx: &RequestContext,
+        input: ListKeysRequest,
+    ) -> Result<ListKeysResponse, AwsError> {
+        ListKeysResponse::from_json(&self.call(ctx, "ListKeys", &input.to_json())?, "")
+    }
+    fn list_resource_tags(
+        &self,
+        ctx: &RequestContext,
+        input: ListResourceTagsRequest,
+    ) -> Result<ListResourceTagsResponse, AwsError> {
+        ListResourceTagsResponse::from_json(
+            &self.call(ctx, "ListResourceTags", &input.to_json())?,
+            "",
+        )
+    }
+    fn put_key_policy(
+        &self,
+        ctx: &RequestContext,
+        input: PutKeyPolicyRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "PutKeyPolicy", &input.to_json())?;
+        Ok(())
+    }
+    fn schedule_key_deletion(
+        &self,
+        ctx: &RequestContext,
+        input: ScheduleKeyDeletionRequest,
+    ) -> Result<ScheduleKeyDeletionResponse, AwsError> {
+        ScheduleKeyDeletionResponse::from_json(
+            &self.call(ctx, "ScheduleKeyDeletion", &input.to_json())?,
+            "",
+        )
+    }
+    fn tag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: TagResourceRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "TagResource", &input.to_json())?;
+        Ok(())
+    }
+    fn untag_resource(
+        &self,
+        ctx: &RequestContext,
+        input: UntagResourceRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "UntagResource", &input.to_json())?;
+        Ok(())
+    }
+    fn update_alias(
+        &self,
+        ctx: &RequestContext,
+        input: UpdateAliasRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "UpdateAlias", &input.to_json())?;
+        Ok(())
+    }
+    fn update_key_description(
+        &self,
+        ctx: &RequestContext,
+        input: UpdateKeyDescriptionRequest,
+    ) -> Result<(), AwsError> {
+        self.call(ctx, "UpdateKeyDescription", &input.to_json())?;
+        Ok(())
     }
 }
 

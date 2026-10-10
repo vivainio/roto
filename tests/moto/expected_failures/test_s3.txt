@@ -53,7 +53,6 @@ tests/test_s3/test_s3_copyobject.py::test_copy_object_in_place_with_bucket_encry
 tests/test_s3/test_s3_copyobject.py::test_copy_object_in_place_with_encryption
 tests/test_s3/test_s3_copyobject.py::test_copy_object_keeps_checksum
 tests/test_s3/test_s3_copyobject.py::test_copy_object_with_bucketkeyenabled_returns_the_value
-tests/test_s3/test_s3_copyobject.py::test_copy_object_with_kms_encryption
 tests/test_s3/test_s3_copyobject.py::test_copy_object_with_replacement_tagging
 tests/test_s3/test_s3_copyobject.py::test_copy_objet_legal_hold
 tests/test_s3/test_s3_copyobject.py::test_s3_copy_object_lock

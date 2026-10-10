@@ -34,6 +34,9 @@ jobs:
           scripts/run-moto-tests.sh test_awslambda
           scripts/run-moto-tests.sh test_events
           scripts/run-moto-tests.sh test_kinesis
+          scripts/run-moto-tests.sh test_kms
+      - name: KMS API and envelope SDK smoke
+        run: python3 scripts/smoke-kms.py
       - name: Known-failure audit tooling tests
         run: .venv-moto/bin/python scripts/test-audit-moto-tests.py
       - name: CloudFormation lifecycle and persistence SDK smoke

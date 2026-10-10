@@ -10,7 +10,7 @@ is a regression.
 |---|---|---|---|
 | **STS** | 7 / 8 operations | 25 / 25 | DynamoDB multi-account integration passes. No `DecodeAuthorizationMessage`. |
 | **SQS** | 19 / 23 | 139 / 139 (6 skipped upstream) | CloudFormation queue integration passes. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
-| **S3** | 66 / 116 | 240 / 368 (59 skipped) | See [S3](#s3) below. |
+| **S3** | 66 / 116 | 241 / 368 (59 skipped) | See [S3](#s3) below. |
 | **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
 | **DynamoDB** | 47 / 57 | 414 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
@@ -20,7 +20,7 @@ is a regression.
 | **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
 | **CloudFormation** | 6 / 90 | 25 resource integration tests | Synchronous create/update/delete, stack/resource descriptions, SQS/SNS/S3/DynamoDB/Kinesis resources, refs/attributes/substitution, tags, outputs, dependency ordering, persistence. No automatic rollback, change sets, nested stacks, IAM/Lambda/EventBridge/SSM resources. |
 | **Kinesis** | 28 / 39 | 76 / 76 | Persisted streams/shards/records, hash routing, iterators, split/merge/scaling, retention, tags, consumer registration, stored encryption/monitoring settings, CloudFormation streams. No enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies or actual encryption. |
-| **KMS** | 10 / 54 | 4 native tests, HTTP smoke | Persisted symmetric keys and aliases, enable/disable, Encrypt/Decrypt, ReEncrypt, random data keys. Versioned base64 JSON ciphertext envelope; no per-message storage or real encryption. |
+| **KMS** | 27 / 54 | 152 / 225 Moto tests | Persisted symmetric keys and aliases, alias/key listing and updates, tags, key policies, rotation status, deletion scheduling, Encrypt/Decrypt/ReEncrypt and random data keys. 73 known Moto failures remain; mostly asymmetric operations, grants, multi-region behavior and policy enforcement. Ciphertext uses a reversible base64 JSON envelope. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -77,8 +77,8 @@ addressing; `aws-chunked` uploads. S3 → Lambda notifications for Put/Copy/mult
 and single/batch delete, with prefix/suffix filters and a persistent transactional outbox.
 Buckets with `EventBridgeConfiguration` emit object creation/deletion events to the default bus.
 
-Not working yet (the bulk of the 133 known failures): object lock / retention / legal hold,
-`RestoreObject`, `SelectObjectContent`, response checksums (CRC32/SHA1/SHA256), KMS/SSE details,
+Not working yet (the bulk of the 132 known failures): object lock / retention / legal hold,
+`RestoreObject`, `SelectObjectContent`, response checksums (CRC32/SHA1/SHA256), KMS actual encryption and bucket-default encryption behavior,
 inventory/analytics/metrics configurations, direct event notifications to SNS/SQS,
 server access logging delivery, lifecycle execution, website/CORS serving, and anything that
 depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
@@ -116,4 +116,4 @@ Delivery is at least once. Commands run with roto's OS permissions, without cont
 
 ## Next
 
-Extend KMS metadata APIs, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.
+Extend KMS asymmetric operations and grants as needed, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.

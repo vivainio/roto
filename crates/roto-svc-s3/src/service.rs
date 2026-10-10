@@ -613,6 +613,7 @@ macro_rules! object_output {
         out.expires = o.headers.get("expires").cloned();
         out.website_redirect_location = o.headers.get("website_redirect_location").cloned();
         out.server_side_encryption = o.headers.get("server_side_encryption").cloned();
+        out.ssekms_key_id = o.headers.get("ssekms_key_id").cloned();
         out.tag_count = (!o.tags.is_empty()).then_some(o.tags.len() as i32);
         out
     }};
@@ -882,6 +883,9 @@ impl Service for S3 {
             &i.server_side_encryption,
             &i.storage_class,
         );
+        if let Some(key_id) = &i.ssekms_key_id {
+            attrs.headers.insert("ssekms_key_id".into(), key_id.clone());
+        }
         if let Some(t) = &i.tagging {
             attrs.tags = parse_tagging_header(t)?;
         }
@@ -918,6 +922,7 @@ impl Service for S3 {
                 e_tag: Some(etag_quoted(&etag)),
                 version_id: (o.version_id != "null").then(|| o.version_id),
                 server_side_encryption: attrs.headers.get("server_side_encryption").cloned(),
+                ssekms_key_id: attrs.headers.get("ssekms_key_id").cloned(),
                 size: Some(data.len() as i64),
                 ..Default::default()
             })
@@ -1150,6 +1155,14 @@ impl Service for S3 {
                 )?
                 .map(|p| crate::acl::to_xml(&p)),
             };
+            if let Some(sse) = &i.server_side_encryption {
+                attrs
+                    .headers
+                    .insert("server_side_encryption".into(), sse.clone());
+            }
+            if let Some(key_id) = &i.ssekms_key_id {
+                attrs.headers.insert("ssekms_key_id".into(), key_id.clone());
+            }
             if replace_meta {
                 let fresh = attrs_from_headers(
                     &i.content_type,
@@ -1166,6 +1179,11 @@ impl Service for S3 {
                 attrs.content_type = fresh.content_type.or(Some(o.content_type.clone()));
                 attrs.metadata = fresh.metadata;
                 attrs.headers = fresh.headers;
+                if let Some(key_id) = &i.ssekms_key_id {
+                    attrs.headers.insert("ssekms_key_id".into(), key_id.clone());
+                }
+            } else if let Some(key_id) = &i.ssekms_key_id {
+                attrs.headers.insert("ssekms_key_id".into(), key_id.clone());
             }
             if replace_tags {
                 attrs.tags = match &i.tagging {
@@ -1173,6 +1191,8 @@ impl Service for S3 {
                     None => BTreeMap::new(),
                 };
             }
+            let response_sse = attrs.headers.get("server_side_encryption").cloned();
+            let response_ssekms_key_id = attrs.headers.get("ssekms_key_id").cloned();
             let n = self.store_object(tx, &dst, &i.key, &data, o.etag.clone(), attrs)?;
             crate::notifications::record(tx, ctx, &dst, &i.key, "ObjectCreated:Copy", Some(&n))?;
             Ok(CopyObjectOutput {
@@ -1182,6 +1202,8 @@ impl Service for S3 {
                     ..Default::default()
                 }),
                 copy_source_version_id: (o.version_id != "null").then(|| o.version_id.clone()),
+                server_side_encryption: response_sse,
+                ssekms_key_id: response_ssekms_key_id,
                 version_id: (n.version_id != "null").then(|| n.version_id),
                 ..Default::default()
             })
