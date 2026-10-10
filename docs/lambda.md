@@ -115,3 +115,48 @@ cargo build -p roto-server
 This starts a disposable roto and HTTP handler, exercises command and HTTP invocations plus
 metadata APIs, then verifies filtered S3 → command → SQS delivery. It requires boto3 (the moto
 test virtualenv includes it), and does not change the example config or an existing server.
+
+## Local HTTP API routes
+
+Expose Lambda functions through API Gateway HTTP API v2 proxy events:
+
+```sh
+cargo run -p roto-server -- --ephemeral --setup examples/demo/setup.lua \
+  --http-routes examples/demo/http-routes.json
+curl 'http://localhost:5070/roto-http/echo/orders/42?tag=one&tag=two'
+```
+
+The route file contains a `routes` array. Each route specifies `method`, `path`,
+`function` (a Lambda name or full ARN), and optionally `region` (default
+`us-east-1`). Functions and executor bindings must already exist; the demo setup
+provides both. Restart the server to reload the route file.
+
+```json
+{"routes":[{"method":"POST","path":"/orders/{id}","function":"process-order"}]}
+```
+
+Routes are exposed under `/roto-http`; that prefix is removed from Lambda paths.
+Methods include `ANY`. Paths support named parameters (`{id}`) and a terminal
+catch-all (`{proxy+}`). Literal paths take precedence over parameter routes,
+then non-greedy routes over catch-alls, then specific methods over `ANY`.
+Unmatched requests return 404.
+
+The event includes the v2 request context, raw path and query, decoded path
+parameters, lowercase headers, comma-joined repeated headers and query values,
+cookies, and body. Binary content types and invalid UTF-8 bodies are base64
+encoded; text, JSON, XML, and form bodies are strings. The request context uses
+local API ID `local`, stage `$default`, and the connection's client IP.
+
+Return `{"statusCode":201,"headers":{"content-type":"text/plain"},"body":"created"}`
+for a custom response. `cookies` becomes multiple `Set-Cookie` headers, and
+`isBase64Encoded: true` decodes a binary response body. Results without
+`statusCode` infer status 200 and content type `application/json`; string results
+become the body directly. Lambda invocation failures and malformed proxy responses
+return 502 without exposing execution details. Execution history and logs use the
+usual Lambda inspection facilities.
+
+This is local route configuration with the
+[AWS HTTP API v2 payload contract](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-develop-integrations-lambda.html).
+API Gateway management APIs, REST API v1 payloads, deployments, authorizers,
+CORS configuration, and custom domains are not implemented. Routes remain loaded
+when service state is reset; their functions must be recreated before invocation.

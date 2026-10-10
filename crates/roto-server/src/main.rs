@@ -1,3 +1,4 @@
+mod gateway;
 mod inspection;
 mod setup;
 mod trace;
@@ -40,6 +41,9 @@ struct Args {
     /// JSON bindings from Lambda function names/ARNs to local command or HTTP executors.
     #[arg(long)]
     lambda_executors: Option<PathBuf>,
+    /// Local HTTP API v2 routes, exposed under /roto-http/.
+    #[arg(long)]
+    http_routes: Option<PathBuf>,
     /// Trusted Lua resource setup, run before listening or processing events.
     #[arg(long)]
     setup: Option<PathBuf>,
@@ -58,6 +62,7 @@ struct App {
     account_id: String,
     unsupported: unsupported::Unsupported,
     trace: trace::Trace,
+    gateway: gateway::Gateway,
 }
 
 #[tokio::main]
@@ -73,6 +78,17 @@ async fn main() {
         eprintln!("error opening trace file: {e}");
         std::process::exit(1);
     });
+
+    let gateway = args
+        .http_routes
+        .as_deref()
+        .map(gateway::Gateway::load)
+        .transpose()
+        .unwrap_or_else(|e| {
+            eprintln!("error loading HTTP routes: {e}");
+            std::process::exit(1);
+        })
+        .unwrap_or_default();
 
     let store = Arc::new(if args.ephemeral {
         Store::ephemeral()
@@ -184,6 +200,7 @@ async fn main() {
         account_id: args.account_id,
         unsupported: Default::default(),
         trace,
+        gateway,
     });
 
     let endpoint = format!(
@@ -252,7 +269,12 @@ async fn main() {
             format!("data: {}", args.data_dir.display())
         }
     );
-    axum::serve(listener, router).await.unwrap();
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn inspection_ui() -> Html<&'static str> {
@@ -330,6 +352,33 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .map(|h| format!("http://{h}"))
             .unwrap_or_else(|| "http://localhost:5070".into()),
     };
+
+    if raw.path == "/roto-http" || raw.path.starts_with("/roto-http/") {
+        let source_ip = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+            .map(|peer| peer.0.ip().to_string())
+            .unwrap_or_else(|| "127.0.0.1".into());
+        let protocol = format!("{:?}", parts.version);
+        let mut ctx = ctx;
+        ctx.account_id = app.account_id.clone();
+        ctx.access_key = None;
+        let app = app.clone();
+        return match tokio::task::spawn_blocking(move || {
+            app.gateway.handle(
+                app.services["lambda"].as_ref(),
+                &ctx,
+                &raw,
+                &source_ip,
+                &protocol,
+            )
+        })
+        .await
+        {
+            Ok(response) => into_response(response),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Internal Server Error").into_response(),
+        };
+    }
 
     let handler = service
         .as_deref()
@@ -482,7 +531,7 @@ fn into_response(r: RawResponse) -> Response {
         StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     for (k, v) in r.headers {
         if let (Ok(k), Ok(v)) = (HeaderName::try_from(k), HeaderValue::try_from(v)) {
-            resp.headers_mut().insert(k, v);
+            resp.headers_mut().append(k, v);
         }
     }
     resp
@@ -521,6 +570,7 @@ mod discovery_tests {
             account_id: "123456789012".into(),
             unsupported: Default::default(),
             trace: trace::Trace::create(None).unwrap(),
+            gateway: Default::default(),
         })
     }
 

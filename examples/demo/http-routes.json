@@ -1,0 +1,6 @@
+{
+  "routes": [
+    {"method": "ANY", "path": "/echo/{proxy+}", "function": "demo-echo"},
+    {"method": "GET", "path": "/fail", "function": "demo-fail"}
+  ]
+}
