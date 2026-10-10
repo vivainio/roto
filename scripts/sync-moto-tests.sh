@@ -17,17 +17,27 @@ for svc in "$@"; do
   cp -r "$work/moto/tests/$svc" "$dest/$svc"
   find "$dest/$svc" -name __pycache__ -prune -exec rm -rf {} +
 done
+# Lambda's main suite imports this pure manifest fixture; no ECR tests are collected.
+if [[ -d "$dest/test_awslambda" ]]; then
+  mkdir -p "$dest/test_ecr"
+  cp "$work/moto/tests/test_ecr/__init__.py" "$work/moto/tests/test_ecr/test_ecr_helpers.py" "$dest/test_ecr/"
+fi
 echo "$MOTO_TAG" > "$top/MOTO_VERSION"
 # Tests that drive moto's Python internals in-process, or import another service's tests,
 # cannot be run against a different server.
 : >"$top/not_portable.txt"
-for svc in "$@"; do
+for svc_dir in "$dest"/test_*; do
+  svc="$(basename "$svc_dir")"
   (cd "$dest" && {
     # Only modules that import the in-process server are unusable as a whole; single tests that poke
     # at backends fail individually and are tracked in expected_failures.
     grep -rlE '^(from|import) moto(\.server| import server)|create_backend_app|ThreadedMotoServer' --include='*.py' "$svc" || true
-    grep -rE "^(from|import) tests\.test_" --include='*.py' "$svc" | grep -vE "tests\.${svc}\b" | cut -d: -f1 || true
+    grep -rE "^(from|import) tests\.test_" --include='*.py' "$svc" | grep -vE "tests\.${svc}\b|tests\.test_ecr\.test_ecr_helpers" | cut -d: -f1 || true
   }) >>"$top/not_portable.txt"
 done
+if [[ -d "$dest/test_awslambda" ]]; then
+  # This module tests moto's Python Policy class, not a server API.
+  echo "test_awslambda/test_policy.py" >>"$top/not_portable.txt"
+fi
 sort -u "$top/not_portable.txt" -o "$top/not_portable.txt"
 echo "synced: $* (moto $MOTO_TAG)"

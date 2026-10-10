@@ -14,7 +14,7 @@ git diff --exit-code
 
 The final command catches generated-code drift and any other uncommitted changes;
 inspect the diff when working in a modified tree. Generation covers STS, SQS,
-IAM, S3, DynamoDB, SSM, Secrets Manager, and SNS.
+IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, and CloudFormation.
 
 ## Moto compatibility tests
 
@@ -25,11 +25,17 @@ roto. The pinned version is in `tests/moto/MOTO_VERSION`.
 scripts/run-moto-tests.sh test_sts
 scripts/run-moto-tests.sh test_s3
 scripts/run-moto-tests.sh test_dynamodb
+scripts/run-moto-tests.sh test_awslambda
+scripts/run-moto-tests.sh test_events
 ```
 
 The runner creates `.venv-moto`, installs the test requirements, builds roto, and
 starts an ephemeral instance. It adapts upstream port-5000 URLs in a temporary
-copy and cleans up the server afterward. Pass additional pytest arguments after
+copy, gives Lambda's IAM role fixture a valid policy document, corrects the old
+DynamoDB CloudFormation index schemas and optional-field assertions, and uses a one-second
+SQS long poll for EventBridge delivery assertions. Vendored sources
+remain unchanged. Tests requiring Docker are skipped; local Lambda executors are
+covered by the SDK smokes. The runner cleans up the server afterward. Pass additional pytest arguments after
 the service directory:
 
 ```sh
@@ -40,6 +46,10 @@ TARGET=moto scripts/run-moto-tests.sh test_sts
 `TARGET=moto` runs the same tests against moto to distinguish upstream behavior
 from roto gaps. `ROTO_TEST_PORT` selects a port other than 5070; `TEST_TIMEOUT`
 changes the per-test timeout (default 30 seconds).
+CI uses Python 3.12. Use a supported Python version for `.venv-moto`; Python 3.9's
+older HTTP dependencies can time out on S3 uploads. `ROTO_MOTO_VENV` can select an
+alternative virtual environment with the dependencies from
+`tests/moto/requirements.txt`.
 
 ## Expected failures
 
@@ -47,6 +57,19 @@ Known failures in `tests/moto/expected_failures/<service>.txt` are deselected in
 normal runs. A green run means no regression against that baseline, not complete
 service parity. Tests needing moto's in-process internals are ignored through
 `tests/moto/not_portable.txt`.
+Exclusions match complete test IDs, so excluding one test never suppresses another
+test whose name starts with the same text.
+
+Retry just the excluded tests without changing the baseline:
+
+```sh
+AUDIT_EXPECTED=1 scripts/run-moto-tests.sh test_dynamodb
+```
+
+The audit succeeds when exclusions still fail or skip. It fails and lists tests
+that now pass so they can be removed from the baseline. Missing test IDs and
+collection errors also fail the audit. The weekly `coverage-audit.yml` workflow
+runs this check for every baselined service and supports manual dispatch.
 
 After reviewing coverage changes, regenerate a service baseline with:
 
@@ -56,6 +79,16 @@ UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_sqs
 
 Review the resulting diff: this records all current failures, so it can also hide
 regressions if accepted without inspection.
+Collection errors leave the existing baseline intact; parametrized IDs retain
+their full text, including spaces.
+
+The DynamoDB SDK smoke checks account and region isolation using identical table
+names and item keys, then restarts roto and verifies items, indexes, TTL settings,
+and STS credential routing:
+
+```sh
+.venv-moto/bin/python scripts/smoke-dynamodb.py
+```
 
 To refresh vendored suites from the pinned upstream version:
 

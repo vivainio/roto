@@ -8,7 +8,7 @@ full AWS compatibility.
 | Service | Available behavior | Main gaps |
 | --- | --- | --- |
 | STS | Caller identity, sessions, role assumption | Authorization-message decoding |
-| SQS | Queues, messages, batches, FIFO, deduplication, long polling, DLQ redrive, tags | Message-move tasks, dead-letter source listing, CloudFormation integration |
+| SQS | Queues, messages, batches, FIFO, deduplication, long polling, DLQ redrive, tags | Message-move tasks, dead-letter source listing |
 | S3 | Buckets, objects, listing, versioning, multipart, tagging, stored ACLs and bucket configuration | Object lock, restore, select, checksum details, SNS/SQS notification delivery, policy enforcement |
 | IAM | Users, roles, access keys, tags, account aliases | Managed policies, groups, instance profiles, providers |
 | DynamoDB | Tables, items, expressions, query/scan, GSI/LSI, batch, transactions, tags, TTL, backups | PartiQL, import, streams |
@@ -17,6 +17,7 @@ full AWS compatibility.
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
 | Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
+| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB, refs, outputs, tags, updates, persistence | Rollback, change sets, nested stacks, additional resource types |
 
 KMS and Kinesis have not been started.
 
@@ -36,8 +37,9 @@ ACLs and policies are stored without enforcement.
 
 SNS can deliver to SQS in-process, including raw delivery and filters on message
 attributes or bodies. STS and IAM share account credential information.
-CloudFormation is not implemented, so tests requiring it remain outside the
-passing baseline.
+The [CloudFormation subset](cloudformation.md) creates and updates SQS queues, SNS
+topics, S3 buckets, and DynamoDB tables through those same handlers. IAM, Lambda,
+EventBridge, and SSM CloudFormation resources remain unsupported.
 
 Lua startup setup and execution contracts are covered in [Lua setup](lua.md),
 [local Lambda execution](lambda.md), and [EventBridge](eventbridge.md).

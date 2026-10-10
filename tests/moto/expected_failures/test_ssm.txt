@@ -1,18 +1,18 @@
 # Known failures for test_ssm (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_ssm)
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters0-Member
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters1-Member
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters10-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters11-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters12-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters13-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters2-Member
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters3-Member
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters4-Member
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters5-2
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters6-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters7-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters8-The
-tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters9-Filters
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters0-Member must satisfy regular expression pattern: tag:.+|Name|Type|KeyId|Path|Label|Tier]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters1-Member must have length less than or equal to 132]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters10-The following filter option is not valid: Equals. Valid options include: [Recursive, OneLevel]]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters11-The following filter value is not valid: test. Valid values include: [Standard, Advanced, Intelligent-Tiering]]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters12-The following filter value is not valid: test. Valid values include: [String, StringList, SecureString]]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters13-The following filter option is not valid: option. Valid options include: [BeginsWith, Equals].]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters2-Member must have length less than or equal to 10]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters3-Member must have length less than or equal to 50]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters4-Member must have length less than or equal to 1024, Member must have length greater than or equal to 1]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters5-2 validation errors detected:]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters6-The following filter key is not valid: Label. Valid filter keys include: [Path, Name, Type, KeyId, Tier]]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters7-The following filter values are missing : null for filter key Name]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters8-The following filter is duplicated in the request: Name. A request can contain only one occurrence of a specific filter.]
+tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_parameter_filters[filters9-Filters for common parameters can't be prefixed with "aws" or "ssm" (case-insensitive).]
 tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_path[/###]
 tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_path[//]
 tests/test_ssm/test_ssm_boto3.py::test_describe_parameters_invalid_path[test]

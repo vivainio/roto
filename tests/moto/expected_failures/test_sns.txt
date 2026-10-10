@@ -40,12 +40,6 @@ tests/test_sns/test_publishing_boto3.py::test_publish_group_id_to_non_fifo
 tests/test_sns/test_publishing_boto3.py::test_publish_to_sqs
 tests/test_sns/test_publishing_boto3.py::test_publish_to_sqs_dump_json
 tests/test_sns/test_publishing_boto3.py::test_publish_to_sqs_in_different_region
-tests/test_sns/test_sns_cloudformation.py::test_sns_delete_topic[False]
-tests/test_sns/test_sns_cloudformation.py::test_sns_delete_topic[True]
-tests/test_sns/test_sns_cloudformation.py::test_sns_topic
-tests/test_sns/test_sns_cloudformation.py::test_sns_update_remove_topic[False]
-tests/test_sns/test_sns_cloudformation.py::test_sns_update_remove_topic[True]
-tests/test_sns/test_sns_cloudformation.py::test_sns_update_topic
 tests/test_sns/test_subscriptions_boto3.py::test_check_not_opted_out
 tests/test_sns/test_subscriptions_boto3.py::test_check_opted_out
 tests/test_sns/test_subscriptions_boto3.py::test_confirm_subscription

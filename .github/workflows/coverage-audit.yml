@@ -1,0 +1,23 @@
+name: Known-failure coverage audit
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [test_sts, test_sqs, test_s3, test_iam, test_dynamodb, test_ssm, test_secretsmanager, test_sns, test_awslambda, test_events]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Retry exclusions and report newly passing tests
+        env:
+          AUDIT_EXPECTED: "1"
+        run: scripts/run-moto-tests.sh ${{ matrix.service }}
