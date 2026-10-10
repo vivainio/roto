@@ -97,8 +97,16 @@ Unsupported-call discovery is implemented: server warnings on stderr and
 `GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
 capturing payloads. See the book's server reference for limits and reset behavior.
 
-Hooks registered in startup Lua setup are intended to remain active while the
-server handles later AWS requests. The initial design has two distinct hooks:
+The primary lifecycle feature is a post-create callback registered from
+startup Lua, such as `hooks.created("lambda", "worker", callback)`. When a
+matching resource is successfully created, the callback receives the resulting
+resource metadata and can apply local configuration—for example, bind a command
+or HTTP executor to a Lambda function created through the Lambda API. Resource
+matching across logical IDs, physical names and ARNs, update behavior, duplicate
+deliveries, and callback error handling need to be defined.
+
+Hooks registered in startup Lua are intended to remain active while the server
+handles later AWS requests. Request hooks are a separate capability:
 
 - **`intercept_request`:** registered for an exact service operation (for
   example, `s3.PutObject`); it runs before native dispatch and may continue,

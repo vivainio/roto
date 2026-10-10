@@ -41,4 +41,5 @@ CloudFormation resolves template dependencies and calls existing service handler
 in-process with the caller's account and region. Stack/resource progress is saved
 in its own SQLite database; service databases retain the actual resource state.
 Stack mutations are serialized, but resource changes span service transactions
-and do not provide automatic rollback.
+and are not atomic. Failed stack updates attempt to reconcile the previous
+template; rollback can itself fail and does not restore deleted resource data.

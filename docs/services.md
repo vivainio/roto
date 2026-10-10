@@ -19,7 +19,7 @@ full AWS compatibility.
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
 | Kinesis | Streams, shards, records, polling, expiring iterators, resharding, retention, tags, consumer registration, encryption/monitoring metadata | Enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies, actual encryption |
 | KMS | Persisted symmetric keys and aliases, listing, tags, key policies, rotation status, deletion scheduling, Encrypt/Decrypt, ReEncrypt, random data keys | Real encryption, asymmetric operations, grants, multi-region keys, policy enforcement |
-| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis, refs, outputs, tags, updates, persistence | Rollback, change sets, nested stacks, additional resource types |
+| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, refs, outputs, tags, change sets, events, rollback attempts, retention, stack policies, termination protection, persistence | Nested stacks, imports, transforms, rollback triggers, Lambda configuration updates, full policy semantics |
 
 KMS uses a versioned base64 JSON envelope for simulated ciphertext; it provides no
 cryptographic protection. See [KMS](kms.md).
@@ -41,8 +41,9 @@ ACLs and policies are stored without enforcement.
 SNS can deliver to SQS in-process, including raw delivery and filters on message
 attributes or bodies. STS and IAM share account credential information.
 The [CloudFormation subset](cloudformation.md) creates and updates SQS queues, SNS
-topics, S3 buckets, DynamoDB tables, Kinesis streams, and IAM roles through those same handlers. IAM, Lambda,
-EventBridge, and SSM CloudFormation resources remain unsupported.
+topics, S3 buckets, DynamoDB tables, Kinesis streams, IAM roles, and inline IAM
+policies through those same handlers. It also creates and deletes Lambda functions;
+Lambda configuration updates, EventBridge, and SSM resources remain unsupported.
 
 Lua startup setup and execution contracts are covered in [Lua setup](lua.md),
 [local Lambda execution](lambda.md), and [EventBridge](eventbridge.md).

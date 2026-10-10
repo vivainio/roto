@@ -20,8 +20,9 @@ S3 notifications and SQS event-source mappings invoke those same executors.
 Use `--setup setup.lua` to declare queues, functions, and wiring with embedded Lua; see the
 [Lua setup example](examples/lua/README.md). EventBridge rules can route custom and S3 events
 to Lambda or SQS; see the [EventBridge example](examples/eventbridge/README.md).
-A [CloudFormation subset](docs/cloudformation.md) manages SQS, SNS, S3, DynamoDB, and IAM
-roles with persistent stacks, updates, references, and outputs.
+A [CloudFormation subset](docs/cloudformation.md) manages SQS, SNS, S3, DynamoDB, Kinesis,
+IAM, and Lambda resources with persistent stacks, change sets, rollback attempts,
+references, outputs, and events.
 
 ## Documentation
 
