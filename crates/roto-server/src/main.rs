@@ -337,6 +337,7 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
     let account_id = access_key
         .as_deref()
         .and_then(|k| app.services.values().find_map(|svc| svc.resolve_account(k)))
+        .or_else(|| access_key.as_deref().and_then(account_id_from_access_key))
         .unwrap_or_else(|| app.account_id.clone());
     let ctx = RequestContext {
         account_id,
@@ -540,6 +541,12 @@ fn into_response(r: RawResponse) -> Response {
         }
     }
     resp
+}
+
+/// Treat a 12-digit access key as an account selector for local multi-account use.
+fn account_id_from_access_key(access_key: &str) -> Option<String> {
+    (access_key.len() == 12 && access_key.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| access_key.to_owned())
 }
 
 fn into_request_response(r: RawResponse, req: &RawRequest) -> Response {
