@@ -1,13 +1,15 @@
 //! Synchronous CloudFormation stacks for SQS, SNS, S3 and DynamoDB resources.
 //! State is scoped by account/region and persisted after each resource mutation.
 
+mod change_sets;
 #[allow(clippy::all)]
 mod generated;
 mod resources;
+mod spec;
 mod template;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use roto_core::rusqlite::{OptionalExtension, params};
 use roto_core::store::{Db, Migration, Store};
@@ -16,6 +18,10 @@ use roto_protocol::{QueryParams, Timestamp, query_error};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use change_sets::{
+    ChangeSetState, change_output, check_policy, parameter_output, plan, tag_output,
+    validate_policy,
+};
 use generated::*;
 pub use generated::{NAMESPACE, OPERATIONS, Service, dispatch};
 use resources::{Resource, Resources, replacement, tag_list, tag_map};
@@ -28,6 +34,16 @@ pub const IMPLEMENTED: &[&str] = &[
     "DescribeStacks",
     "ListStackResources",
     "DescribeStackResources",
+    "DescribeStackEvents",
+    "GetTemplate",
+    "CreateChangeSet",
+    "DescribeChangeSet",
+    "ExecuteChangeSet",
+    "DeleteChangeSet",
+    "ListChangeSets",
+    "SetStackPolicy",
+    "GetStackPolicy",
+    "UpdateTerminationProtection",
 ];
 
 const MIGRATIONS: &[Migration] = &[Migration {
@@ -62,6 +78,84 @@ struct StackState {
     tags: BTreeMap<String, String>,
     resources: Vec<Resource>,
     outputs: Vec<StoredOutput>,
+    #[serde(default)]
+    events: Vec<StoredEvent>,
+    #[serde(default = "default_on_failure")]
+    on_failure: String,
+    #[serde(default)]
+    termination_protection: bool,
+    #[serde(default)]
+    stack_policy: Option<String>,
+    #[serde(default)]
+    change_sets: Vec<ChangeSetState>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct StoredEvent {
+    id: String,
+    timestamp: i64,
+    logical_id: String,
+    resource_type: String,
+    physical_id: String,
+    status: String,
+    reason: Option<String>,
+}
+/// Events for every status transition between two persisted snapshots. A
+/// snapshot from a previous stack with the same name is not a baseline.
+fn event_changes(old: Option<&StackState>, new: &StackState) -> Vec<StoredEvent> {
+    let at = now();
+    let mut events = Vec::new();
+    let mut push =
+        |logical: &str, ty: &str, physical: &str, status: &str, reason: Option<&String>| {
+            events.push(StoredEvent {
+                id: ids::request_id(),
+                timestamp: at,
+                logical_id: logical.into(),
+                resource_type: ty.into(),
+                physical_id: physical.into(),
+                status: status.into(),
+                reason: reason.cloned(),
+            })
+        };
+    if old.is_none_or(|o| o.status != new.status || o.reason != new.reason) {
+        push(
+            &new.name,
+            "AWS::CloudFormation::Stack",
+            &new.id,
+            &new.status,
+            new.reason.as_ref(),
+        );
+    }
+    for r in &new.resources {
+        let before = old.and_then(|o| o.resources.iter().find(|x| x.logical_id == r.logical_id));
+        if before.is_none_or(|b| {
+            b.status != r.status || b.reason != r.reason || b.physical_id != r.physical_id
+        }) {
+            push(
+                &r.logical_id,
+                &r.resource_type,
+                &r.physical_id,
+                &r.status,
+                r.reason.as_ref(),
+            );
+        }
+    }
+    for r in old.iter().flat_map(|o| &o.resources) {
+        if !new.resources.iter().any(|x| x.logical_id == r.logical_id) {
+            let status = if r.deletion_policy == "Retain" {
+                "DELETE_SKIPPED"
+            } else {
+                "DELETE_COMPLETE"
+            };
+            push(
+                &r.logical_id,
+                &r.resource_type,
+                &r.physical_id,
+                status,
+                None,
+            );
+        }
+    }
+    events
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredOutput {
@@ -79,6 +173,7 @@ impl StackState {
             stack_id: &self.id,
             parameters: &self.parameters,
             resources: &self.resources,
+            conditions: &self.template["Conditions"],
         }
     }
     fn response(&self) -> Stack {
@@ -87,6 +182,7 @@ impl StackState {
             stack_id: Some(self.id.clone()),
             stack_status: self.status.clone(),
             stack_status_reason: self.reason.clone(),
+            enable_termination_protection: Some(self.termination_protection),
             creation_time: Timestamp(self.created),
             last_updated_time: self.updated.map(Timestamp),
             description: self.template["Description"].as_str().map(str::to_string),
@@ -139,6 +235,8 @@ pub struct CloudFormation {
     db: Arc<Db>,
     resources: Resources,
     mutation: Mutex<()>,
+    /// Loaded on the first request that checks a template. `None` when unavailable.
+    spec: OnceLock<Option<spec::Spec>>,
 }
 
 impl CloudFormation {
@@ -150,10 +248,41 @@ impl CloudFormation {
             db: store.db("cloudformation", MIGRATIONS)?,
             resources: Resources::new(handlers),
             mutation: Mutex::new(()),
+            spec: OnceLock::new(),
         })
     }
+    /// Check each resource's properties against the published spec, when it is available.
+    fn spec(&self) -> Option<&spec::Spec> {
+        self.spec.get_or_init(spec::load).as_ref()
+    }
+    fn check_spec(&self, template: &Value) -> Result<(), AwsError> {
+        let Some(spec) = self.spec() else {
+            return Ok(());
+        };
+        let Some(resources) = template["Resources"].as_object() else {
+            return Ok(());
+        };
+        let no_properties = json!({});
+        for (id, definition) in resources {
+            let ty = definition["Type"].as_str().unwrap_or_default();
+            let properties = definition.get("Properties").unwrap_or(&no_properties);
+            spec.check(ty, properties)
+                .map_err(|e| validation(format!("Resource {id}: {e}")))?;
+        }
+        Ok(())
+    }
     fn save(&self, ctx: &RequestContext, stack: &StackState) -> Result<(), AwsError> {
-        let body = serde_json::to_string(stack).map_err(|e| AwsError::internal(e.to_string()))?;
+        let old = self
+            .find(ctx, &stack.name)?
+            .filter(|old| old.id == stack.id);
+        let mut persisted = stack.clone();
+        persisted.events = old
+            .as_ref()
+            .map(|old| old.events.clone())
+            .unwrap_or_default();
+        persisted.events.extend(event_changes(old.as_ref(), stack));
+        let body =
+            serde_json::to_string(&persisted).map_err(|e| AwsError::internal(e.to_string()))?;
         self.db.transaction(|tx| {
             tx.execute("INSERT INTO stacks(account_id,region,name,stack_id,body) VALUES(?1,?2,?3,?4,?5)
                 ON CONFLICT(account_id,region,name) DO UPDATE SET stack_id=excluded.stack_id,body=excluded.body",
@@ -192,31 +321,30 @@ impl CloudFormation {
         for id in &ordered {
             let definition = &stack.template["Resources"][id];
             let ty = definition["Type"].as_str().unwrap().to_string();
-            let mut props = stack
-                .resolver(ctx)
-                .resolve(definition.get("Properties").unwrap_or(&json!({})))?;
-            let mut tags = stack.tags.clone();
-            tags.extend(tag_map(&props)?);
-            if !tags.is_empty() {
-                props["Tags"] = tag_list(tags);
-            }
+            let props = desired_properties(stack, ctx, definition)?;
             let existing = stack.resources.iter().position(|r| r.logical_id == *id);
             if let Some(index) =
                 existing.filter(|index| !replacement(&stack.resources[*index], &ty, &props))
             {
+                stack.resources[index].deletion_policy = policy(definition, "DeletionPolicy");
+                stack.resources[index].update_replace_policy =
+                    policy(definition, "UpdateReplacePolicy");
                 if stack.resources[index].properties != props {
                     self.configure(ctx, stack, index, &props, true)?;
                 }
             } else {
-                let resource = self
-                    .resources
-                    .create(ctx, &stack.name, id, &ty, props.clone())?;
+                let mut resource =
+                    self.resources
+                        .create(ctx, &stack.name, id, &ty, props.clone())?;
+                resource.deletion_policy = policy(definition, "DeletionPolicy");
+                resource.update_replace_policy = policy(definition, "UpdateReplacePolicy");
                 stack.resources.push(resource);
                 self.save(ctx, stack)?;
                 let index = stack.resources.len() - 1;
                 self.configure(ctx, stack, index, &props, false)?;
                 if let Some(index) = existing {
-                    self.remove(ctx, stack, index)?;
+                    let replace_policy = stack.resources[index].update_replace_policy.clone();
+                    self.remove_with_policy(ctx, stack, index, &replace_policy)?;
                 }
             }
         }
@@ -295,6 +423,20 @@ impl CloudFormation {
         stack: &mut StackState,
         index: usize,
     ) -> Result<(), AwsError> {
+        let policy = stack.resources[index].deletion_policy.clone();
+        self.remove_with_policy(ctx, stack, index, &policy)
+    }
+    fn remove_with_policy(
+        &self,
+        ctx: &RequestContext,
+        stack: &mut StackState,
+        index: usize,
+        policy: &str,
+    ) -> Result<(), AwsError> {
+        if policy == "Retain" {
+            stack.resources.remove(index);
+            return self.save(ctx, stack);
+        }
         stack.resources[index].status = "DELETE_IN_PROGRESS".into();
         self.save(ctx, stack)?;
         match self.resources.delete(ctx, &stack.resources[index]) {
@@ -310,27 +452,197 @@ impl CloudFormation {
             }
         }
     }
-    fn complete(
+    fn settle(
         &self,
         ctx: &RequestContext,
         stack: &mut StackState,
-        action: &str,
-        result: Result<(), AwsError>,
+        status: &str,
+        reason: Option<String>,
     ) -> Result<(), AwsError> {
-        match result {
-            Ok(()) => {
-                stack.status = format!("{action}_COMPLETE");
-                stack.reason = None;
-                self.save(ctx, stack)
+        stack.status = status.into();
+        stack.reason = reason;
+        self.save(ctx, stack)
+    }
+    /// Apply the create outcome. Failures are recorded in the stack status, as in
+    /// CloudFormation, so the API call itself still succeeds.
+    fn finish_create(
+        &self,
+        ctx: &RequestContext,
+        stack: &mut StackState,
+        result: Result<(), AwsError>,
+        on_failure: &str,
+    ) -> Result<(), AwsError> {
+        let error = match result {
+            Ok(()) => return self.settle(ctx, stack, "CREATE_COMPLETE", None),
+            Err(error) => error.to_string(),
+        };
+        match on_failure {
+            "DO_NOTHING" => self.settle(ctx, stack, "CREATE_FAILED", Some(error)),
+            "DELETE" => {
+                self.settle(ctx, stack, "DELETE_IN_PROGRESS", Some(error))?;
+                match self.remove_all(ctx, stack, &[], false) {
+                    Ok(()) => self.settle(ctx, stack, "DELETE_COMPLETE", None),
+                    Err(e) => self.settle(ctx, stack, "DELETE_FAILED", Some(e.to_string())),
+                }
             }
-            Err(error) => {
-                stack.status = format!("{action}_FAILED");
-                stack.reason = Some(error.to_string());
-                self.save(ctx, stack)?;
-                Err(error)
+            _ => {
+                self.settle(ctx, stack, "ROLLBACK_IN_PROGRESS", Some(error.clone()))?;
+                match self.remove_all(ctx, stack, &[], false) {
+                    Ok(()) => self.settle(ctx, stack, "ROLLBACK_COMPLETE", Some(error)),
+                    Err(e) => self.settle(ctx, stack, "ROLLBACK_FAILED", Some(e.to_string())),
+                }
             }
         }
     }
+    /// Reconcile to a new template, rolling back to the previous one on failure
+    /// unless rollback is disabled.
+    fn apply_update(
+        &self,
+        ctx: &RequestContext,
+        stack: &mut StackState,
+        template: Value,
+        parameters: BTreeMap<String, String>,
+        tags: BTreeMap<String, String>,
+        disable_rollback: bool,
+    ) -> Result<(), AwsError> {
+        let previous = (
+            std::mem::replace(&mut stack.template, template),
+            std::mem::replace(&mut stack.parameters, parameters),
+            std::mem::replace(&mut stack.tags, tags),
+        );
+        stack.status = "UPDATE_IN_PROGRESS".into();
+        stack.reason = None;
+        stack.updated = Some(now());
+        self.save(ctx, stack)?;
+        let error = match self.reconcile(ctx, stack) {
+            Ok(()) => return self.settle(ctx, stack, "UPDATE_COMPLETE", None),
+            Err(error) => error,
+        };
+        if disable_rollback {
+            return self.settle(ctx, stack, "UPDATE_FAILED", Some(error.to_string()));
+        }
+        self.settle(
+            ctx,
+            stack,
+            "UPDATE_ROLLBACK_IN_PROGRESS",
+            Some(error.to_string()),
+        )?;
+        stack.template = previous.0;
+        stack.parameters = previous.1;
+        stack.tags = previous.2;
+        match self.reconcile(ctx, stack) {
+            Ok(()) => self.settle(
+                ctx,
+                stack,
+                "UPDATE_ROLLBACK_COMPLETE",
+                Some(error.to_string()),
+            ),
+            Err(rollback) => self.settle(
+                ctx,
+                stack,
+                "UPDATE_ROLLBACK_FAILED",
+                Some(rollback.to_string()),
+            ),
+        }
+    }
+    /// Remove every resource, newest first. Resources in `retain` are dropped
+    /// from the stack without deleting them. With `force`, failed deletions are
+    /// dropped too.
+    fn remove_all(
+        &self,
+        ctx: &RequestContext,
+        stack: &mut StackState,
+        retain: &[String],
+        force: bool,
+    ) -> Result<(), AwsError> {
+        while !stack.resources.is_empty() {
+            let index = stack.resources.len() - 1;
+            let policy = if retain.contains(&stack.resources[index].logical_id) {
+                "Retain".to_string()
+            } else {
+                stack.resources[index].deletion_policy.clone()
+            };
+            if let Err(error) = self.remove_with_policy(ctx, stack, index, &policy) {
+                if !force {
+                    return Err(error);
+                }
+                stack.resources.remove(index);
+                self.save(ctx, stack)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+const EVENT_PAGE_SIZE: usize = 100;
+
+fn default_on_failure() -> String {
+    "ROLLBACK".into()
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+fn new_stack_id(ctx: &RequestContext, name: &str) -> String {
+    format!(
+        "arn:{}:cloudformation:{}:{}:stack/{}/{}",
+        partition(&ctx.region),
+        ctx.region,
+        ctx.account_id,
+        name,
+        ids::request_id()
+    )
+}
+
+fn on_failure(value: Option<&str>, disable_rollback: Option<bool>) -> Result<String, AwsError> {
+    match (value, disable_rollback) {
+        (Some(_), Some(_)) => Err(validation(
+            "OnFailure and DisableRollback are mutually exclusive",
+        )),
+        (Some(value @ ("ROLLBACK" | "DELETE" | "DO_NOTHING")), None) => Ok(value.into()),
+        (Some(_), None) => Err(validation(
+            "OnFailure must be ROLLBACK, DELETE or DO_NOTHING",
+        )),
+        (None, Some(true)) => Ok("DO_NOTHING".into()),
+        (None, _) => Ok(default_on_failure()),
+    }
+}
+
+fn rollback_configuration(config: Option<&RollbackConfiguration>) -> Result<(), AwsError> {
+    if config.is_some_and(|c| !c.rollback_triggers.is_empty()) {
+        return Err(validation("Rollback triggers are not supported"));
+    }
+    Ok(())
+}
+
+/// Resolve a resource's properties as the stack would create them, including
+/// the tags it inherits from the stack.
+fn desired_properties(
+    stack: &StackState,
+    ctx: &RequestContext,
+    definition: &Value,
+) -> Result<Value, AwsError> {
+    let mut props = stack
+        .resolver(ctx)
+        .resolve(definition.get("Properties").unwrap_or(&json!({})))?;
+    let mut tags = stack.tags.clone();
+    tags.extend(tag_map(&props)?);
+    if !tags.is_empty() {
+        props["Tags"] = tag_list(tags);
+    }
+    Ok(props)
+}
+
+fn policy(definition: &Value, key: &str) -> String {
+    definition
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("Delete")
+        .to_string()
 }
 
 fn parameters(
@@ -383,6 +695,332 @@ fn parameters(
 }
 
 impl Service for CloudFormation {
+    fn create_change_set(
+        &self,
+        ctx: &RequestContext,
+        input: CreateChangeSetInput,
+    ) -> Result<CreateChangeSetOutput, AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        if input.template_url.is_some() {
+            return Err(validation("TemplateURL is not supported; use TemplateBody"));
+        }
+        if !input.resources_to_import.is_empty()
+            || input.include_nested_stacks == Some(true)
+            || input.import_existing_resources == Some(true)
+        {
+            return Err(validation(
+                "Import and nested change sets are not supported",
+            ));
+        }
+        if !valid_name(&input.change_set_name) {
+            return Err(validation("Invalid ChangeSetName"));
+        }
+        let existing = self
+            .find(ctx, &input.stack_name)?
+            .filter(|s| s.status != "DELETE_COMPLETE");
+        let kind = match (input.change_set_type.as_deref(), existing.is_some()) {
+            (Some("CREATE") | None, false) => "CREATE",
+            (Some("UPDATE") | None, true) => "UPDATE",
+            (Some("CREATE"), true) => {
+                return Err(AwsError::sender(
+                    400,
+                    "AlreadyExistsException",
+                    format!("Stack {} already exists", input.stack_name),
+                ));
+            }
+            (Some("UPDATE"), false) => {
+                return Err(validation(format!(
+                    "Stack [{}] does not exist",
+                    input.stack_name
+                )));
+            }
+            (Some(other), _) => {
+                return Err(validation(format!("Unsupported ChangeSetType: {other}")));
+            }
+        };
+        if kind == "CREATE" && !valid_name(&input.stack_name) {
+            return Err(validation("Invalid StackName"));
+        }
+        let mut stack = match existing {
+            Some(stack) => stack,
+            None => StackState {
+                id: new_stack_id(ctx, &input.stack_name),
+                name: input.stack_name.clone(),
+                status: "REVIEW_IN_PROGRESS".into(),
+                reason: None,
+                created: now(),
+                updated: None,
+                template: json!({}),
+                parameters: BTreeMap::new(),
+                tags: BTreeMap::new(),
+                resources: Vec::new(),
+                outputs: Vec::new(),
+                events: Vec::new(),
+                on_failure: default_on_failure(),
+                termination_protection: false,
+                stack_policy: None,
+                change_sets: Vec::new(),
+            },
+        };
+        let template = match input.template_body.as_deref() {
+            Some(body) => template::parse(body)?,
+            None if kind == "UPDATE" && input.use_previous_template == Some(true) => {
+                stack.template.clone()
+            }
+            None => {
+                return Err(validation(
+                    "TemplateBody or UsePreviousTemplate is required",
+                ));
+            }
+        };
+        let previous = (kind == "UPDATE").then_some(&stack.parameters);
+        self.check_spec(&template)?;
+        let parameters = parameters(&template, input.parameters, previous)?;
+        let tags = if input.tags.is_empty() {
+            stack.tags.clone()
+        } else {
+            input.tags.into_iter().map(|t| (t.key, t.value)).collect()
+        };
+        if stack
+            .change_sets
+            .iter()
+            .any(|c| c.name == input.change_set_name)
+        {
+            return Err(AwsError::sender(
+                400,
+                "AlreadyExistsException",
+                format!("ChangeSet [{}] already exists", input.change_set_name),
+            ));
+        }
+        let target = StackState {
+            template: template.clone(),
+            parameters: parameters.clone(),
+            tags: tags.clone(),
+            ..stack.clone()
+        };
+        let changes = plan(ctx, &stack, &target)?;
+        let mut change_set = ChangeSetState {
+            id: format!(
+                "arn:{}:cloudformation:{}:{}:changeSet/{}/{}",
+                partition(&ctx.region),
+                ctx.region,
+                ctx.account_id,
+                input.change_set_name,
+                ids::request_id()
+            ),
+            name: input.change_set_name,
+            description: input.description,
+            kind: kind.into(),
+            created: now(),
+            status: "CREATE_COMPLETE".into(),
+            reason: None,
+            execution: "AVAILABLE".into(),
+            template,
+            parameters,
+            tags,
+            changes,
+        };
+        if change_set.changes.is_empty() {
+            change_set.status = "FAILED".into();
+            change_set.execution = "UNAVAILABLE".into();
+            change_set.reason = Some(
+                "The submitted information didn't contain changes. Submit different information to create a change set."
+                    .into(),
+            );
+        }
+        let output = CreateChangeSetOutput {
+            id: Some(change_set.id.clone()),
+            stack_id: Some(stack.id.clone()),
+        };
+        stack.change_sets.push(change_set);
+        self.save(ctx, &stack)?;
+        Ok(output)
+    }
+
+    fn describe_change_set(
+        &self,
+        ctx: &RequestContext,
+        input: DescribeChangeSetInput,
+    ) -> Result<DescribeChangeSetOutput, AwsError> {
+        if input.next_token.is_some() {
+            return Err(validation("Pagination tokens are not supported"));
+        }
+        let (stack, index) =
+            self.locate_change_set(ctx, input.stack_name.as_deref(), &input.change_set_name)?;
+        let change_set = &stack.change_sets[index];
+        Ok(DescribeChangeSetOutput {
+            change_set_id: Some(change_set.id.clone()),
+            change_set_name: Some(change_set.name.clone()),
+            changes: change_set.changes.iter().map(change_output).collect(),
+            creation_time: Some(Timestamp(change_set.created)),
+            description: change_set.description.clone(),
+            execution_status: Some(change_set.execution.clone()),
+            parameters: parameter_output(&change_set.parameters),
+            stack_id: Some(stack.id.clone()),
+            stack_name: Some(stack.name.clone()),
+            status: Some(change_set.status.clone()),
+            status_reason: change_set.reason.clone(),
+            tags: tag_output(&change_set.tags),
+            ..Default::default()
+        })
+    }
+
+    fn execute_change_set(
+        &self,
+        ctx: &RequestContext,
+        input: ExecuteChangeSetInput,
+    ) -> Result<ExecuteChangeSetOutput, AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        let (mut stack, index) =
+            self.locate_change_set(ctx, input.stack_name.as_deref(), &input.change_set_name)?;
+        let change_set = stack.change_sets[index].clone();
+        if change_set.execution != "AVAILABLE" {
+            return Err(validation(format!(
+                "ChangeSet [{}] cannot be executed in its current status of [{}]",
+                change_set.id, change_set.execution
+            )));
+        }
+        check_policy(stack.stack_policy.as_deref(), &change_set.changes)?;
+        let disable_rollback = input.disable_rollback == Some(true);
+        for (i, other) in stack.change_sets.iter_mut().enumerate() {
+            if i != index && other.execution == "AVAILABLE" {
+                other.execution = "OBSOLETE".into();
+            }
+        }
+        stack.change_sets[index].execution = "EXECUTE_IN_PROGRESS".into();
+        if stack.status == "REVIEW_IN_PROGRESS" {
+            stack.template = change_set.template;
+            stack.parameters = change_set.parameters;
+            stack.tags = change_set.tags;
+            stack.status = "CREATE_IN_PROGRESS".into();
+            stack.reason = None;
+            self.save(ctx, &stack)?;
+            let on_failure = if disable_rollback {
+                "DO_NOTHING".to_string()
+            } else {
+                stack.on_failure.clone()
+            };
+            let result = self.reconcile(ctx, &mut stack);
+            self.finish_create(ctx, &mut stack, result, &on_failure)?;
+        } else {
+            self.apply_update(
+                ctx,
+                &mut stack,
+                change_set.template,
+                change_set.parameters,
+                change_set.tags,
+                disable_rollback,
+            )?;
+        }
+        let succeeded = matches!(stack.status.as_str(), "CREATE_COMPLETE" | "UPDATE_COMPLETE");
+        stack.change_sets[index].execution = if succeeded {
+            "EXECUTE_COMPLETE"
+        } else {
+            "EXECUTE_FAILED"
+        }
+        .into();
+        self.save(ctx, &stack)?;
+        Ok(ExecuteChangeSetOutput {})
+    }
+
+    fn delete_change_set(
+        &self,
+        ctx: &RequestContext,
+        input: DeleteChangeSetInput,
+    ) -> Result<DeleteChangeSetOutput, AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        // Deleting a change set that does not exist succeeds, as it does in AWS.
+        let Ok((mut stack, index)) =
+            self.locate_change_set(ctx, input.stack_name.as_deref(), &input.change_set_name)
+        else {
+            return Ok(DeleteChangeSetOutput {});
+        };
+        if stack.change_sets[index].execution == "EXECUTE_IN_PROGRESS" {
+            return Err(validation(
+                "ChangeSet cannot be deleted while it is executing",
+            ));
+        }
+        stack.change_sets.remove(index);
+        if stack.status == "REVIEW_IN_PROGRESS" && stack.change_sets.is_empty() {
+            stack.status = "DELETE_COMPLETE".into();
+        }
+        self.save(ctx, &stack)?;
+        Ok(DeleteChangeSetOutput {})
+    }
+
+    fn list_change_sets(
+        &self,
+        ctx: &RequestContext,
+        input: ListChangeSetsInput,
+    ) -> Result<ListChangeSetsOutput, AwsError> {
+        if input.next_token.is_some() {
+            return Err(validation("Pagination tokens are not supported"));
+        }
+        let stack = self.load(ctx, &input.stack_name)?;
+        Ok(ListChangeSetsOutput {
+            summaries: stack
+                .change_sets
+                .iter()
+                .map(|c| ChangeSetSummary {
+                    change_set_id: Some(c.id.clone()),
+                    change_set_name: Some(c.name.clone()),
+                    creation_time: Some(Timestamp(c.created)),
+                    description: c.description.clone(),
+                    execution_status: Some(c.execution.clone()),
+                    stack_id: Some(stack.id.clone()),
+                    stack_name: Some(stack.name.clone()),
+                    status: Some(c.status.clone()),
+                    status_reason: c.reason.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+
+    fn set_stack_policy(
+        &self,
+        ctx: &RequestContext,
+        input: SetStackPolicyInput,
+    ) -> Result<(), AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        if input.stack_policy_url.is_some() {
+            return Err(validation(
+                "StackPolicyURL is not supported; use StackPolicyBody",
+            ));
+        }
+        let body = input
+            .stack_policy_body
+            .ok_or_else(|| validation("StackPolicyBody is required"))?;
+        validate_policy(&body)?;
+        let mut stack = self.load(ctx, &input.stack_name)?;
+        stack.stack_policy = Some(body);
+        self.save(ctx, &stack)
+    }
+
+    fn get_stack_policy(
+        &self,
+        ctx: &RequestContext,
+        input: GetStackPolicyInput,
+    ) -> Result<GetStackPolicyOutput, AwsError> {
+        Ok(GetStackPolicyOutput {
+            stack_policy_body: self.load(ctx, &input.stack_name)?.stack_policy,
+        })
+    }
+
+    fn update_termination_protection(
+        &self,
+        ctx: &RequestContext,
+        input: UpdateTerminationProtectionInput,
+    ) -> Result<UpdateTerminationProtectionOutput, AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        let mut stack = self.load(ctx, &input.stack_name)?;
+        stack.termination_protection = input.enable_termination_protection;
+        self.save(ctx, &stack)?;
+        Ok(UpdateTerminationProtectionOutput {
+            stack_id: Some(stack.id),
+        })
+    }
     fn create_stack(
         &self,
         ctx: &RequestContext,
@@ -392,22 +1030,17 @@ impl Service for CloudFormation {
         if input.template_url.is_some() {
             return Err(validation("TemplateURL is not supported; use TemplateBody"));
         }
-        if input.enable_termination_protection == Some(true)
-            || input.stack_policy_body.is_some()
-            || input.stack_policy_url.is_some()
-            || input.rollback_configuration.is_some()
-            || input.on_failure.is_some()
-        {
+        if input.stack_policy_url.is_some() {
             return Err(validation(
-                "Stack protection, policies and rollback options are not supported",
+                "StackPolicyURL is not supported; use StackPolicyBody",
             ));
         }
-        if input.stack_name.is_empty()
-            || !input
-                .stack_name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-        {
+        let on_failure = on_failure(input.on_failure.as_deref(), input.disable_rollback)?;
+        rollback_configuration(input.rollback_configuration.as_ref())?;
+        if let Some(body) = &input.stack_policy_body {
+            validate_policy(body)?;
+        }
+        if !valid_name(&input.stack_name) {
             return Err(validation("Invalid StackName"));
         }
         if self
@@ -426,16 +1059,10 @@ impl Service for CloudFormation {
                 .as_deref()
                 .ok_or_else(|| validation("TemplateBody is required"))?,
         )?;
+        self.check_spec(&template)?;
         let parameters = parameters(&template, input.parameters, None)?;
         let mut stack = StackState {
-            id: format!(
-                "arn:{}:cloudformation:{}:{}:stack/{}/{}",
-                partition(&ctx.region),
-                ctx.region,
-                ctx.account_id,
-                input.stack_name,
-                ids::request_id()
-            ),
+            id: new_stack_id(ctx, &input.stack_name),
             name: input.stack_name,
             status: "CREATE_IN_PROGRESS".into(),
             reason: None,
@@ -446,10 +1073,16 @@ impl Service for CloudFormation {
             tags: input.tags.into_iter().map(|t| (t.key, t.value)).collect(),
             resources: Vec::new(),
             outputs: Vec::new(),
+            events: Vec::new(),
+            on_failure,
+            termination_protection: input.enable_termination_protection.unwrap_or(false),
+            stack_policy: input.stack_policy_body,
+            change_sets: Vec::new(),
         };
         self.save(ctx, &stack)?;
         let result = self.reconcile(ctx, &mut stack);
-        self.complete(ctx, &mut stack, "CREATE", result)?;
+        let on_failure = stack.on_failure.clone();
+        self.finish_create(ctx, &mut stack, result, &on_failure)?;
         Ok(CreateStackOutput {
             stack_id: Some(stack.id),
             ..Default::default()
@@ -464,18 +1097,23 @@ impl Service for CloudFormation {
         if input.template_url.is_some() {
             return Err(validation("TemplateURL is not supported; use TemplateBody"));
         }
-        if input.stack_policy_body.is_some()
-            || input.stack_policy_url.is_some()
-            || input.stack_policy_during_update_body.is_some()
-            || input.stack_policy_during_update_url.is_some()
-            || input.rollback_configuration.is_some()
-        {
+        if input.stack_policy_url.is_some() || input.stack_policy_during_update_url.is_some() {
             return Err(validation(
-                "Stack policies and rollback options are not supported",
+                "Stack policy URLs are not supported; use StackPolicyBody",
             ));
         }
+        rollback_configuration(input.rollback_configuration.as_ref())?;
+        if let Some(body) = &input.stack_policy_body {
+            validate_policy(body)?;
+        }
+        if let Some(body) = &input.stack_policy_during_update_body {
+            validate_policy(body)?;
+        }
         let mut stack = self.load(ctx, &input.stack_name)?;
-        if stack.status != "CREATE_COMPLETE" && stack.status != "UPDATE_COMPLETE" {
+        if !matches!(
+            stack.status.as_str(),
+            "CREATE_COMPLETE" | "UPDATE_COMPLETE" | "UPDATE_ROLLBACK_COMPLETE"
+        ) {
             return Err(validation(format!(
                 "Stack is in {} state; delete it before recreating",
                 stack.status
@@ -490,6 +1128,7 @@ impl Service for CloudFormation {
                 ));
             }
         };
+        self.check_spec(&template)?;
         let parameters = parameters(&template, input.parameters, Some(&stack.parameters))?;
         let tags = if input.tags.is_empty() {
             stack.tags.clone()
@@ -499,14 +1138,22 @@ impl Service for CloudFormation {
         if stack.template == template && stack.parameters == parameters && stack.tags == tags {
             return Err(validation("No updates are to be performed."));
         }
-        stack.template = template;
-        stack.parameters = parameters;
-        stack.tags = tags;
-        stack.status = "UPDATE_IN_PROGRESS".into();
-        stack.updated = Some(now());
-        self.save(ctx, &stack)?;
-        let result = self.reconcile(ctx, &mut stack);
-        self.complete(ctx, &mut stack, "UPDATE", result)?;
+        let target = StackState {
+            template: template.clone(),
+            parameters: parameters.clone(),
+            tags: tags.clone(),
+            ..stack.clone()
+        };
+        let changes = plan(ctx, &stack, &target)?;
+        let policy = input
+            .stack_policy_during_update_body
+            .or_else(|| stack.stack_policy.clone());
+        check_policy(policy.as_deref(), &changes)?;
+        self.apply_update(ctx, &mut stack, template, parameters, tags, false)?;
+        if let Some(body) = input.stack_policy_body {
+            stack.stack_policy = Some(body);
+            self.save(ctx, &stack)?;
+        }
         Ok(UpdateStackOutput {
             stack_id: Some(stack.id),
             ..Default::default()
@@ -514,28 +1161,46 @@ impl Service for CloudFormation {
     }
     fn delete_stack(&self, ctx: &RequestContext, input: DeleteStackInput) -> Result<(), AwsError> {
         let _guard = self.mutation.lock().unwrap();
-        if !input.retain_resources.is_empty() || input.deletion_mode.is_some() {
-            return Err(validation(
-                "RetainResources and DeletionMode are not supported",
-            ));
-        }
+        let force = match input.deletion_mode.as_deref() {
+            None | Some("STANDARD") => false,
+            Some("FORCE_DELETE_STACK") => true,
+            Some(_) => {
+                return Err(validation(
+                    "DeletionMode must be STANDARD or FORCE_DELETE_STACK",
+                ));
+            }
+        };
         let Some(mut stack) = self.find(ctx, &input.stack_name)? else {
             return Ok(());
         };
         if stack.status == "DELETE_COMPLETE" {
             return Ok(());
         }
+        if stack.termination_protection {
+            return Err(validation(format!(
+                "Stack [{}] cannot be deleted while TerminationProtection is enabled.",
+                stack.name
+            )));
+        }
+        if let Some(missing) = input
+            .retain_resources
+            .iter()
+            .find(|id| !stack.resources.iter().any(|r| &r.logical_id == *id))
+        {
+            return Err(validation(format!(
+                "Resource {missing} does not exist in stack {}",
+                stack.name
+            )));
+        }
         stack.status = "DELETE_IN_PROGRESS".into();
+        stack.reason = None;
         self.save(ctx, &stack)?;
-        let result = (|| {
-            while !stack.resources.is_empty() {
-                let index = stack.resources.len() - 1;
-                self.remove(ctx, &mut stack, index)?;
-            }
-            stack.outputs.clear();
-            Ok(())
-        })();
-        self.complete(ctx, &mut stack, "DELETE", result)
+        let result = self.remove_all(ctx, &mut stack, &input.retain_resources, force);
+        stack.outputs.clear();
+        match result {
+            Ok(()) => self.settle(ctx, &mut stack, "DELETE_COMPLETE", None),
+            Err(error) => self.settle(ctx, &mut stack, "DELETE_FAILED", Some(error.to_string())),
+        }
     }
     fn describe_stacks(
         &self,
@@ -582,6 +1247,66 @@ impl Service for CloudFormation {
                 })
                 .collect(),
             ..Default::default()
+        })
+    }
+    fn get_template(
+        &self,
+        ctx: &RequestContext,
+        input: GetTemplateInput,
+    ) -> Result<GetTemplateOutput, AwsError> {
+        if input.change_set_name.is_some() {
+            return Err(validation("Change sets are not supported"));
+        }
+        let stack = self.load(
+            ctx,
+            input
+                .stack_name
+                .as_deref()
+                .ok_or_else(|| validation("StackName is required"))?,
+        )?;
+        Ok(GetTemplateOutput {
+            stages_available: vec!["Original".into()],
+            template_body: Some(
+                serde_json::to_string(&stack.template)
+                    .map_err(|e| AwsError::internal(e.to_string()))?,
+            ),
+        })
+    }
+    fn describe_stack_events(
+        &self,
+        ctx: &RequestContext,
+        input: DescribeStackEventsInput,
+    ) -> Result<DescribeStackEventsOutput, AwsError> {
+        let offset = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => token
+                .parse::<usize>()
+                .map_err(|_| validation("Invalid NextToken"))?,
+        };
+        let stack = self.load(ctx, &input.stack_name)?;
+        // Newest first, as CloudFormation returns them.
+        let events: Vec<_> = stack.events.iter().rev().collect();
+        let next_token = (offset + EVENT_PAGE_SIZE < events.len())
+            .then(|| (offset + EVENT_PAGE_SIZE).to_string());
+        Ok(DescribeStackEventsOutput {
+            stack_events: events
+                .into_iter()
+                .skip(offset)
+                .take(EVENT_PAGE_SIZE)
+                .map(|e| StackEvent {
+                    event_id: e.id.clone(),
+                    stack_id: stack.id.clone(),
+                    stack_name: stack.name.clone(),
+                    logical_resource_id: Some(e.logical_id.clone()),
+                    physical_resource_id: Some(e.physical_id.clone()),
+                    resource_type: Some(e.resource_type.clone()),
+                    resource_status: Some(e.status.clone()),
+                    resource_status_reason: e.reason.clone(),
+                    timestamp: Timestamp(e.timestamp),
+                    ..Default::default()
+                })
+                .collect(),
+            next_token,
         })
     }
     fn describe_stack_resources(
@@ -651,5 +1376,333 @@ impl ServiceHandler for CloudFormationHandler {
             tx.execute("DELETE FROM stacks", [])?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn ctx() -> RequestContext {
+        RequestContext {
+            account_id: "123456789012".into(),
+            region: "us-east-1".into(),
+            access_key: None,
+            request_id: "test".into(),
+            base_url: "http://localhost".into(),
+        }
+    }
+
+    fn service() -> CloudFormation {
+        let store = Store::ephemeral();
+        let sqs: Arc<dyn ServiceHandler> = Arc::new(roto_svc_sqs::SqsHandler::new(&store).unwrap());
+        let svc = CloudFormation::new(&store, HashMap::from([("sqs", sqs)])).unwrap();
+        // Keep unit tests offline: no spec download.
+        assert!(svc.spec.set(None).is_ok());
+        svc
+    }
+
+    fn queue(name: &str) -> Value {
+        json!({"Type": "AWS::SQS::Queue", "Properties": {"QueueName": name}})
+    }
+
+    fn template(resources: Value) -> String {
+        json!({ "Resources": resources }).to_string()
+    }
+
+    fn create(svc: &CloudFormation, stack: &str, body: String) -> Result<(), AwsError> {
+        svc.create_stack(
+            &ctx(),
+            CreateStackInput {
+                stack_name: stack.into(),
+                template_body: Some(body),
+                ..Default::default()
+            },
+        )
+        .map(|_| ())
+    }
+
+    fn update(svc: &CloudFormation, stack: &str, body: String) -> Result<(), AwsError> {
+        svc.update_stack(
+            &ctx(),
+            UpdateStackInput {
+                stack_name: stack.into(),
+                template_body: Some(body),
+                ..Default::default()
+            },
+        )
+        .map(|_| ())
+    }
+
+    fn status(svc: &CloudFormation, stack: &str) -> String {
+        svc.describe_stacks(
+            &ctx(),
+            DescribeStacksInput {
+                stack_name: Some(stack.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .stacks[0]
+            .stack_status
+            .clone()
+    }
+
+    fn resource_ids(svc: &CloudFormation, stack: &str) -> Vec<String> {
+        svc.list_stack_resources(
+            &ctx(),
+            ListStackResourcesInput {
+                stack_name: stack.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .stack_resource_summaries
+        .into_iter()
+        .map(|r| r.logical_resource_id)
+        .collect()
+    }
+
+    #[test]
+    fn events_are_newest_first_and_paginate() {
+        let svc = service();
+        let resources: serde_json::Map<String, Value> = (0..60)
+            .map(|i| (format!("Queue{i}"), queue(&format!("events-{i}"))))
+            .collect();
+        create(&svc, "events", template(resources.into())).unwrap();
+        let input = |next_token| DescribeStackEventsInput {
+            stack_name: "events".into(),
+            next_token,
+        };
+        let first = svc.describe_stack_events(&ctx(), input(None)).unwrap();
+        assert_eq!(first.stack_events.len(), EVENT_PAGE_SIZE);
+        assert_eq!(
+            first.stack_events[0].logical_resource_id.as_deref(),
+            Some("events")
+        );
+        assert_eq!(
+            first.stack_events[0].resource_status.as_deref(),
+            Some("CREATE_COMPLETE")
+        );
+        let mut total = first.stack_events.len();
+        let mut next = first.next_token;
+        while let Some(token) = next {
+            let page = svc
+                .describe_stack_events(&ctx(), input(Some(token)))
+                .unwrap();
+            assert!(page.stack_events.len() <= EVENT_PAGE_SIZE);
+            total += page.stack_events.len();
+            next = page.next_token;
+        }
+        assert!(total > EVENT_PAGE_SIZE);
+    }
+
+    #[test]
+    fn get_template_returns_the_stored_template() {
+        let svc = service();
+        let body = template(json!({"Queue": queue("template-queue")}));
+        create(&svc, "template", body.clone()).unwrap();
+        let output = svc
+            .get_template(
+                &ctx(),
+                GetTemplateInput {
+                    stack_name: Some("template".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let stored: Value = serde_json::from_str(&output.template_body.unwrap()).unwrap();
+        assert_eq!(stored, serde_json::from_str::<Value>(&body).unwrap());
+    }
+
+    #[test]
+    fn change_set_previews_then_executes_an_update() {
+        let svc = service();
+        create(&svc, "changes", template(json!({"A": queue("changes-a")}))).unwrap();
+        let target = template(json!({
+            "A": {"Type": "AWS::SQS::Queue", "Properties": {"QueueName": "changes-a", "DelaySeconds": 5}},
+            "B": queue("changes-b"),
+        }));
+        svc.create_change_set(
+            &ctx(),
+            CreateChangeSetInput {
+                stack_name: "changes".into(),
+                change_set_name: "preview".into(),
+                template_body: Some(target),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let described = svc
+            .describe_change_set(
+                &ctx(),
+                DescribeChangeSetInput {
+                    stack_name: Some("changes".into()),
+                    change_set_name: "preview".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let change = |id: &str| {
+            described
+                .changes
+                .iter()
+                .map(|c| c.resource_change.as_ref().unwrap())
+                .find(|c| c.logical_resource_id.as_deref() == Some(id))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(change("B").action.as_deref(), Some("Add"));
+        assert_eq!(change("A").action.as_deref(), Some("Modify"));
+        assert_eq!(change("A").replacement.as_deref(), Some("False"));
+        // Previewing does not touch the stack.
+        assert_eq!(resource_ids(&svc, "changes"), ["A"]);
+
+        svc.execute_change_set(
+            &ctx(),
+            ExecuteChangeSetInput {
+                stack_name: Some("changes".into()),
+                change_set_name: "preview".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(status(&svc, "changes"), "UPDATE_COMPLETE");
+        assert_eq!(resource_ids(&svc, "changes"), ["A", "B"]);
+    }
+
+    #[test]
+    fn stack_policy_denies_replacement_but_allows_other_updates() {
+        let svc = service();
+        create(&svc, "policy", template(json!({"A": queue("policy-a")}))).unwrap();
+        svc.set_stack_policy(
+            &ctx(),
+            SetStackPolicyInput {
+                stack_name: "policy".into(),
+                stack_policy_body: Some(
+                    json!({"Statement": [{"Effect": "Deny", "Action": "Update:Replace",
+                        "Resource": "LogicalResourceId/A"}]})
+                    .to_string(),
+                ),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let renamed = template(json!({"A": queue("policy-a-renamed")}));
+        let error = update(&svc, "policy", renamed).unwrap_err();
+        assert!(
+            error.to_string().contains("denied by stack policy"),
+            "{error}"
+        );
+        assert_eq!(status(&svc, "policy"), "CREATE_COMPLETE");
+
+        let delayed = template(json!({
+            "A": {"Type": "AWS::SQS::Queue", "Properties": {"QueueName": "policy-a", "DelaySeconds": 5}}
+        }));
+        update(&svc, "policy", delayed).unwrap();
+        assert_eq!(status(&svc, "policy"), "UPDATE_COMPLETE");
+    }
+
+    #[test]
+    fn failed_create_rolls_back_created_resources() {
+        let svc = service();
+        let body = template(json!({
+            "A": queue("rollback-a"),
+            "B": {"Type": "AWS::SQS::Queue", "DependsOn": "A", "Properties": {"QueueName": "bad name!"}},
+        }));
+        create(&svc, "rollback", body.clone()).unwrap();
+        assert_eq!(status(&svc, "rollback"), "ROLLBACK_COMPLETE");
+        assert!(resource_ids(&svc, "rollback").is_empty());
+
+        svc.create_stack(
+            &ctx(),
+            CreateStackInput {
+                stack_name: "kept".into(),
+                template_body: Some(body),
+                disable_rollback: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(status(&svc, "kept"), "CREATE_FAILED");
+        // B never got a physical resource, so it is not listed.
+        assert_eq!(resource_ids(&svc, "kept"), ["A"]);
+    }
+
+    #[test]
+    fn failed_update_restores_the_previous_template() {
+        let svc = service();
+        let original = template(json!({"A": queue("restore-a")}));
+        create(&svc, "restore", original.clone()).unwrap();
+        let failing = template(json!({
+            "A": {"Type": "AWS::SQS::Queue", "Properties": {"QueueName": "restore-a", "DelaySeconds": 5}},
+            "B": {"Type": "AWS::SQS::Queue", "Properties": {"QueueName": "bad name!"}},
+        }));
+        update(&svc, "restore", failing).unwrap();
+        assert_eq!(status(&svc, "restore"), "UPDATE_ROLLBACK_COMPLETE");
+        assert_eq!(resource_ids(&svc, "restore"), ["A"]);
+        let stored = svc
+            .get_template(
+                &ctx(),
+                GetTemplateInput {
+                    stack_name: Some("restore".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored.template_body.unwrap()).unwrap(),
+            serde_json::from_str::<Value>(&original).unwrap()
+        );
+    }
+
+    #[test]
+    fn termination_protection_blocks_delete_until_disabled() {
+        let svc = service();
+        svc.create_stack(
+            &ctx(),
+            CreateStackInput {
+                stack_name: "protected".into(),
+                template_body: Some(template(json!({"A": queue("protected-a")}))),
+                enable_termination_protection: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delete = |svc: &CloudFormation| {
+            svc.delete_stack(
+                &ctx(),
+                DeleteStackInput {
+                    stack_name: "protected".into(),
+                    ..Default::default()
+                },
+            )
+        };
+        let error = delete(&svc).unwrap_err();
+        assert!(
+            error.to_string().contains("TerminationProtection"),
+            "{error}"
+        );
+        svc.update_termination_protection(
+            &ctx(),
+            UpdateTerminationProtectionInput {
+                stack_name: "protected".into(),
+                enable_termination_protection: false,
+            },
+        )
+        .unwrap();
+        delete(&svc).unwrap();
+        // Deleted stacks are no longer described.
+        assert!(
+            svc.describe_stacks(
+                &ctx(),
+                DescribeStacksInput {
+                    stack_name: Some("protected".into()),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
     }
 }

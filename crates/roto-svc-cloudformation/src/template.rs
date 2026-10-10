@@ -62,6 +62,7 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
                 | "Description"
                 | "Metadata"
                 | "Parameters"
+                | "Conditions"
                 | "Resources"
                 | "Outputs"
         ) {
@@ -71,6 +72,11 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
     let resources = template["Resources"]
         .as_object()
         .ok_or_else(|| validation("Template requires a Resources object"))?;
+    if let Some(conditions) = template.get("Conditions") {
+        conditions
+            .as_object()
+            .ok_or_else(|| validation("Conditions must be an object"))?;
+    }
     if let Some(parameters) = template.get("Parameters") {
         for (name, definition) in parameters
             .as_object()
@@ -125,9 +131,31 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
         for key in definition.keys() {
             if !matches!(
                 key.as_str(),
-                "Type" | "Properties" | "DependsOn" | "Metadata"
+                "Type"
+                    | "Properties"
+                    | "DependsOn"
+                    | "Metadata"
+                    | "DeletionPolicy"
+                    | "UpdateReplacePolicy"
             ) {
                 return Err(validation(format!("Unsupported resource field {id}.{key}")));
+            }
+        }
+        for key in ["DeletionPolicy", "UpdateReplacePolicy"] {
+            if let Some(policy) = definition.get(key) {
+                match policy.as_str() {
+                    Some("Delete" | "Retain") => {}
+                    Some(value) => {
+                        return Err(validation(format!(
+                            "Unsupported {key} for resource {id}: {value}"
+                        )));
+                    }
+                    None => {
+                        return Err(validation(format!(
+                            "{key} for resource {id} must be a string"
+                        )));
+                    }
+                }
             }
         }
     }
@@ -140,7 +168,19 @@ fn validate_functions(value: &Value) -> Result<(), AwsError> {
     match value {
         Value::Object(o) => {
             for (key, v) in o {
-                if key.starts_with("Fn::") && !matches!(key.as_str(), "Fn::GetAtt" | "Fn::Sub") {
+                if key.starts_with("Fn::")
+                    && !matches!(
+                        key.as_str(),
+                        "Fn::GetAtt"
+                            | "Fn::Sub"
+                            | "Fn::Join"
+                            | "Fn::If"
+                            | "Fn::Equals"
+                            | "Fn::And"
+                            | "Fn::Or"
+                            | "Fn::Not"
+                    )
+                {
                     return Err(validation(format!("Unsupported intrinsic function: {key}")));
                 }
                 validate_functions(v)?;
@@ -283,6 +323,7 @@ fn pseudo(id: &str) -> bool {
             | "AWS::StackId"
             | "AWS::Partition"
             | "AWS::URLSuffix"
+            | "AWS::NoValue"
     )
 }
 
@@ -302,11 +343,18 @@ pub struct Resolver<'a> {
     pub stack_id: &'a str,
     pub parameters: &'a BTreeMap<String, String>,
     pub resources: &'a [Resource],
+    /// The template's `Conditions` object, or `Value::Null` when absent.
+    pub conditions: &'a Value,
 }
 
 impl Resolver<'_> {
     fn reference(&self, id: &str) -> Result<Value, AwsError> {
         let value = match id {
+            "AWS::NoValue" => {
+                return Err(validation(
+                    "AWS::NoValue is only supported as a property or list item",
+                ));
+            }
             "AWS::AccountId" => &self.ctx.account_id,
             "AWS::Region" => &self.ctx.region,
             "AWS::StackName" => self.stack_name,
@@ -343,7 +391,87 @@ impl Resolver<'_> {
             .ok_or_else(|| validation(format!("Unresolved attribute: {id}.{attr}")))
     }
 
+    /// Follow `Fn::If` chains to the branch selected by the conditions.
+    fn select<'v>(&self, mut value: &'v Value) -> Result<&'v Value, AwsError> {
+        while let Some(args) = value.get("Fn::If") {
+            let args = args
+                .as_array()
+                .filter(|args| args.len() == 3)
+                .ok_or_else(|| validation("Fn::If requires [condition, true, false]"))?;
+            let name = args[0]
+                .as_str()
+                .ok_or_else(|| validation("Fn::If requires a condition name"))?;
+            value = if self.condition(name)? {
+                &args[1]
+            } else {
+                &args[2]
+            };
+        }
+        Ok(value)
+    }
+
+    /// Like `select`, but `None` when the value is `AWS::NoValue`, meaning the
+    /// enclosing property or list item is omitted.
+    fn present<'v>(&self, value: &'v Value) -> Result<Option<&'v Value>, AwsError> {
+        let value = self.select(value)?;
+        let no_value = value.get("Ref").and_then(Value::as_str) == Some("AWS::NoValue");
+        Ok((!no_value).then_some(value))
+    }
+
+    fn condition(&self, name: &str) -> Result<bool, AwsError> {
+        let definition = self
+            .conditions
+            .get(name)
+            .ok_or_else(|| validation(format!("Unknown condition: {name}")))?;
+        self.evaluate(definition)
+    }
+
+    fn evaluate(&self, expression: &Value) -> Result<bool, AwsError> {
+        let (function, args) = expression
+            .as_object()
+            .filter(|o| o.len() == 1)
+            .and_then(|o| o.iter().next())
+            .ok_or_else(|| validation("A condition must contain exactly one function"))?;
+        match function.as_str() {
+            "Condition" => self.condition(
+                args.as_str()
+                    .ok_or_else(|| validation("Condition reference must be a name"))?,
+            ),
+            "Fn::Equals" => {
+                let args = args
+                    .as_array()
+                    .filter(|args| args.len() == 2)
+                    .ok_or_else(|| validation("Fn::Equals requires two values"))?;
+                Ok(self.resolve(&args[0])? == self.resolve(&args[1])?)
+            }
+            "Fn::Not" => {
+                let args = args
+                    .as_array()
+                    .filter(|args| args.len() == 1)
+                    .ok_or_else(|| validation("Fn::Not requires one condition"))?;
+                Ok(!self.evaluate(&args[0])?)
+            }
+            "Fn::And" | "Fn::Or" => {
+                let args = args
+                    .as_array()
+                    .filter(|args| !args.is_empty())
+                    .ok_or_else(|| validation(format!("{function} requires conditions")))?;
+                let and = function == "Fn::And";
+                for arg in args {
+                    if self.evaluate(arg)? != and {
+                        return Ok(!and);
+                    }
+                }
+                Ok(and)
+            }
+            _ => Err(validation(format!(
+                "Unsupported condition function: {function}"
+            ))),
+        }
+    }
+
     pub fn resolve(&self, value: &Value) -> Result<Value, AwsError> {
+        let value = self.select(value)?;
         match value {
             Value::Object(o) if o.contains_key("Ref") => self.reference(
                 o["Ref"]
@@ -402,16 +530,39 @@ impl Resolver<'_> {
                 output.push_str(rest);
                 Ok(json!(output))
             }
-            Value::Object(o) => Ok(Value::Object(
-                o.iter()
-                    .map(|(k, v)| Ok((k.clone(), self.resolve(v)?)))
-                    .collect::<Result<_, AwsError>>()?,
-            )),
-            Value::Array(a) => Ok(Value::Array(
-                a.iter()
-                    .map(|v| self.resolve(v))
-                    .collect::<Result<_, _>>()?,
-            )),
+            Value::Object(o) if o.contains_key("Fn::Join") => {
+                let args = o["Fn::Join"]
+                    .as_array()
+                    .filter(|args| args.len() == 2)
+                    .ok_or_else(|| validation("Join requires [delimiter, values]"))?;
+                let delimiter = text(&self.resolve(&args[0])?)?;
+                let values = args[1]
+                    .as_array()
+                    .ok_or_else(|| validation("Join values must be a list"))?;
+                let values = values
+                    .iter()
+                    .map(|value| self.resolve(value).and_then(|v| text(&v)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(json!(values.join(&delimiter)))
+            }
+            Value::Object(o) => {
+                let mut object = Map::new();
+                for (k, v) in o {
+                    if let Some(v) = self.present(v)? {
+                        object.insert(k.clone(), self.resolve(v)?);
+                    }
+                }
+                Ok(Value::Object(object))
+            }
+            Value::Array(a) => {
+                let mut array = Vec::new();
+                for v in a {
+                    if let Some(v) = self.present(v)? {
+                        array.push(self.resolve(v)?);
+                    }
+                }
+                Ok(Value::Array(array))
+            }
             _ => Ok(value.clone()),
         }
     }
@@ -475,14 +626,26 @@ mod tests {
     #[test]
     fn unsupported_features_fail_validation() {
         for source in [
-            r#"{"Resources":{"A":{"Type":"AWS::SQS::Queue","DeletionPolicy":"Retain"}}}"#,
-            r#"{"Resources":{"A":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":{"Fn::Join":["",[]]}}}}}"#,
+            r#"{"Resources":{"A":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":{"Fn::Select":[0,["a"]]}}}}}"#,
             r#"{"Parameters":{"Secret":{"Type":"String","NoEcho":true}},"Resources":{}}"#,
             r#"{"Resources":{"A":{"Type":"AWS::S3::Bucket","Properties":{"WebsiteConfiguration":{}}}}}"#,
             r#"{"Resources":{},"Outputs":{"A":{"Value":"example","Condition":"unsupported"}}}"#,
         ] {
             assert!(parse(source).is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn deletion_and_update_replace_policies_accept_delete_and_retain() {
+        for key in ["DeletionPolicy", "UpdateReplacePolicy"] {
+            let source = format!(
+                r#"{{"Resources":{{"Queue":{{"Type":"AWS::SQS::Queue","{key}":"Retain"}}}}}}"#
+            );
+            assert!(parse(&source).is_ok());
+        }
+        let unsupported =
+            r#"{"Resources":{"Queue":{"Type":"AWS::SQS::Queue","DeletionPolicy":"Snapshot"}}}"#;
+        assert!(parse(unsupported).is_err());
     }
 
     #[test]
@@ -501,6 +664,7 @@ mod tests {
             stack_id: "id",
             parameters: &params,
             resources: &[],
+            conditions: &Value::Null,
         };
         assert_eq!(resolver.resolve(&json!({"Fn::Sub":["${AWS::Region}:${Label}:${custom}:${!literal}",{"custom":12}]})).unwrap(), "us-east-1:hello<&:12:${literal}");
         assert!(
@@ -513,5 +677,89 @@ mod tests {
                 .resolve(&json!({"Fn::Sub":"${unterminated"}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn conditions_select_branches_and_omit_no_value() {
+        let ctx = RequestContext {
+            account_id: "123456789012".into(),
+            region: "us-east-1".into(),
+            access_key: None,
+            request_id: "test".into(),
+            base_url: "http://localhost".into(),
+        };
+        let conditions = json!({
+            "IsUsEast": {"Fn::Equals": [{"Ref": "AWS::Region"}, "us-east-1"]},
+            "IsCn": {"Fn::Equals": [{"Ref": "AWS::Region"}, "cn-north-1"]},
+            "Either": {"Fn::Or": [{"Condition": "IsCn"}, {"Condition": "IsUsEast"}]},
+            "Both": {"Fn::And": [{"Condition": "IsCn"}, {"Fn::Not": [{"Condition": "IsUsEast"}]}]}
+        });
+        let resolver = Resolver {
+            ctx: &ctx,
+            stack_name: "stack",
+            stack_id: "id",
+            parameters: &BTreeMap::new(),
+            resources: &[],
+            conditions: &conditions,
+        };
+        assert_eq!(
+            resolver
+                .resolve(&json!({"Fn::If": ["IsUsEast", "yes", "no"]}))
+                .unwrap(),
+            "yes"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&json!({"Fn::If": ["Both", "yes", "no"]}))
+                .unwrap(),
+            "no"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&json!({"Fn::If": ["Either", {"Ref": "AWS::Region"}, "no"]}))
+                .unwrap(),
+            "us-east-1"
+        );
+        assert_eq!(
+            resolver
+                .resolve(&json!({
+                    "Name": {"Fn::If": ["Both", "x", {"Ref": "AWS::NoValue"}]},
+                    "Other": ["a", {"Fn::If": ["Both", "b", {"Ref": "AWS::NoValue"}]}]
+                }))
+                .unwrap(),
+            json!({"Other": ["a"]})
+        );
+        assert!(resolver.resolve(&json!({"Ref": "AWS::NoValue"})).is_err());
+        assert!(
+            resolver
+                .resolve(&json!({"Fn::If": ["Missing", "a", "b"]}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn join_resolves_scalars_and_reports_invalid_shapes() {
+        let ctx = RequestContext {
+            account_id: "123456789012".into(),
+            region: "us-east-1".into(),
+            access_key: None,
+            request_id: "test".into(),
+            base_url: "http://localhost".into(),
+        };
+        let resolver = Resolver {
+            ctx: &ctx,
+            stack_name: "stack",
+            stack_id: "id",
+            parameters: &BTreeMap::new(),
+            resources: &[],
+            conditions: &Value::Null,
+        };
+        assert_eq!(
+            resolver
+                .resolve(&json!({"Fn::Join": ["", ["arn:", {"Ref": "AWS::Partition"}, ":iam::aws:policy/Example"]]}))
+                .unwrap(),
+            "arn:aws:iam::aws:policy/Example"
+        );
+        assert!(resolver.resolve(&json!({"Fn::Join": ["-"]})).is_err());
     }
 }

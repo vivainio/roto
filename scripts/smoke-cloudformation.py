@@ -175,16 +175,19 @@ def smoke():
 
             invalid_index = copy.deepcopy(template["Resources"]["Table"])
             invalid_index["Properties"]["GlobalSecondaryIndexes"][0]["KeySchema"][0]["KeyType"] = "S"
-            error(lambda: cf.create_stack(StackName="invalid-ddb", TemplateBody=json.dumps({"Resources": {"Table": invalid_index}})), "ValidationException")
-            assert cf.describe_stacks(StackName="invalid-ddb")["Stacks"][0]["StackStatus"] == "CREATE_FAILED"
+            # Like AWS, a failed resource does not fail CreateStack; the default
+            # OnFailure=ROLLBACK ends the stack in ROLLBACK_COMPLETE.
+            cf.create_stack(StackName="invalid-ddb", TemplateBody=json.dumps({"Resources": {"Table": invalid_index}}))
+            assert cf.describe_stacks(StackName="invalid-ddb")["Stacks"][0]["StackStatus"] == "ROLLBACK_COMPLETE"
             cf.delete_stack(StackName="invalid-ddb")
 
             # Configuration failure leaves a tracked resource that can be deleted.
-            error(lambda: cf.create_stack(StackName="failed", TemplateBody=json.dumps({
+            # DisableRollback keeps the failed resource tracked, as before.
+            cf.create_stack(StackName="failed", DisableRollback=True, TemplateBody=json.dumps({
                 "Resources": {"Topic": {"Type": "AWS::SNS::Topic", "Properties": {
                     "Subscription": [{"Protocol": "invalid", "Endpoint": "invalid"}],
                 }}},
-            })), "InvalidParameter")
+            }))
             failed = cf.describe_stacks(StackName="failed")["Stacks"][0]
             assert failed["StackStatus"] == "CREATE_FAILED" and failed["StackStatusReason"]
             failed_resources = cf.list_stack_resources(StackName="failed")["StackResourceSummaries"]

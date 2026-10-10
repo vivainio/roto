@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+use base64::Engine;
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler, ids};
 use roto_protocol::{XmlWriter, restxml::parse_xml};
 use serde::{Deserialize, Serialize};
@@ -19,8 +20,16 @@ pub struct Resource {
     pub properties: Value,
     pub attributes: BTreeMap<String, Value>,
     pub subscriptions: Vec<String>,
+    #[serde(default = "default_delete_policy")]
+    pub deletion_policy: String,
+    #[serde(default = "default_delete_policy")]
+    pub update_replace_policy: String,
     pub status: String,
     pub reason: Option<String>,
+}
+
+fn default_delete_policy() -> String {
+    "Delete".into()
 }
 
 pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
@@ -93,6 +102,21 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             "ManagedPolicyArns",
         ],
         "AWS::IAM::Policy" => &["PolicyName", "PolicyDocument", "Roles"],
+        "AWS::Lambda::Function" => &[
+            "FunctionName",
+            "Code",
+            "Role",
+            "Runtime",
+            "Handler",
+            "Description",
+            "Timeout",
+            "MemorySize",
+            "Environment",
+            "Architectures",
+            "EphemeralStorage",
+            "TracingConfig",
+            "Tags",
+        ],
         _ => return Err(validation(format!("Unsupported resource type: {ty}"))),
     };
     let object = props
@@ -132,10 +156,14 @@ fn name_key(ty: &str) -> &'static str {
         "AWS::Kinesis::Stream" => "Name",
         "AWS::IAM::Role" => "RoleName",
         "AWS::IAM::Policy" => "PolicyName",
+        "AWS::Lambda::Function" => "FunctionName",
         _ => "TableName",
     }
 }
 
+/// Whether moving `old` to `props` requires replacing the physical resource.
+/// The published spec's `Immutable` properties decide when it is available;
+/// otherwise a built-in list is used.
 pub fn replacement(old: &Resource, ty: &str, props: &Value) -> bool {
     if old.resource_type != ty {
         return true;
@@ -489,6 +517,41 @@ impl Resources {
                 name.clone()
             }
             "AWS::IAM::Policy" => name.clone(),
+            "AWS::Lambda::Function" => {
+                let mut input = props.clone();
+                input["FunctionName"] = json!(name);
+                let code = input
+                    .get_mut("Code")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| validation("AWS::Lambda::Function requires Code"))?;
+                if let Some(source) = code.get("ZipFile").and_then(Value::as_str) {
+                    code.insert(
+                        "ZipFile".into(),
+                        json!(base64::engine::general_purpose::STANDARD.encode(source)),
+                    );
+                }
+                let response = self.request(
+                    ctx,
+                    "lambda",
+                    RawRequest {
+                        method: "POST".into(),
+                        path: "/2015-03-31/functions".into(),
+                        headers: vec![("content-type".into(), "application/json".into())],
+                        body: serde_json::to_vec(&input)
+                            .map_err(|e| AwsError::internal(e.to_string()))?,
+                        ..Default::default()
+                    },
+                )?;
+                let result: Value = serde_json::from_slice(&response.body)
+                    .map_err(|e| AwsError::internal(e.to_string()))?;
+                let arn = result["FunctionArn"]
+                    .as_str()
+                    .ok_or_else(|| AwsError::internal("CreateFunction omitted FunctionArn"))?;
+                attrs.insert("Arn".into(), json!(arn));
+                attrs.insert("Name".into(), json!(name));
+                attrs.insert("Version".into(), json!("$LATEST"));
+                arn.to_string()
+            }
             _ => return Err(validation(format!("Unsupported resource type: {ty}"))),
         };
         Ok(Resource {
@@ -499,6 +562,8 @@ impl Resources {
             properties: props,
             attributes: attrs,
             subscriptions: Vec::new(),
+            deletion_policy: default_delete_policy(),
+            update_replace_policy: default_delete_policy(),
             status: "CREATE_IN_PROGRESS".into(),
             reason: None,
         })
@@ -941,6 +1006,12 @@ impl Resources {
                     }
                 }
             }
+            "AWS::Lambda::Function" if !updating => {}
+            "AWS::Lambda::Function" => {
+                return Err(validation(
+                    "Updating AWS::Lambda::Function configuration is not supported",
+                ));
+            }
             _ => return Err(validation("Unsupported resource type")),
         }
         resource.properties = props.clone();
@@ -1006,6 +1077,17 @@ impl Resources {
                 }
                 Ok(())
             }
+            "AWS::Lambda::Function" => self
+                .request(
+                    ctx,
+                    "lambda",
+                    RawRequest {
+                        method: "DELETE".into(),
+                        path: format!("/2015-03-31/functions/{}", encode(&resource.name)),
+                        ..Default::default()
+                    },
+                )
+                .map(|_| ()),
             _ => Err(validation("Unsupported resource type")),
         };
         match result {
