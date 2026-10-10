@@ -227,6 +227,7 @@ async fn main() {
             "/roto-api/resources/{service}/{table}",
             get(inspection::records),
         )
+        .route("/roto-api/dynamodb/query", post(inspection::dynamodb_query))
         .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(|| async { "ok" }))
         .route("/roto-api/trace", get(request_trace))

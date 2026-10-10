@@ -13,13 +13,23 @@ p { margin: 8px 0 24px; } nav, .toolbar { display: flex; flex-wrap: wrap; gap: 8
 button, input, select { font: inherit; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; background: light-dark(white, #222832); color: inherit; }
 button { cursor: pointer; } button[aria-pressed="true"] { background: #2659bb; color: white; border-color: #2659bb; }
 input[type="search"] { flex: 1; min-width: 180px; } button:disabled { opacity: .5; cursor: wait; }
-#status { color: var(--muted); min-height: 24px; } #status.error { color: light-dark(#b42318, #ffa097); }
+#status, #query-status { color: var(--muted); min-height: 24px; } #status.error, #query-status.error { color: light-dark(#b42318, #ffa097); }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: light-dark(white, #1b2028); }
 table { width: 100%; border-collapse: collapse; text-align: left; } th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); } tbody:last-child tr:last-child td { border-bottom: 0; }
 .resource { overflow-wrap: anywhere; min-width: 200px; } .id { font: 12px ui-monospace, monospace; color: var(--muted); margin-top: 4px; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; background: #8882; } .failed { color: light-dark(#b42318, #ffa097); } .succeeded { color: light-dark(#18794e, #7bddb2); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; max-height: 500px; overflow: auto; margin-bottom: 0; } summary { cursor: pointer; } #empty { padding: 40px 20px; text-align: center; }
+.query-panel { padding: 20px; border: 1px solid var(--border); border-radius: 8px; background: light-dark(white, #1b2028); }
+.item-list { display: grid; gap: 12px; margin-top: 16px; }
+.item-card { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: light-dark(white, #14181f); }
+.item-card h3 { margin: 0; padding: 12px 16px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.item-attributes { margin: 0; }
+.attribute-row { display: grid; grid-template-columns: minmax(130px, 25%) minmax(0, 1fr); gap: 12px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.attribute-name { font: 12px/1.6 ui-monospace, monospace; overflow-wrap: anywhere; }
+.attribute-value { min-width: 0; overflow-wrap: anywhere; }
+.attribute-value pre { margin: 6px 0 0; padding: 8px; border-radius: 5px; background: #8881; }
+.type-badge { display: inline-block; margin-right: 8px; padding: 1px 6px; border-radius: 4px; background: #8882; color: var(--muted); font: 11px ui-monospace, monospace; vertical-align: 1px; }
 [hidden] { display: none !important; }
 footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: light-dark(#2659bb, #91b5ff); }
 </style>
@@ -32,21 +42,32 @@ footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: li
 <button type="button" data-view="invocations" aria-pressed="false">Lambda invocations</button>
 <button type="button" data-view="notifications" aria-pressed="false">S3 notifications</button>
 <button type="button" data-view="deliveries" aria-pressed="false">EventBridge deliveries</button>
+<button type="button" data-view="dynamodb" aria-pressed="false">DynamoDB query</button>
 </nav>
 <div id="resource-controls" class="toolbar">
 <label>Service <select id="service" aria-label="Resource service"></select></label>
 <label>Collection <select id="collection" aria-label="Resource collection"></select></label>
 </div>
 <div id="breadcrumbs" aria-label="Resource navigation"></div>
-<div class="toolbar">
+<div id="browser-controls" class="toolbar">
 <input id="search" type="search" aria-label="Search records" placeholder="Search IDs, resources, logs, or payloads…">
 <select id="state" aria-label="Filter by state"><option value="">All states</option></select>
 <button id="refresh" type="button">Refresh</button>
 <label><input id="auto" type="checkbox"> Auto-refresh (5s)</label>
 <a id="json" href="/roto-api/resources/s3/buckets" target="_blank" rel="noopener">Raw JSON ↗</a>
 </div>
+<section id="query-panel" class="query-panel" hidden aria-label="DynamoDB query tool">
+<p>Query by partition key, or leave it blank to browse the first 100 items in the table.</p>
+<div class="toolbar">
+<label>Table <select id="query-table" aria-label="DynamoDB table"></select></label>
+<label><span id="query-key-label">Partition key</span> <input id="query-value" type="text" autocomplete="off" placeholder="Leave blank to browse all"></label>
+<button id="query-run" type="button">Query</button>
+</div>
+<div id="query-status" role="status" aria-live="polite">Loading DynamoDB tables…</div>
+<div id="query-results" class="item-list" hidden></div>
+</section>
 <div id="status" role="status" aria-live="polite">Loading…</div>
-<div class="table-wrap">
+<div id="records-wrap" class="table-wrap">
 <table aria-label="Inspection records"><thead><tr><th>Resource / ID</th><th id="column2">Account / region</th><th id="column3">Summary</th><th>Details</th></tr></thead><tbody id="records"></tbody></table>
 <div id="empty" hidden>No records yet.</div>
 </div>
@@ -59,7 +80,7 @@ footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: li
 const views = { invocations: '/roto-api/lambda/invocations', notifications: '/roto-api/s3/notifications', deliveries: '/roto-api/events/deliveries' };
 const $ = id => document.getElementById(id);
 const labels = { cloudformation: 'CloudFormation', s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM', kinesis: 'Kinesis' };
-let view = 'resources', rows = [], controller, updated = '', catalog = [], service = 's3', collection = 'buckets', offset = 0, total = 0, filter = null, trail = [];
+let view = 'resources', rows = [], controller, updated = '', catalog = [], service = 's3', collection = 'buckets', offset = 0, total = 0, filter = null, trail = [], dynamoTables = [];
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -131,7 +152,9 @@ function resourceActions(row, cell) {
 }
 function render() {
   const resources = view === 'resources';
-  $('resource-controls').hidden = !resources; $('breadcrumbs').hidden = !resources; $('pagination').hidden = !resources; $('state').hidden = resources;
+  const dynamodb = view === 'dynamodb';
+  $('resource-controls').hidden = !resources; $('breadcrumbs').hidden = !resources; $('pagination').hidden = !resources; $('state').hidden = resources || dynamodb;
+  $('browser-controls').hidden = dynamodb; $('status').hidden = dynamodb; $('records-wrap').hidden = dynamodb; $('scope').hidden = dynamodb; $('query-panel').hidden = !dynamodb;
   $('column2').textContent = resources ? 'Account / region' : 'State'; $('column3').textContent = resources ? 'Summary' : 'Attempts';
   $('scope').textContent = resources ? 'Resource browsing includes all stored accounts and regions. Lists contain 50 records per page; search applies to the loaded page. Object previews show up to 64 KiB as plain text.' : 'Unsigned history: default server account, us-east-1. API results are limited to 100 records; S3 shows pending and failed handoffs. Filters apply to loaded records.';
   breadcrumbs();
@@ -191,14 +214,119 @@ async function load() {
 }
 document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
   view = button.dataset.view; document.querySelectorAll('[data-view]').forEach(tab => tab.setAttribute('aria-pressed', String(tab === button)));
-  $('state').value = ''; clearRows(); load();
+  $('state').value = ''; clearRows(); render();
+  if (view === 'dynamodb') loadDynamoTables(); else load();
 }));
 $('service').addEventListener('change', () => { service = $('service').value; collection = catalog.find(entry => entry.service === service).collections[0]; filter = null; trail = []; offset = 0; $('search').value = ''; chooseCollection(); clearRows(); load(); });
 $('collection').addEventListener('change', () => { collection = $('collection').value; filter = null; trail = []; offset = 0; $('search').value = ''; clearRows(); load(); });
 $('previous').addEventListener('click', () => { offset = Math.max(0, offset - 50); clearRows(); load(); });
 $('next').addEventListener('click', () => { offset += 50; clearRows(); load(); });
 $('search').addEventListener('input', render); $('state').addEventListener('change', render); $('refresh').addEventListener('click', load);
-setInterval(() => { if ($('auto').checked && !document.hidden && !controller) load(); }, 5000);
+function selectedDynamoTable() { return dynamoTables.find(table => table.table_id === $('query-table').value); }
+function unpackDynamoValue(attribute) {
+  if (!attribute || typeof attribute !== 'object' || Array.isArray(attribute)) return attribute;
+  const [type] = Object.keys(attribute);
+  const value = attribute[type];
+  if (type === 'M') return Object.fromEntries(Object.entries(value || {}).map(([key, item]) => [key, unpackDynamoValue(item)]));
+  if (type === 'L') return (value || []).map(unpackDynamoValue);
+  if (type === 'NULL') return null;
+  if (type === 'B') return `base64: ${value}`;
+  return value;
+}
+function attributeType(attribute) {
+  return attribute && typeof attribute === 'object' && !Array.isArray(attribute) ? Object.keys(attribute)[0] : 'JSON';
+}
+function displayItemKey(item, table) {
+  const keys = (table.key_schema || []).map(key => key.AttributeName).filter(name => item[name] !== undefined);
+  if (!keys.length) return 'Item';
+  return keys.map(name => `${name}=${JSON.stringify(unpackDynamoValue(item[name]))}`).join(' · ');
+}
+function renderDynamoItems(items, table) {
+  const results = $('query-results');
+  results.replaceChildren();
+  if (!items.length) { results.append(element('p', 'No items found.')); return; }
+  items.forEach((item, index) => {
+    const card = element('article', undefined, 'item-card');
+    card.append(element('h3', `${index + 1}. ${displayItemKey(item, table)}`));
+    const attributes = element('dl', undefined, 'item-attributes');
+    const keyNames = (table.key_schema || []).map(key => key.AttributeName);
+    const names = [...Object.keys(item).filter(name => keyNames.includes(name)), ...Object.keys(item).filter(name => !keyNames.includes(name))];
+    for (const name of names) {
+      const attribute = item[name];
+      const type = attributeType(attribute);
+      const value = unpackDynamoValue(attribute);
+      const row = element('div', undefined, 'attribute-row');
+      row.append(element('dt', name, 'attribute-name'));
+      const valueCell = element('dd', undefined, 'attribute-value');
+      valueCell.append(element('span', type, 'type-badge'));
+      if (value !== null && typeof value === 'object') {
+        const details = element('details');
+        details.append(element('summary', Array.isArray(value) ? `${value.length} values` : `${Object.keys(value).length} fields`));
+        details.append(element('pre', JSON.stringify(value, null, 2)));
+        valueCell.append(details);
+      } else {
+        valueCell.append(element('span', value === null ? 'null' : String(value)));
+      }
+      row.append(valueCell); attributes.append(row);
+    }
+    card.append(attributes); results.append(card);
+  });
+}
+function updateDynamoKey() {
+  const table = selectedDynamoTable();
+  const key = table?.key_schema?.find(entry => entry.KeyType === 'HASH');
+  const type = table?.attr_defs?.find(entry => entry.AttributeName === key?.AttributeName)?.AttributeType;
+  $('query-key-label').textContent = key ? `Partition key ${key.AttributeName} (${type || '?'})` : 'Partition key';
+  $('query-value').placeholder = type === 'B' ? 'Base64 encoded value (blank for all)' : type === 'N' ? 'Number (blank for all)' : 'Blank to browse all';
+  $('query-run').disabled = !table || !key || !type;
+  $('query-results').hidden = true;
+}
+async function loadDynamoTables() {
+  $('query-status').className = ''; $('query-status').textContent = 'Loading DynamoDB tables…'; $('query-run').disabled = true;
+  try {
+    const response = await fetch('/roto-api/resources/dynamodb/tables?offset=0', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    dynamoTables = data.records || [];
+    for (let offset = 50; offset < (data.total || 0); offset += 50) {
+      const page = await fetch(`/roto-api/resources/dynamodb/tables?offset=${offset}`, { cache: 'no-store' });
+      if (!page.ok) throw new Error(`HTTP ${page.status}`);
+      dynamoTables.push(...((await page.json()).records || []));
+    }
+    $('query-table').replaceChildren(...dynamoTables.map(table => new Option(table.name, table.table_id)));
+    if (!dynamoTables.length) {
+      $('query-status').textContent = 'No DynamoDB tables found.';
+      return;
+    }
+    updateDynamoKey();
+    $('query-status').textContent = 'Enter a partition key value, or leave it blank to browse the table.';
+  } catch (error) {
+    $('query-status').className = 'error'; $('query-status').textContent = `Unable to load DynamoDB tables: ${error.message}.`;
+  }
+}
+async function runDynamoQuery() {
+  const table = selectedDynamoTable();
+  if (!table) return;
+  $('query-run').disabled = true; $('query-results').hidden = true;
+  $('query-status').className = ''; $('query-status').textContent = 'Querying…';
+  try {
+    const response = await fetch('/roto-api/dynamodb/query', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ table_id: table.table_id, partition_value: $('query-value').value }), cache: 'no-store'
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+    renderDynamoItems(data.items, table); $('query-results').hidden = false;
+    const countLabel = $('query-value').value ? `matching item${data.count === 1 ? '' : 's'}` : `item${data.count === 1 ? '' : 's'} in the table`;
+    $('query-status').textContent = `${data.count} ${countLabel}${data.hasMore ? ' · showing the first 100' : ''}.`;
+  } catch (error) {
+    $('query-status').className = 'error'; $('query-status').textContent = `Query failed: ${error.message}.`;
+  } finally { $('query-run').disabled = !selectedDynamoTable(); }
+}
+$('query-table').addEventListener('change', () => { $('query-value').value = ''; updateDynamoKey(); });
+$('query-run').addEventListener('click', runDynamoQuery);
+$('query-value').addEventListener('keydown', event => { if (event.key === 'Enter') runDynamoQuery(); });
+setInterval(() => { if (view !== 'dynamodb' && $('auto').checked && !document.hidden && !controller) load(); }, 5000);
 async function init() {
   try {
     const response = await fetch('/roto-api/resources'); if (!response.ok) throw new Error(`HTTP ${response.status}`);
