@@ -9,7 +9,7 @@ mod schema;
 mod spec;
 mod template;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use diesel::prelude::*;
@@ -36,6 +36,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "DescribeStacks",
     "ListStackResources",
     "DescribeStackResources",
+    "ListStacks",
     "DescribeStackEvents",
     "GetTemplate",
     "CreateChangeSet",
@@ -43,6 +44,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "ExecuteChangeSet",
     "DeleteChangeSet",
     "ListChangeSets",
+    "ListExports",
     "SetStackPolicy",
     "GetStackPolicy",
     "UpdateTerminationProtection",
@@ -56,6 +58,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
         PRIMARY KEY (account_id, region, name)
     );",
 }];
+const EXPORT_PAGE_SIZE: usize = 100;
 
 pub(crate) fn validation(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "ValidationError", message)
@@ -86,6 +89,12 @@ struct StackState {
     on_failure: String,
     #[serde(default)]
     termination_protection: bool,
+    #[serde(default)]
+    parent_id: Option<String>,
+    #[serde(default)]
+    root_id: Option<String>,
+    #[serde(default)]
+    nesting_depth: u8,
     #[serde(default)]
     stack_policy: Option<String>,
     #[serde(default)]
@@ -167,8 +176,27 @@ struct StoredOutput {
     export: Option<String>,
 }
 
+fn stack_can_import(stack: &StackState) -> bool {
+    !matches!(
+        stack.status.as_str(),
+        "REVIEW_IN_PROGRESS" | "DELETE_COMPLETE" | "ROLLBACK_COMPLETE"
+    )
+}
+
+fn stack_can_export(stack: &StackState) -> bool {
+    !stack.outputs.is_empty()
+        && !matches!(
+            stack.status.as_str(),
+            "DELETE_COMPLETE" | "ROLLBACK_COMPLETE"
+        )
+}
+
 impl StackState {
-    fn resolver<'a>(&'a self, ctx: &'a RequestContext) -> Resolver<'a> {
+    fn resolver<'a>(
+        &'a self,
+        ctx: &'a RequestContext,
+        exports: BTreeMap<String, String>,
+    ) -> Resolver<'a> {
         Resolver {
             ctx,
             stack_name: &self.name,
@@ -176,6 +204,7 @@ impl StackState {
             parameters: &self.parameters,
             resources: &self.resources,
             conditions: &self.template["Conditions"],
+            exports,
         }
     }
     fn response(&self) -> Stack {
@@ -184,6 +213,8 @@ impl StackState {
             stack_id: Some(self.id.clone()),
             stack_status: self.status.clone(),
             stack_status_reason: self.reason.clone(),
+            parent_id: self.parent_id.clone(),
+            root_id: Some(self.root_id.clone().unwrap_or_else(|| self.id.clone())),
             enable_termination_protection: Some(self.termination_protection),
             creation_time: Timestamp(self.created),
             last_updated_time: self.updated.map(Timestamp),
@@ -337,12 +368,145 @@ impl CloudFormation {
                 .collect()
         })
     }
+    /// Export values visible to a stack in this account and region.
+    fn export_values(
+        &self,
+        ctx: &RequestContext,
+        excluded_stack_id: Option<&str>,
+    ) -> Result<BTreeMap<String, String>, AwsError> {
+        let mut exports = BTreeMap::new();
+        for stack in self.all(ctx)? {
+            if Some(stack.id.as_str()) == excluded_stack_id || !stack_can_export(&stack) {
+                continue;
+            }
+            for output in stack.outputs {
+                let Some(name) = output.export else {
+                    continue;
+                };
+                if exports.insert(name.clone(), output.value).is_some() {
+                    return Err(validation(format!(
+                        "Export name {name} is already in use in this account and region"
+                    )));
+                }
+            }
+        }
+        Ok(exports)
+    }
+    fn imported_names(
+        &self,
+        ctx: &RequestContext,
+        stack: &StackState,
+    ) -> Result<BTreeSet<String>, AwsError> {
+        fn collect(
+            value: &Value,
+            resolver: &Resolver<'_>,
+            imports: &mut BTreeSet<String>,
+        ) -> Result<(), AwsError> {
+            match value {
+                Value::Object(object) => {
+                    if let Some(expression) = object.get("Fn::ImportValue") {
+                        let name = text(&resolver.resolve(expression)?)?;
+                        if !name.is_empty() {
+                            imports.insert(name);
+                        }
+                    }
+                    for child in object.values() {
+                        collect(child, resolver, imports)?;
+                    }
+                }
+                Value::Array(values) => {
+                    for child in values {
+                        collect(child, resolver, imports)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        let resolver = stack.resolver(ctx, BTreeMap::new());
+        let mut imports = BTreeSet::new();
+        collect(&stack.template, &resolver, &mut imports)?;
+        Ok(imports)
+    }
+    /// Enforce account/region export uniqueness and prevent breaking imports.
+    fn validate_export_changes(
+        &self,
+        ctx: &RequestContext,
+        stack: &StackState,
+        outputs: &[StoredOutput],
+    ) -> Result<(), AwsError> {
+        let stacks = self.all(ctx)?;
+        let mut other_exports = BTreeMap::new();
+        for other in &stacks {
+            if other.id == stack.id || !stack_can_export(other) {
+                continue;
+            }
+            for output in &other.outputs {
+                if let Some(name) = &output.export
+                    && other_exports
+                        .insert(name.clone(), other.name.clone())
+                        .is_some()
+                {
+                    return Err(validation(format!(
+                        "Export name {name} is already in use in this account and region"
+                    )));
+                }
+            }
+        }
+
+        let mut next = BTreeMap::new();
+        for output in outputs {
+            let Some(name) = &output.export else {
+                continue;
+            };
+            if name.is_empty() {
+                return Err(validation("Export Name must not be empty"));
+            }
+            if next.insert(name.as_str(), output.value.as_str()).is_some() {
+                return Err(validation(format!(
+                    "Export name {name} is used more than once by stack {}",
+                    stack.name
+                )));
+            }
+            if let Some(owner) = other_exports.get(name) {
+                return Err(validation(format!(
+                    "Export name {name} is already exported by stack {owner}"
+                )));
+            }
+        }
+
+        for old in &stack.outputs {
+            let Some(name) = &old.export else {
+                continue;
+            };
+            if next
+                .get(name.as_str())
+                .is_some_and(|value| *value == old.value.as_str())
+            {
+                continue;
+            }
+            for consumer in &stacks {
+                if consumer.id == stack.id || !stack_can_import(consumer) {
+                    continue;
+                }
+                if self.imported_names(ctx, consumer)?.contains(name) {
+                    return Err(validation(format!(
+                        "Export {name} cannot be modified or removed because stack {} imports it",
+                        consumer.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
     fn reconcile(&self, ctx: &RequestContext, stack: &mut StackState) -> Result<(), AwsError> {
+        let exports = self.export_values(ctx, Some(&stack.id))?;
         let ordered = template::order(&stack.template)?;
         for id in &ordered {
             let definition = &stack.template["Resources"][id];
             let ty = definition["Type"].as_str().unwrap().to_string();
-            let props = desired_properties(stack, ctx, definition)?;
+            let props = desired_properties(stack, ctx, definition, &exports)?;
             let existing = stack.resources.iter().position(|r| r.logical_id == *id);
             if let Some(index) =
                 existing.filter(|index| !replacement(&stack.resources[*index], &ty, &props))
@@ -387,7 +551,7 @@ impl CloudFormation {
                 .ok_or_else(|| validation("Outputs must be an object"))?
             {
                 let value = text(
-                    &stack.resolver(ctx).resolve(
+                    &stack.resolver(ctx, exports.clone()).resolve(
                         definition
                             .get("Value")
                             .ok_or_else(|| validation("Output requires Value"))?,
@@ -397,7 +561,7 @@ impl CloudFormation {
                     .get("Export")
                     .map(|v| {
                         text(
-                            &stack.resolver(ctx).resolve(
+                            &stack.resolver(ctx, exports.clone()).resolve(
                                 v.get("Name")
                                     .ok_or_else(|| validation("Export requires Name"))?,
                             )?,
@@ -412,6 +576,7 @@ impl CloudFormation {
                 });
             }
         }
+        self.validate_export_changes(ctx, stack, &outputs)?;
         stack.outputs = outputs;
         Ok(())
     }
@@ -427,9 +592,15 @@ impl CloudFormation {
         stack.resources[index].status = format!("{action}_IN_PROGRESS");
         stack.resources[index].reason = None;
         self.save(ctx, stack)?;
-        let result = self
-            .resources
-            .configure(ctx, &mut stack.resources[index], props, updating);
+        let result = if stack.resources[index].resource_type == "AWS::CloudFormation::Stack" {
+            self.configure_nested_stack(ctx, stack, index, props, updating)
+        } else {
+            self.resources
+                .configure(ctx, &mut stack.resources[index], props, updating)
+        };
+        if result.is_ok() {
+            stack.resources[index].properties = props.clone();
+        }
         stack.resources[index].status = format!(
             "{action}_{}",
             if result.is_ok() { "COMPLETE" } else { "FAILED" }
@@ -460,7 +631,12 @@ impl CloudFormation {
         }
         stack.resources[index].status = "DELETE_IN_PROGRESS".into();
         self.save(ctx, stack)?;
-        match self.resources.delete(ctx, &stack.resources[index]) {
+        let result = if stack.resources[index].resource_type == "AWS::CloudFormation::Stack" {
+            self.delete_nested_stack(ctx, &stack.resources[index])
+        } else {
+            self.resources.delete(ctx, &stack.resources[index])
+        };
+        match result {
             Ok(()) => {
                 stack.resources.remove(index);
                 self.save(ctx, stack)
@@ -593,9 +769,172 @@ impl CloudFormation {
         }
         Ok(())
     }
+
+    fn configure_nested_stack(
+        &self,
+        ctx: &RequestContext,
+        parent: &mut StackState,
+        index: usize,
+        props: &Value,
+        updating: bool,
+    ) -> Result<(), AwsError> {
+        let name = parent.resources[index].name.clone();
+        let result = self.configure_nested_stack_state(ctx, parent, &name, props, updating);
+        if let Some(child) = self.find(ctx, &name)? {
+            parent.resources[index].physical_id = child.id.clone();
+            parent.resources[index].attributes = nested_stack_attributes(&child);
+        }
+        result
+    }
+
+    fn configure_nested_stack_state(
+        &self,
+        ctx: &RequestContext,
+        parent: &StackState,
+        name: &str,
+        props: &Value,
+        updating: bool,
+    ) -> Result<(), AwsError> {
+        let template_url = props["TemplateURL"]
+            .as_str()
+            .ok_or_else(|| validation("AWS::CloudFormation::Stack requires a TemplateURL"))?;
+        let body = self.resources.template_from_url(ctx, template_url)?;
+        let template = template::parse(&body)?;
+        self.check_spec(&template)?;
+        let inputs = nested_parameters(props)?;
+        let tags = tag_map(props)?;
+        let parent_id = parent.id.clone();
+        let root_id = parent.root_id.clone().unwrap_or_else(|| parent.id.clone());
+        let depth = parent.nesting_depth.saturating_add(1);
+        if depth > MAX_NESTED_STACK_DEPTH {
+            return Err(validation(format!(
+                "Nested stack depth exceeds {MAX_NESTED_STACK_DEPTH}"
+            )));
+        }
+
+        let current = self
+            .find(ctx, name)?
+            .filter(|s| s.status != "DELETE_COMPLETE");
+        if updating {
+            if let Some(mut child) = current {
+                if child.parent_id.as_deref() != Some(parent_id.as_str()) {
+                    return Err(validation(format!(
+                        "Nested stack name {name} is already in use"
+                    )));
+                }
+                let child_parameters = parameters(&template, inputs, Some(&child.parameters))?;
+                if child.template != template
+                    || child.parameters != child_parameters
+                    || child.tags != tags
+                {
+                    self.apply_update(ctx, &mut child, template, child_parameters, tags, false)?;
+                    if child.status != "UPDATE_COMPLETE" {
+                        return Err(validation(format!(
+                            "Nested stack update failed: {}",
+                            child.reason.as_deref().unwrap_or(&child.status)
+                        )));
+                    }
+                }
+                return Ok(());
+            }
+        } else if current.is_some() {
+            return Err(validation(format!(
+                "Nested stack name {name} is already in use"
+            )));
+        }
+
+        let child_parameters = parameters(&template, inputs, None)?;
+        let mut child = StackState {
+            id: new_stack_id(ctx, name),
+            name: name.into(),
+            status: "CREATE_IN_PROGRESS".into(),
+            reason: None,
+            created: now(),
+            updated: None,
+            template,
+            parameters: child_parameters,
+            tags,
+            resources: Vec::new(),
+            outputs: Vec::new(),
+            events: Vec::new(),
+            on_failure: default_on_failure(),
+            termination_protection: false,
+            parent_id: Some(parent_id),
+            root_id: Some(root_id),
+            nesting_depth: depth,
+            stack_policy: None,
+            change_sets: Vec::new(),
+        };
+        self.save(ctx, &child)?;
+        let result = self.reconcile(ctx, &mut child);
+        self.finish_create(ctx, &mut child, result, "ROLLBACK")?;
+        if child.status != "CREATE_COMPLETE" {
+            return Err(validation(format!(
+                "Nested stack creation failed: {}",
+                child.reason.as_deref().unwrap_or(&child.status)
+            )));
+        }
+        Ok(())
+    }
+
+    fn delete_nested_stack(
+        &self,
+        ctx: &RequestContext,
+        resource: &Resource,
+    ) -> Result<(), AwsError> {
+        let Some(mut child) = self.find(ctx, &resource.name)? else {
+            return Ok(());
+        };
+        if child.status == "DELETE_COMPLETE" {
+            return Ok(());
+        }
+        self.validate_export_changes(ctx, &child, &[])?;
+        child.status = "DELETE_IN_PROGRESS".into();
+        child.reason = None;
+        self.save(ctx, &child)?;
+        let result = self.remove_all(ctx, &mut child, &[], false);
+        match result {
+            Ok(()) => {
+                child.outputs.clear();
+                self.settle(ctx, &mut child, "DELETE_COMPLETE", None)
+            }
+            Err(error) => {
+                self.settle(ctx, &mut child, "DELETE_FAILED", Some(error.to_string()))?;
+                Err(error)
+            }
+        }
+    }
 }
 
 const EVENT_PAGE_SIZE: usize = 100;
+const MAX_NESTED_STACK_DEPTH: u8 = 16;
+
+fn nested_parameters(props: &Value) -> Result<Vec<Parameter>, AwsError> {
+    let Some(value) = props.get("Parameters") else {
+        return Ok(Vec::new());
+    };
+    let parameters = value
+        .as_object()
+        .ok_or_else(|| validation("Nested stack Parameters must be an object"))?;
+    parameters
+        .iter()
+        .map(|(key, value)| {
+            Ok(Parameter {
+                parameter_key: Some(key.clone()),
+                parameter_value: Some(text(value)?),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+fn nested_stack_attributes(stack: &StackState) -> BTreeMap<String, Value> {
+    stack
+        .outputs
+        .iter()
+        .map(|output| (format!("Outputs.{}", output.key), json!(output.value)))
+        .collect()
+}
 
 fn default_on_failure() -> String {
     "ROLLBACK".into()
@@ -646,9 +985,10 @@ fn desired_properties(
     stack: &StackState,
     ctx: &RequestContext,
     definition: &Value,
+    exports: &BTreeMap<String, String>,
 ) -> Result<Value, AwsError> {
     let mut props = stack
-        .resolver(ctx)
+        .resolver(ctx, exports.clone())
         .resolve(definition.get("Properties").unwrap_or(&json!({})))?;
     let mut tags = stack.tags.clone();
     tags.extend(tag_map(&props)?);
@@ -781,6 +1121,9 @@ impl Service for CloudFormation {
                 termination_protection: false,
                 stack_policy: None,
                 change_sets: Vec::new(),
+                parent_id: None,
+                root_id: None,
+                nesting_depth: 0,
             },
         };
         let template = match input.template_body.as_deref() {
@@ -819,7 +1162,8 @@ impl Service for CloudFormation {
             tags: tags.clone(),
             ..stack.clone()
         };
-        let changes = plan(ctx, &stack, &target)?;
+        let exports = self.export_values(ctx, Some(&stack.id))?;
+        let changes = plan(ctx, &stack, &target, &exports)?;
         let mut change_set = ChangeSetState {
             id: format!(
                 "arn:{}:cloudformation:{}:{}:changeSet/{}/{}",
@@ -1082,8 +1426,9 @@ impl Service for CloudFormation {
         )?;
         self.check_spec(&template)?;
         let parameters = parameters(&template, input.parameters, None)?;
+        let id = new_stack_id(ctx, &input.stack_name);
         let mut stack = StackState {
-            id: new_stack_id(ctx, &input.stack_name),
+            id: id.clone(),
             name: input.stack_name,
             status: "CREATE_IN_PROGRESS".into(),
             reason: None,
@@ -1099,6 +1444,9 @@ impl Service for CloudFormation {
             termination_protection: input.enable_termination_protection.unwrap_or(false),
             stack_policy: input.stack_policy_body,
             change_sets: Vec::new(),
+            parent_id: None,
+            root_id: Some(id),
+            nesting_depth: 0,
         };
         self.save(ctx, &stack)?;
         let result = self.reconcile(ctx, &mut stack);
@@ -1165,7 +1513,8 @@ impl Service for CloudFormation {
             tags: tags.clone(),
             ..stack.clone()
         };
-        let changes = plan(ctx, &stack, &target)?;
+        let exports = self.export_values(ctx, Some(&stack.id))?;
+        let changes = plan(ctx, &stack, &target, &exports)?;
         let policy = input
             .stack_policy_during_update_body
             .or_else(|| stack.stack_policy.clone());
@@ -1203,6 +1552,7 @@ impl Service for CloudFormation {
                 stack.name
             )));
         }
+        self.validate_export_changes(ctx, &stack, &[])?;
         if let Some(missing) = input
             .retain_resources
             .iter()
@@ -1217,9 +1567,11 @@ impl Service for CloudFormation {
         stack.reason = None;
         self.save(ctx, &stack)?;
         let result = self.remove_all(ctx, &mut stack, &input.retain_resources, force);
-        stack.outputs.clear();
         match result {
-            Ok(()) => self.settle(ctx, &mut stack, "DELETE_COMPLETE", None),
+            Ok(()) => {
+                stack.outputs.clear();
+                self.settle(ctx, &mut stack, "DELETE_COMPLETE", None)
+            }
             Err(error) => self.settle(ctx, &mut stack, "DELETE_FAILED", Some(error.to_string())),
         }
     }
@@ -1241,6 +1593,89 @@ impl Service for CloudFormation {
         };
         Ok(DescribeStacksOutput {
             stacks: stacks.iter().map(StackState::response).collect(),
+            ..Default::default()
+        })
+    }
+    fn list_exports(
+        &self,
+        ctx: &RequestContext,
+        input: ListExportsInput,
+    ) -> Result<ListExportsOutput, AwsError> {
+        let _guard = self.mutation.lock().unwrap();
+        let offset = input
+            .next_token
+            .as_deref()
+            .map(str::parse::<usize>)
+            .transpose()
+            .map_err(|_| validation("Invalid NextToken"))?
+            .unwrap_or(0);
+        let mut exports = Vec::new();
+        for stack in self.all(ctx)? {
+            if !stack_can_export(&stack) {
+                continue;
+            }
+            for output in stack.outputs {
+                let Some(name) = output.export else {
+                    continue;
+                };
+                exports.push((
+                    name.clone(),
+                    Export {
+                        exporting_stack_id: Some(stack.id.clone()),
+                        name: Some(name),
+                        value: Some(output.value),
+                    },
+                ));
+            }
+        }
+        exports.sort_by(|a, b| a.0.cmp(&b.0));
+        let next_token = (offset + EXPORT_PAGE_SIZE < exports.len())
+            .then(|| (offset + EXPORT_PAGE_SIZE).to_string());
+        Ok(ListExportsOutput {
+            exports: exports
+                .into_iter()
+                .skip(offset)
+                .take(EXPORT_PAGE_SIZE)
+                .map(|(_, export)| export)
+                .collect(),
+            next_token,
+        })
+    }
+    fn list_stacks(
+        &self,
+        ctx: &RequestContext,
+        input: ListStacksInput,
+    ) -> Result<ListStacksOutput, AwsError> {
+        if input.next_token.is_some() {
+            return Err(validation("Pagination tokens are not supported"));
+        }
+        let stacks = self
+            .all(ctx)?
+            .into_iter()
+            .filter(|stack| {
+                input.stack_status_filter.is_empty()
+                    || input
+                        .stack_status_filter
+                        .iter()
+                        .any(|status| status == &stack.status)
+            })
+            .map(|stack| StackSummary {
+                creation_time: Timestamp(stack.created),
+                deletion_time: (stack.status == "DELETE_COMPLETE")
+                    .then(|| Timestamp(stack.updated.unwrap_or(stack.created))),
+                last_updated_time: stack.updated.map(Timestamp),
+                parent_id: stack.parent_id.clone(),
+                root_id: Some(stack.root_id.clone().unwrap_or_else(|| stack.id.clone())),
+                stack_id: Some(stack.id.clone()),
+                stack_name: stack.name.clone(),
+                stack_status: stack.status.clone(),
+                stack_status_reason: stack.reason.clone(),
+                template_description: stack.template["Description"].as_str().map(str::to_string),
+                ..Default::default()
+            })
+            .collect();
+        Ok(ListStacksOutput {
+            stack_summaries: stacks,
             ..Default::default()
         })
     }

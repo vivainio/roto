@@ -117,6 +117,7 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             "TracingConfig",
             "Tags",
         ],
+        "AWS::CloudFormation::Stack" => &["TemplateURL", "Parameters", "Tags"],
         _ => return Err(validation(format!("Unsupported resource type: {ty}"))),
     };
     let object = props
@@ -142,6 +143,16 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
         }
         "AWS::IAM::Policy" if !object["PolicyDocument"].is_object() => {
             return Err(validation("PolicyDocument must be an object"));
+        }
+        "AWS::CloudFormation::Stack"
+            if object
+                .get("TemplateURL")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty) =>
+        {
+            return Err(validation(
+                "AWS::CloudFormation::Stack requires a TemplateURL",
+            ));
         }
         _ => {}
     }
@@ -357,6 +368,61 @@ impl Resources {
         Ok(())
     }
 
+    /// Fetch a nested stack template from an object URL in the local S3 service.
+    pub fn template_from_url(
+        &self,
+        ctx: &RequestContext,
+        template_url: &str,
+    ) -> Result<String, AwsError> {
+        let url = reqwest::Url::parse(template_url)
+            .map_err(|e| validation(format!("Invalid TemplateURL: {e}")))?;
+        if !matches!(url.scheme(), "http" | "https" | "s3") {
+            return Err(validation("TemplateURL must identify an S3 object"));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| validation("TemplateURL must identify an S3 object"))?;
+        let raw_path = url.path().trim_start_matches('/');
+        let decoded_path = roto_protocol::restxml::percent_decode_path(raw_path);
+
+        let (bucket, key) = if url.scheme() == "s3" {
+            (host, decoded_path.as_str())
+        } else if host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host.starts_with("s3.")
+            || host.starts_with("s3-")
+        {
+            decoded_path
+                .split_once('/')
+                .ok_or_else(|| validation("TemplateURL must include an S3 bucket and key"))?
+        } else if let Some(bucket) = host.strip_suffix(".localhost") {
+            (bucket, decoded_path.as_str())
+        } else if let Some((bucket, _)) = host.split_once(".s3.") {
+            (bucket, decoded_path.as_str())
+        } else if let Some((bucket, _)) = host.split_once(".s3-") {
+            (bucket, decoded_path.as_str())
+        } else {
+            return Err(validation("TemplateURL must identify an S3 object"));
+        };
+        if bucket.is_empty() || key.is_empty() {
+            return Err(validation("TemplateURL must include an S3 bucket and key"));
+        }
+
+        let key_path = key.split('/').map(encode).collect::<Vec<_>>().join("/");
+        let response = self.request(
+            ctx,
+            "s3",
+            RawRequest {
+                method: "GET".into(),
+                path: format!("/{}/{}", encode(bucket), key_path),
+                ..Default::default()
+            },
+        )?;
+        String::from_utf8(response.body)
+            .map_err(|e| validation(format!("Nested stack template is not UTF-8: {e}")))
+    }
+
     /// Allocate only the base resource. The stack journals its identity before configuration.
     pub fn create(
         &self,
@@ -367,6 +433,27 @@ impl Resources {
         props: Value,
     ) -> Result<Resource, AwsError> {
         validate_properties(ty, &props)?;
+        if ty == "AWS::CloudFormation::Stack" {
+            let generated = format!(
+                "{}-{}-{}",
+                stack.chars().take(30).collect::<String>(),
+                id.chars().take(24).collect::<String>(),
+                &ids::request_id()[..12]
+            );
+            return Ok(Resource {
+                logical_id: id.into(),
+                resource_type: ty.into(),
+                physical_id: generated.clone(),
+                name: generated,
+                properties: props,
+                attributes: BTreeMap::new(),
+                subscriptions: Vec::new(),
+                deletion_policy: default_delete_policy(),
+                update_replace_policy: default_delete_policy(),
+                status: "CREATE_IN_PROGRESS".into(),
+                reason: None,
+            });
+        }
         let generated = format!(
             "{}-{id}-{}",
             stack.chars().take(30).collect::<String>(),

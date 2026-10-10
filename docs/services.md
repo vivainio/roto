@@ -19,7 +19,7 @@ full AWS compatibility.
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
 | Kinesis | Streams, shards, records, polling, expiring iterators, resharding, retention, tags, consumer registration, encryption/monitoring metadata | Enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies, actual encryption |
 | KMS | Persisted symmetric keys and aliases, listing, tags, key policies, rotation status, deletion scheduling, Encrypt/Decrypt, ReEncrypt, random data keys | Real encryption, asymmetric operations, grants, multi-region keys, policy enforcement |
-| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, refs, outputs, tags, change sets, events, rollback attempts, retention, stack policies, termination protection, persistence | Nested stacks, imports, transforms, rollback triggers, Lambda configuration updates, full policy semantics |
+| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, recursive nested stacks from S3 templates, cross-stack exports/imports, refs, outputs, tags, change sets, events, rollback attempts, retention, stack policies, termination protection, persistence | Nested change sets, imports of existing resources, transforms, rollback triggers, Lambda configuration updates, full policy semantics |
 
 KMS uses a versioned base64 JSON envelope for simulated ciphertext; it provides no
 cryptographic protection. See [KMS](kms.md).

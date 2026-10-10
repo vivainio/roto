@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Nested stack that creates a parameterized SQS queue.
+
+Parameters:
+  Environment:
+    Type: String
+
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: "${Environment}-nested-queue"
+
+Outputs:
+  QueueUrl:
+    Description: URL of the queue created by the child stack.
+    Value:
+      Ref: Queue
+  QueueArn:
+    Description: ARN of the queue created by the child stack.
+    Value:
+      Fn::GetAtt: [Queue, Arn]
