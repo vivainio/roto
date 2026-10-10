@@ -64,11 +64,79 @@ unsubscribe behavior, publishes UTF-8 and binary IoT payloads, exercises
 Management API text and binary callbacks, and verifies that a closed connection
 returns `GoneException`.
 
+## API Gateway v2 WebSocket APIs
+
+Roto implements a local subset of API Gateway v2's control plane and WebSocket
+data plane. Control-plane requests use the ordinary API Gateway v2 paths under
+`/v2/apis`. The current subset creates and lists WebSocket APIs, integrations,
+routes, route responses, stages, and deployments, and supports reading or
+deleting those resources. Configuration is held in memory and is cleared by
+`/roto-api/reset` or a server restart.
+
+Create a WebSocket API with the AWS SDK pointed at Roto:
+
+```python
+import boto3
+
+control = boto3.client(
+    "apigatewayv2",
+    endpoint_url="http://localhost:5070",
+    region_name="us-east-1",
+)
+api = control.create_api(
+    Name="local-chat",
+    ProtocolType="WEBSOCKET",
+    RouteSelectionExpression="$request.body.action",
+)
+```
+
+Add an `AWS_PROXY` Lambda integration, routes such as `$connect`,
+`$disconnect`, and `sendmessage`, then create a stage with `AutoDeploy=True`.
+The integration URI uses API Gateway's normal Lambda form:
+
+```text
+arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:local-chat/invocations
+```
+
+Connect to `ws://localhost:5070/{apiId}/{stage}`. The `$default` stage uses
+`ws://localhost:5070/{apiId}`. The local endpoint sends the same
+`{"type":"ready","connectionId":"..."}` greeting as Roto's custom socket
+endpoint so local clients can exercise `PostToConnection` directly; AWS does
+not send this greeting. Connect and disconnect integrations receive API
+Gateway-style events. Text messages select routes using expressions of the
+form `$request.body.field`; `$default` handles unmatched or binary messages.
+The Lambda integration receives a WebSocket event with `requestContext` values
+such as `apiId`, `stage`, `routeKey`, `eventType`, and `connectionId`.
+
+WebSocket Lambda results are discarded unless the route has a `$default` route
+response. With that route response configured, Roto sends the Lambda payload
+back to the client. The Management API can also send callbacks:
+
+```python
+management = boto3.client(
+    "apigatewaymanagementapi",
+    endpoint_url=f"http://localhost:5070/{api['ApiId']}/dev",
+    region_name="us-east-1",
+)
+management.post_to_connection(ConnectionId=connection_id, Data=b"hello")
+```
+
+API ID and stage are checked against the live connection for API-specific
+Management API paths. Expired or mismatched connections return
+`GoneException`.
+
+The implementation supports Lambda proxy integrations and a single route
+response key (`$default`). It does not implement HTTP APIs, custom domains,
+authorizers, request models, non-Lambda integrations, IAM authorization, or
+Lambda permission enforcement. Stage auto-deploy and explicit deployments
+control which route configuration is active.
+
 ## API Gateway Management API
 
-The same connection registry supports `apigatewaymanagementapi.PostToConnection`.
-Use the `connectionId` from the WebSocket `ready` message and set the management
-client's endpoint URL to Roto with the API stage path, for example:
+The same connection registry supports `apigatewaymanagementapi.PostToConnection`
+for both custom local sockets and API Gateway v2 sockets. For the custom socket,
+use the `connectionId` from its `ready` message and set the management client's
+endpoint URL to Roto with a stage path, for example:
 
 ```python
 management = boto3.client(
@@ -80,8 +148,7 @@ management.post_to_connection(ConnectionId=connection_id, Data=b"hello")
 ```
 
 The callback sends a text WebSocket frame when `Data` is UTF-8 and a binary
-frame otherwise. The local endpoint accepts `POST /{stage}/@connections/{id}`;
-API IDs and stages are not separately configured or isolated. Expired IDs return
-a `GoneException`. Roto does not create WebSocket APIs or implement their
-`$connect`, `$disconnect`, and message routes; this is the Management API's
-targeted-send mechanism over Roto's local WebSocket endpoint.
+frame otherwise. The custom local endpoint accepts
+`POST /{stage}/@connections/{id}`. API Gateway v2 sockets accept
+`POST /{apiId}/{stage}/@connections/{id}` and check the API and stage against
+the connection.
