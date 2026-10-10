@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use roto_core::rusqlite::{Connection, OptionalExtension, types::ValueRef};
 use roto_core::{AwsError, RawRequest, RequestContext, ids};
@@ -24,7 +24,7 @@ const COLLECTIONS: &[(&str, &[&str])] = &[
     ("kinesis", &["streams", "records"]),
     ("lambda", &["functions", "event_source_mappings"]),
     ("events", &["buses", "rules", "targets"]),
-    ("sns", &["topics", "subscriptions"]),
+    ("sns", &["topics", "subscriptions", "sms_messages"]),
     ("ssm", &["parameters", "resource_tags"]),
     ("secretsmanager", &["secrets", "secret_versions"]),
     (
@@ -54,6 +54,194 @@ pub async fn catalog() -> Json<Value> {
 
 fn error(status: StatusCode, message: impl ToString) -> Response {
     (status, Json(json!({"message":message.to_string()}))).into_response()
+}
+
+/// Peek at all queued messages without receiving them or changing queue state.
+pub async fn sqs_messages(
+    State(app): State<Arc<App>>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = invalid_account(&query) {
+        return response;
+    }
+    let Some(db) = app.store.existing_db("sqs") else {
+        return Json(json!({"messages": {}})).into_response();
+    };
+    let base_url = format!(
+        "http://{}",
+        headers
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("localhost:5070")
+    );
+    match tokio::task::spawn_blocking(move || db.read(|c| peek_sqs(c, &query, &base_url))).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e.message),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "SQS inspection failed"),
+    }
+}
+
+fn invalid_account(query: &HashMap<String, String>) -> Option<Response> {
+    if let Some(account) = query.get("account") {
+        if account.len() != 12 || !account.bytes().all(|b| b.is_ascii_digit()) {
+            return Some(
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "__type": "InvalidAccountID",
+                        "message": format!("Account ID must be 12 digits, got: {account}"),
+                    })),
+                )
+                    .into_response(),
+            );
+        }
+    }
+    None
+}
+
+pub async fn sns_sms_messages(
+    State(app): State<Arc<App>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if let Some(response) = invalid_account(&query) {
+        return response;
+    }
+    let Some(db) = app.store.existing_db("sns") else {
+        return Json(empty_sms(&query)).into_response();
+    };
+    match tokio::task::spawn_blocking(move || db.read(|c| peek_sms(c, &query))).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e.message),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "SNS inspection failed"),
+    }
+}
+
+fn empty_sms(query: &HashMap<String, String>) -> Value {
+    let mut value = json!({"sms_messages": {}, "region": query.get("region").map(String::as_str).unwrap_or("us-east-1")});
+    if let Some(phone) = query.get("phoneNumber") {
+        value["sms_messages"][phone] = json!([]);
+    }
+    value
+}
+
+fn peek_sms(c: &Connection, query: &HashMap<String, String>) -> Result<Value, AwsError> {
+    let mut result = empty_sms(query);
+    let mut statement = c.prepare("SELECT phone_number, record FROM sms_messages WHERE (?1 IS NULL OR account_id = ?1) AND (?2 IS NULL OR region = ?2) AND (?3 IS NULL OR phone_number = ?3) ORDER BY seq")?;
+    let mut rows = statement.query(roto_core::rusqlite::params![
+        query.get("account"),
+        query.get("region"),
+        query.get("phoneNumber")
+    ])?;
+    while let Some(row) = rows.next()? {
+        let phone: String = row.get(0)?;
+        let record: Value = serde_json::from_str(&row.get::<_, String>(1)?)
+            .map_err(|_| AwsError::internal("Invalid stored SMS record"))?;
+        result["sms_messages"]
+            .as_object_mut()
+            .unwrap()
+            .entry(phone)
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(record);
+    }
+    Ok(result)
+}
+
+pub async fn health(State(app): State<Arc<App>>) -> Json<Value> {
+    let services: Map<String, Value> = app
+        .services
+        .keys()
+        .map(|service| ((*service).to_owned(), json!("available")))
+        .collect();
+    Json(json!({"services": services, "version": env!("CARGO_PKG_VERSION")}))
+}
+
+fn peek_sqs(
+    c: &Connection,
+    query: &HashMap<String, String>,
+    base_url: &str,
+) -> Result<Value, AwsError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let queue_filter = query.get("QueueUrl");
+    let queue_ref = queue_filter.map(|url| {
+        let path = url
+            .split_once("://")
+            .map(|(_, rest)| rest.split_once('/').map(|(_, path)| path).unwrap_or(""))
+            .unwrap_or(url);
+        let path = if url.contains("://") {
+            path.split(['?', '#']).next().unwrap_or("")
+        } else {
+            path
+        };
+        let mut parts = path.trim_matches('/').rsplit('/');
+        let name = parts.next().unwrap_or("");
+        (parts.next(), name)
+    });
+    let mut queues =
+        c.prepare("SELECT id, account_id, region, name, attributes FROM queues ORDER BY id")?;
+    let mut messages = c.prepare("SELECT seq, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at, receive_count, first_received_at, group_id, dedup_id, trace_header, sender_id FROM messages WHERE queue_id = ?1 ORDER BY seq")?;
+    let mut result = json!({"messages": {}});
+    let mut rows = queues.query([])?;
+    while let Some(q) = rows.next()? {
+        let id: i64 = q.get(0)?;
+        let account: String = q.get(1)?;
+        let region: String = q.get(2)?;
+        let name: String = q.get(3)?;
+        if query.get("account").is_some_and(|a| a != &account)
+            || query.get("region").is_some_and(|r| r != &region)
+            || queue_ref.is_some_and(|(a, n)| n != name || a.is_some_and(|a| a != account))
+        {
+            continue;
+        }
+        let attrs: Value = serde_json::from_str(&q.get::<_, String>(4)?)
+            .map_err(|_| AwsError::internal("Invalid stored queue attributes"))?;
+        let fifo = attrs.get("FifoQueue").and_then(Value::as_str) == Some("true");
+        let mut rendered = Vec::new();
+        let mut rows = messages.query([id])?;
+        while let Some(m) = rows.next()? {
+            let sent: i64 = m.get(6)?;
+            let visible: i64 = m.get(7)?;
+            let first: Option<i64> = m.get(9)?;
+            let trace: Option<String> = m.get(12)?;
+            let mut system =
+                json!({"SenderId": m.get::<_, String>(13)?, "SentTimestamp": sent.to_string()});
+            if let Some(trace) = trace {
+                system["AWSTraceHeader"] = json!(trace);
+            }
+            let attributes: Value = serde_json::from_str(&m.get::<_, String>(4)?)
+                .map_err(|_| AwsError::internal("Invalid stored message attributes"))?;
+            rendered.push(json!({
+                "MessageId": m.get::<_, String>(1)?, "Body": m.get::<_, String>(2)?,
+                "MD5OfBody": m.get::<_, String>(3)?, "MD5OfMessageAttributes": m.get::<_, Option<String>>(5)?,
+                "SentTimestamp": sent / 1000, "VisibleAt": visible / 1000, "IsVisible": visible <= now,
+                "ReceiveCount": m.get::<_, i64>(8)?, "FirstReceiveTimestamp": first.map(|t| t / 1000),
+                "MessageAttributes": attributes, "Attributes": system,
+                "MessageGroupId": m.get::<_, Option<String>>(10)?, "MessageDeduplicationId": m.get::<_, Option<String>>(11)?,
+                "SequenceNumber": if fifo { Some(format!("{:018}", m.get::<_, i64>(0)?)) } else { None },
+            }));
+        }
+        let url = queue_filter
+            .cloned()
+            .unwrap_or_else(|| format!("{base_url}/{account}/{name}"));
+        let accounts = result["messages"].as_object_mut().unwrap();
+        let regions = accounts
+            .entry(account)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap();
+        let queues = regions
+            .entry(region)
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .unwrap();
+        queues.insert(url, json!(rendered));
+    }
+    Ok(result)
 }
 
 pub async fn records(
@@ -295,6 +483,7 @@ fn page(
                         let text = String::from_utf8_lossy(bytes);
                         // Unpack JSON documents for readable resource details.
                         (table == "stacks" && name == "body"
+                            || table == "sms_messages" && name == "record"
                             || matches!(
                                 name.as_str(),
                                 "config"
