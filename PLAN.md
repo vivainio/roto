@@ -215,3 +215,9 @@ account/region isolation with identical names, SecureString reads, label moves,
 tag updates, history pagination, reset and the labeled-oldest-version pruning guard.
 Secrets Manager and KMS are the next small CRUD candidates; S3, DynamoDB, SQS and
 Lambda need more care around storage and delivery behavior.
+
+## KMS and STS Diesel port (2026-10-10)
+
+Key metadata, aliases and role sessions now use typed Diesel queries. Scoped alias
+joins and credential account routing retain their existing behavior. Native tests
+and service Clippy pass; Moto remains 152 passing for KMS and 25 for STS.

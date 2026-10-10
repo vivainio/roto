@@ -1482,6 +1482,7 @@ name = "roto-svc-kms"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
+ "diesel",
  "getrandom 0.4.3",
  "roto-core",
  "roto-protocol",
@@ -1524,6 +1525,7 @@ dependencies = [
 name = "roto-svc-secretsmanager"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "roto-core",
  "roto-protocol",
  "serde_json",
@@ -1570,6 +1572,7 @@ dependencies = [
 name = "roto-svc-sts"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "roto-core",
  "roto-protocol",
  "roto-svc-iam",
