@@ -24,9 +24,10 @@ use roto_svc_sqs::Sqs;
 pub use generated::{NAMESPACE, OPERATIONS, Service, dispatch};
 pub use service::Sns;
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: "
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "
 CREATE TABLE topics (
     arn TEXT NOT NULL PRIMARY KEY,
     account_id TEXT NOT NULL,
@@ -50,7 +51,21 @@ CREATE TABLE subscriptions (
     seq INTEGER PRIMARY KEY AUTOINCREMENT
 );
 ",
-}];
+    },
+    Migration {
+        version: 2,
+        sql: "
+CREATE TABLE sms_messages (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    region TEXT NOT NULL,
+    phone_number TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX sms_messages_scope ON sms_messages(account_id, region, phone_number);
+",
+    },
+];
 
 /// Operations with real behaviour; the rest answer `NotImplemented`.
 pub const IMPLEMENTED: &[&str] = &[

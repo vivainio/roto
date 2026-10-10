@@ -39,8 +39,9 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/` | HTML resource and history browser (also `/roto-api`) |
 | `GET` | `/roto-api/resources` | Resource collection catalog |
 | `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
+| `GET` | `/roto-api/sqs/messages` | Read-only SQS message peek, grouped by account, region, and queue URL |
 | `GET` | `/roto-api/s3/object` | Download an object or read a bounded preview |
-| `GET` | `/roto-api/health` | Returns `ok` |
+| `GET` | `/roto-api/health` | JSON service availability and server version |
 | `GET` | `/roto-api/ws` | Local WebSocket connection endpoint; also available at `/roto-api/iot/ws` |
 | `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
@@ -48,7 +49,40 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
+| `GET` | `/roto-api/sns/sms-messages` | Direct-to-phone SNS publishes, grouped by recipient |
 | `POST` | `/moto-api/reset` | Alias used by moto's server-mode tests |
+
+`GET /roto-api/sqs/messages` follows MiniStack's SQS peek response format:
+`{"messages": {"<account>": {"<region>": {"<queue-url>": [messages]}}}}`.
+Optional `account` (12 digits), `region`, and `QueueUrl` query parameters filter
+the results. Queue URLs match by account and queue name, allowing a different
+hostname; the supplied URL is used as the response key. Without `QueueUrl`,
+URLs use the inspection request's host. Empty queues are included, and there
+is no pagination. Messages include `Body`, message IDs and MD5s, message and
+system attributes, receive count, visibility, and FIFO group/deduplication/sequence
+fields. Top-level `SentTimestamp`, `VisibleAt`, and `FirstReceiveTimestamp` use
+Unix seconds, matching MiniStack; `Attributes.SentTimestamp` uses milliseconds.
+Peeking includes delayed and in-flight messages and never receives, deletes,
+expires, or changes their visibility.
+
+`GET /roto-api/sns/sms-messages` follows MiniStack's SMS inspection format:
+`{"sms_messages": {"<phone-number>": [records]}, "region": "us-east-1"}`.
+Optional `account` (12 digits), `region`, and `phoneNumber` query parameters
+filter the results. Without filters, records from all accounts and regions
+are grouped by recipient; the response's `region` defaults to `us-east-1`.
+A filtered phone number is included with an empty list when no messages match.
+Each record includes `PhoneNumber`, `MessageId`, `Message`, `MessageAttributes`,
+`MessageStructure`, and `Subject`, with null `TopicArn` and `SubscriptionArn`.
+SMS history is stored in `sns.db`, survives restarts in persistent mode, and
+is cleared by `/roto-api/reset`. Topic publishes are excluded. Only publishes
+made after this upgrade have history; previously accepted SMS payloads were
+not retained. The resource browser also exposes the `sns/sms_messages` collection.
+
+`GET /roto-api/health` returns `{"services": {"<service>": "available"},
+"version": "<version>"}`. Its body is now JSON instead of plain `ok`; the HTTP
+status remains 200. These MiniStack-style endpoints use only the `/roto-api`
+prefix. SES message history, TLS certificate discovery, and SFTP port discovery
+are unavailable because Roto does not implement the corresponding services or listeners.
 
 Open `http://localhost:5070/roto-api/` to browse created resources and their data:
 

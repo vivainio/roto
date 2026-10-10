@@ -30,6 +30,7 @@ impl Sns {
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
+            diesel::delete(sms_messages::table).execute(tx)?;
             diesel::delete(subscriptions::table).execute(tx)?;
             diesel::delete(topics::table).execute(tx)?;
             Ok(())
@@ -814,15 +815,53 @@ impl Service for Sns {
         })
     }
 
-    fn publish(&self, _ctx: &RequestContext, i: PublishInput) -> Result<PublishResponse, AwsError> {
+    fn publish(&self, ctx: &RequestContext, i: PublishInput) -> Result<PublishResponse, AwsError> {
         if i.topic_arn.is_none() && i.target_arn.is_none() && i.phone_number.is_none() {
             return Err(invalid(
                 "Invalid parameter: TopicArn or TargetArn Reason: no value for required parameter",
             ));
         }
         if i.phone_number.is_some() && i.topic_arn.is_none() && i.target_arn.is_none() {
+            let message_id = uuid::Uuid::new_v4().to_string();
+            let phone = i.phone_number.as_deref().unwrap();
+            let attributes: serde_json::Map<String, Value> = i
+                .message_attributes
+                .iter()
+                .map(|(name, attr)| {
+                    let mut value = json!({"DataType": attr.data_type});
+                    if let Some(text) = &attr.string_value {
+                        value["StringValue"] = json!(text);
+                    }
+                    if let Some(binary) = &attr.binary_value {
+                        value["BinaryValue"] = json!(roto_protocol::base64::encode(&binary.0));
+                    }
+                    (name.clone(), value)
+                })
+                .collect();
+            let record = json!({
+                "PhoneNumber": phone,
+                "TopicArn": null,
+                "SubscriptionArn": null,
+                "MessageId": message_id,
+                "Message": i.message,
+                "MessageAttributes": attributes,
+                "MessageStructure": i.message_structure.as_deref().filter(|s| !s.is_empty()),
+                "Subject": i.subject.as_deref().filter(|s| !s.is_empty()),
+            })
+            .to_string();
+            self.db.transaction(|tx| {
+                diesel::insert_into(sms_messages::table)
+                    .values((
+                        sms_messages::account_id.eq(&ctx.account_id),
+                        sms_messages::region.eq(&ctx.region),
+                        sms_messages::phone_number.eq(phone),
+                        sms_messages::record.eq(&record),
+                    ))
+                    .execute(tx)?;
+                Ok(())
+            })?;
             return Ok(PublishResponse {
-                message_id: Some(uuid::Uuid::new_v4().to_string()),
+                message_id: Some(message_id),
                 sequence_number: None,
             });
         }

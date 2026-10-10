@@ -8,6 +8,13 @@ tags -> Text,
 created_at -> BigInt,
 seq -> BigInt,
 }}
+diesel::table! { sms_messages (seq) {
+seq -> BigInt,
+account_id -> Text,
+region -> Text,
+phone_number -> Text,
+record -> Text,
+}}
 diesel::table! { subscriptions (seq) {
 arn -> Text,
 topic_arn -> Text,
