@@ -105,16 +105,18 @@ update the coverage baseline and book when observable behavior changes.
 
 ## Typed SQLite access
 
-IAM, SSM, KMS, STS, Secrets Manager, CloudFormation, EventBridge, Kinesis, SNS, SQS, Lambda and DynamoDB use Diesel's SQLite backend. Each service's `schema.rs` declares database tables and
-`models.rs` contains stored records derived with `Queryable`, `Selectable` and
-`Insertable`; generated AWS API models remain separate. Handlers use typed
-queries inside `DieselDb::transaction`, retaining one transaction per API call.
+All service database access uses Diesel's SQLite backend. Each service's
+`schema.rs` declares database tables; services with stored records use
+`models.rs` or local structs derived with `Queryable`, `Selectable` and
+`Insertable`. Generated AWS API models remain separate. Handlers use typed
+queries inside `DieselDb::transaction`, preserving transaction boundaries.
 Path-prefix filters use SQLite substring functions so prefixes remain literal
 and case-sensitive.
 
 `Store::diesel_db` runs existing service migrations, configures WAL, foreign keys,
 busy timeout and durability, and shares the service lock with the legacy
 connection used by inspection. Ephemeral connections share an isolated in-memory
-SQLite database. Other services still use `rusqlite` and can be ported individually.
+SQLite database. `rusqlite` remains only in the shared store for migrations and
+the inspection UI's dynamic schema and row access; service handlers use Diesel.
 Add a direct Diesel dependency when using its derives or table macros; the core
 crate converts Diesel errors to the existing storage error response.

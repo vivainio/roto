@@ -21,7 +21,7 @@ Key decision: generate types from botocore models; services only implement busin
 Request flow: route (SigV4 credential scope / X-Amz-Target / host / path) -> decode -> handler against store -> encode output or error.
 
 ## Storage (persistent)
-- SQLite (rusqlite, bundled) for metadata and structured state; one DB file per service, `account_id` + `region` key columns.
+- SQLite (Diesel for typed CRUD, rusqlite for migrations and inspection) for metadata and structured state; one DB file per service, `account_id` + `region` key columns.
 - WAL, `synchronous=NORMAL` (`--durable` for FULL), busy_timeout; dedicated writer thread / spawn_blocking so tokio never blocks.
 - Typed tables per service (e.g. SQS `queues`, `messages(visible_at, ...)`), not generic KV.
 - Versioned migrations per DB. On-disk format unstable until v1.0 (explicit wipe-on-incompatible option).
@@ -78,7 +78,7 @@ $ROTO_DATA_DIR/s3/
 
 ## Open items
 - Compatibility target: exact moto error messages/IDs vs "good enough for SDKs".
-- Default libs: tokio, hyper/axum, serde, quick-xml, rusqlite, dashmap-free (state is in SQLite).
+- Default libs: tokio, hyper/axum, serde, quick-xml, Diesel/SQLite, dashmap-free (state is in SQLite).
 - Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
 
 ## Target services (what the user's stack actually uses)
@@ -268,3 +268,20 @@ Query/Scan key conditions and continuation filters use boxed Diesel queries
 instead of constructing SQL and positional bindings. Backup copies remain single
 INSERT SELECT statements. Moto remains 414 passing, 2 skipped and 115 excluded;
 21 native tests and service Clippy pass.
+
+## S3 Diesel port and service conversion complete (2026-10-10)
+
+Buckets, object versions, configs, multipart uploads/parts and notification
+outbox records now use typed CRUD and named row models. Literal listing prefixes
+and version order are preserved; notification inserts return their sequencer
+directly. Fifteen native tests and service Clippy pass. S3 Moto has 240 passing,
+59 skipped, 127 excluded, 2 xfailed and one HTTP response-parsing timeout in
+`test_list_object_versions_with_delimiter`. The same focused test times out with
+the pre-port S3 implementation in this Python 3.9 environment; no exclusions were
+changed to hide it.
+
+Every service's database CRUD now uses Diesel. `rusqlite` remains in the shared
+store for existing migrations and dynamic inspection, sharing locks and database
+contents with Diesel. Workspace tests, the locked server build and seeded demo
+smoke pass. Workspace Clippy only reports the existing argument-count lint in
+`roto-server/src/trace.rs`; converted service crates pass Clippy.
