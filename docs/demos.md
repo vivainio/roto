@@ -10,6 +10,8 @@ the runnable example.
 This demo builds a small Python Lambda image. Roto receives only the image name in Lua,
 starts the image with Podman or Docker, discovers the host port mapped to container port
 8080, sends the event to RIE, and removes the container after the invocation.
+Set `warm = true` in the executor binding to reuse idle containers; see the
+[warm counter example](lambda.md#try-warm-and-cold-invocations).
 
 Build the image from the repository root:
 
@@ -21,7 +23,10 @@ podman build -t roto-lambda-container:latest \
 Use `docker build` with the same arguments if Docker is your container engine.
 
 The `Containerfile` uses the AWS Lambda Python base image. Its entrypoint starts the
-Runtime Interface Emulator for local invocations:
+Runtime Interface Emulator (RIE) for local invocations. RIE and the runtime client
+are already included in this base image, so the Containerfile does not need to
+install them. The `container` binding requires RIE to be available and started on
+port 8080; arbitrary custom images may need to add it:
 
 ```dockerfile title="demos/lambda-container/Containerfile"
 --8<-- "demos/lambda-container/Containerfile"

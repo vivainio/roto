@@ -315,10 +315,28 @@ async fn main() {
             format!("data: {}", args.data_dir.display())
         }
     );
+    let shutdown_lambda = lambda.0.clone();
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(async move {
+        #[cfg(unix)]
+        {
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("install SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        shutdown_lambda.shutdown_executors();
+    })
     .await
     .unwrap();
 }

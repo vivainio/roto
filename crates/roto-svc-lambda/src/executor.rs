@@ -28,8 +28,10 @@ pub enum Executor {
     Inline {
         inline: String,
     },
-    Rie {
-        rie: String,
+    Container {
+        container: String,
+        #[serde(default)]
+        warm: bool,
     },
 }
 
@@ -85,8 +87,8 @@ impl Executor {
                 }
             }
             Self::Inline { .. } => {}
-            Self::Rie { rie } => {
-                if rie.trim().is_empty() || rie.contains('\0') {
+            Self::Container { container, .. } => {
+                if container.trim().is_empty() || container.contains('\0') {
                     return Err("RIE executor requires a nonempty container image name".into());
                 }
             }
@@ -100,6 +102,8 @@ pub(crate) struct Job {
     pub executor: Executor,
     pub arn: String,
     pub request_id: String,
+    #[serde(default)]
+    pub revision: String,
     pub region: String,
     pub endpoint: String,
     pub environment: BTreeMap<String, String>,
@@ -145,8 +149,9 @@ async fn bounded_read(mut stream: impl AsyncRead + Unpin) -> Result<Vec<u8>, Str
     }
 }
 
-pub(crate) async fn execute(job: &Job) -> Outcome {
-    let result = tokio::time::timeout(Duration::from_secs(job.timeout), execute_inner(job)).await;
+pub(crate) async fn execute(job: &Job, pool: &RiePool) -> Outcome {
+    let result =
+        tokio::time::timeout(Duration::from_secs(job.timeout), execute_inner(job, pool)).await;
     match result {
         Ok(outcome) => outcome,
         Err(_) => Outcome::error(
@@ -156,7 +161,7 @@ pub(crate) async fn execute(job: &Job) -> Outcome {
     }
 }
 
-async fn execute_inner(job: &Job) -> Outcome {
+async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
     let payload = serde_json::to_vec(&job.event).unwrap();
     match &job.executor {
         Executor::Inline { inline } => {
@@ -311,8 +316,88 @@ async fn execute_inner(job: &Job) -> Outcome {
                 ),
             }
         }
-        Executor::Rie { rie } => execute_rie(job, rie, payload).await,
+        Executor::Container { container, warm } => {
+            execute_rie(job, container, *warm, payload, pool).await
+        }
     }
+}
+
+// Only idle containers live in the pool. An invocation owns its container, so
+// cancellation (including timeout) drops and removes it rather than returning it.
+#[derive(Default)]
+pub(crate) struct RiePool(std::sync::Mutex<RiePoolState>);
+#[derive(Default)]
+struct RiePoolState {
+    idle: Vec<IdleContainer>,
+    closed: bool,
+}
+struct IdleContainer {
+    arn: String,
+    key: String,
+    used: std::time::Instant,
+    container: ContainerGuard,
+}
+impl RiePool {
+    fn take(&self, arn: &str, key: &str) -> Option<ContainerGuard> {
+        let mut state = self.0.lock().unwrap();
+        let idle = &mut state.idle;
+        idle.retain(|entry| {
+            entry.used.elapsed() < Duration::from_secs(300)
+                && (entry.arn != arn || entry.key == key)
+        });
+        let index = idle
+            .iter()
+            .position(|entry| entry.arn == arn && entry.key == key)?;
+        Some(idle.remove(index).container)
+    }
+    fn put(&self, arn: &str, key: String, container: ContainerGuard) {
+        let mut state = self.0.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        let idle = &mut state.idle;
+        if idle.len() >= 32 {
+            idle.remove(0);
+        }
+        idle.push(IdleContainer {
+            arn: arn.into(),
+            key,
+            used: std::time::Instant::now(),
+            container,
+        });
+    }
+    pub(crate) fn close(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.closed = true;
+        state.idle.clear();
+    }
+    pub(crate) fn expire(&self) {
+        self.0
+            .lock()
+            .unwrap()
+            .idle
+            .retain(|entry| entry.used.elapsed() < Duration::from_secs(300));
+    }
+    pub(crate) fn clear(&self, arn: Option<&str>) {
+        self.0
+            .lock()
+            .unwrap()
+            .idle
+            .retain(|entry| arn.is_some_and(|arn| entry.arn != arn));
+    }
+}
+fn warm_key(job: &Job, image: &str) -> String {
+    serde_json::to_string(&(
+        image,
+        &job.revision,
+        &job.region,
+        &job.endpoint,
+        &job.environment,
+        job.timeout,
+        job.memory_size,
+        &job.client_context,
+    ))
+    .unwrap()
 }
 
 #[derive(Clone, Copy)]
@@ -390,7 +475,10 @@ fn container_environment(job: &Job, engine: ContainerEngine) -> BTreeMap<String,
         "AWS_ENDPOINT_URL".into(),
         container_endpoint(&job.endpoint, engine),
     );
-    env.insert("ROTO_INVOCATION_ID".into(), job.request_id.clone());
+    // A warm process cannot receive changing invocation metadata through env.
+    if !matches!(job.executor, Executor::Container { warm: true, .. }) {
+        env.insert("ROTO_INVOCATION_ID".into(), job.request_id.clone());
+    }
     env.insert("ROTO_FUNCTION_ARN".into(), job.arn.clone());
     if let Some(context) = &job.client_context {
         env.insert("ROTO_CLIENT_CONTEXT".into(), context.clone());
@@ -414,6 +502,8 @@ fn container_endpoint(endpoint: &str, engine: ContainerEngine) -> String {
 struct ContainerGuard {
     engine: ContainerEngine,
     id: String,
+    log_offsets: (usize, usize),
+    port: Option<u16>,
 }
 
 impl Drop for ContainerGuard {
@@ -439,11 +529,13 @@ async fn start_container(
     };
     let container_name = format!(
         "roto-lambda-{engine_name}-{}",
-        job.request_id.replace('-', "")
+        roto_core::ids::request_id().replace('-', "")
     );
     let container = ContainerGuard {
         engine,
         id: container_name.clone(),
+        log_offsets: (0, 0),
+        port: None,
     };
     let mut args = vec![
         "run".into(),
@@ -499,43 +591,103 @@ async fn published_port(container: &ContainerGuard) -> Result<u16, String> {
         })
 }
 
-async fn container_logs(container: &ContainerGuard) -> String {
-    let args = vec!["logs".into(), container.id.clone()];
-    match process_output(container.engine.program(), &args).await {
-        Ok((_, stdout, stderr)) => {
-            let mut logs = String::from_utf8_lossy(&stdout).into_owned();
-            logs.push_str(&String::from_utf8_lossy(&stderr));
-            logs
+// Drain old output without keeping it in memory or counting it toward the
+// invocation output limit. Separate offsets preserve stdout/stderr ordering.
+async fn new_logs(
+    mut stream: impl AsyncRead + Unpin,
+    skip: usize,
+) -> Result<(Vec<u8>, usize), String> {
+    let mut output = Vec::new();
+    let mut total = 0;
+    let mut buffer = [0; 8192];
+    loop {
+        let count = stream.read(&mut buffer).await.map_err(|e| e.to_string())?;
+        if count == 0 {
+            return Ok((output, total));
         }
-        Err(error) => format!("could not read container logs: {error}"),
+        let start = skip.saturating_sub(total).min(count);
+        total += count;
+        if output.len() + count - start > OUTPUT_LIMIT {
+            return Err("executor output exceeds 6 MiB".into());
+        }
+        output.extend_from_slice(&buffer[start..count]);
     }
 }
+async fn container_logs(container: &mut ContainerGuard) -> String {
+    let result = async {
+        let mut child = tokio::process::Command::new(container.engine.program())
+            .args(["logs", &container.id])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let (out, err, _) = tokio::try_join!(
+            new_logs(stdout, container.log_offsets.0),
+            new_logs(stderr, container.log_offsets.1),
+            async { child.wait().await.map_err(|e| e.to_string()) }
+        )?;
+        container.log_offsets = (out.1, err.1);
+        let mut logs = String::from_utf8_lossy(&out.0).into_owned();
+        logs.push_str(&String::from_utf8_lossy(&err.0));
+        Ok::<_, String>(logs)
+    }
+    .await;
+    result.unwrap_or_else(|error| format!("could not read container logs: {error}"))
+}
 
-async fn execute_rie(job: &Job, image: &str, payload: Vec<u8>) -> Outcome {
-    let engines = engine_candidates().await;
-    if engines.is_empty() {
-        return Outcome::error(
-            "RIE executor requires podman or docker on PATH",
-            String::new(),
-        );
-    }
-    let mut started = None;
-    let mut errors = Vec::new();
-    for engine in engines {
-        match start_container(engine, image, job).await {
-            Ok(container) => {
-                started = Some(container);
-                break;
-            }
-            Err(error) => errors.push(error),
-        }
-    }
-    let Some(container) = started else {
-        return Outcome::error(errors.join("; "), String::new());
+async fn execute_rie(
+    job: &Job,
+    image: &str,
+    warm: bool,
+    payload: Vec<u8>,
+    pool: &RiePool,
+) -> Outcome {
+    let key = warm_key(job, image);
+    let cached = if warm {
+        pool.take(&job.arn, &key)
+    } else {
+        None
     };
-    let port = match published_port(&container).await {
-        Ok(port) => port,
-        Err(error) => return Outcome::error(error, container_logs(&container).await),
+    let container = if let Some(container) = cached {
+        container
+    } else {
+        let engines = engine_candidates().await;
+        if engines.is_empty() {
+            return Outcome::error(
+                "RIE executor requires podman or docker on PATH",
+                String::new(),
+            );
+        }
+        let mut started = None;
+        let mut errors = Vec::new();
+        for engine in engines {
+            match start_container(engine, image, job).await {
+                Ok(container) => {
+                    started = Some(container);
+                    break;
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        let Some(container) = started else {
+            return Outcome::error(errors.join("; "), String::new());
+        };
+        container
+    };
+    let mut container = container;
+    let port = if let Some(port) = container.port {
+        port
+    } else {
+        match published_port(&container).await {
+            Ok(port) => {
+                container.port = Some(port);
+                port
+            }
+            Err(error) => return Outcome::error(error, container_logs(&mut container).await),
+        }
     };
     let url = format!("http://127.0.0.1:{port}/2015-03-31/functions/function/invocations");
     let client = match reqwest::Client::builder()
@@ -543,7 +695,9 @@ async fn execute_rie(job: &Job, image: &str, payload: Vec<u8>) -> Outcome {
         .build()
     {
         Ok(client) => client,
-        Err(error) => return Outcome::error(error.to_string(), container_logs(&container).await),
+        Err(error) => {
+            return Outcome::error(error.to_string(), container_logs(&mut container).await);
+        }
     };
     let response = loop {
         match client
@@ -563,7 +717,7 @@ async fn execute_rie(job: &Job, image: &str, payload: Vec<u8>) -> Outcome {
     let mut response = match response {
         Ok(response) => response,
         Err(error) => {
-            return Outcome::error(error.to_string(), container_logs(&container).await);
+            return Outcome::error(error.to_string(), container_logs(&mut container).await);
         }
     };
     let failed_header = response
@@ -580,28 +734,39 @@ async fn execute_rie(job: &Job, image: &str, payload: Vec<u8>) -> Outcome {
             Ok(Some(_)) => {
                 return Outcome::error(
                     "RIE response exceeds 6 MiB",
-                    container_logs(&container).await,
+                    container_logs(&mut container).await,
                 );
             }
             Ok(None) => break,
             Err(error) => {
-                return Outcome::error(error.to_string(), container_logs(&container).await);
+                return Outcome::error(error.to_string(), container_logs(&mut container).await);
             }
         }
     }
-    let logs = container_logs(&container).await;
+    let logs = container_logs(&mut container).await;
     if !status.is_success() {
         return Outcome::error(
             format!("RIE returned {status}"),
             format!("{logs}{}", String::from_utf8_lossy(&body)),
         );
     }
-    match serde_json::from_slice(&body) {
-        Ok(payload) => Outcome {
-            payload,
-            logs,
-            failed: failed_header,
-        },
+    match serde_json::from_slice::<Value>(&body) {
+        Ok(payload) => {
+            // Some RIE runtimes return the standard error envelope without an
+            // error header (and with HTTP 200).
+            let runtime_error = payload["errorType"].is_string()
+                && payload["errorMessage"].is_string()
+                && payload["requestId"].is_string()
+                && payload["stackTrace"].is_array();
+            if warm {
+                pool.put(&job.arn, key, container);
+            }
+            Outcome {
+                payload,
+                logs,
+                failed: failed_header || runtime_error,
+            }
+        }
         Err(error) => Outcome::error(
             format!("RIE response must contain one JSON value: {error}"),
             logs,
@@ -618,5 +783,111 @@ impl Drop for ProcessGroup {
         unsafe {
             libc::kill(-self.0, libc::SIGKILL);
         }
+    }
+}
+
+#[cfg(test)]
+mod rie_tests {
+    use super::*;
+
+    #[test]
+    fn warm_binding_is_opt_in_and_validated() {
+        for (input, expected) in [
+            (json!({"container": "worker:latest"}), false),
+            (json!({"container": "worker:latest", "warm": true}), true),
+            (json!({"container": "worker:latest", "warm": false}), false),
+        ] {
+            let executor: Executor = serde_json::from_value(input).unwrap();
+            executor.validate().unwrap();
+            assert!(matches!(executor, Executor::Container { warm, .. } if warm == expected));
+        }
+        assert!(
+            serde_json::from_value::<Executor>(json!({"container": "worker", "warm": "yes"}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<Executor>(json!({"rie": "worker:latest"})).is_err());
+        assert!(
+            serde_json::from_value::<Executor>(
+                json!({"url": "http://localhost:8080", "warm": true})
+            )
+            .is_err()
+        );
+    }
+
+    // Build demos/lambda-warm/Containerfile as roto-lambda-warm:latest first.
+    #[tokio::test]
+    #[ignore = "requires a running container engine and the lambda-warm demo image"]
+    async fn rie_reuses_state_separates_logs_and_discards_timed_out_containers() {
+        let pool = RiePool::default();
+        let mut job = Job {
+            executor: Executor::Container {
+                container: "roto-lambda-warm:latest".into(),
+                warm: true,
+            },
+            arn: format!(
+                "arn:aws:lambda:us-east-1:123456789012:function:test-{}",
+                roto_core::ids::request_id()
+            ),
+            request_id: roto_core::ids::request_id(),
+            revision: "one".into(),
+            region: "us-east-1".into(),
+            endpoint: "http://localhost:5070".into(),
+            environment: BTreeMap::new(),
+            timeout: 30,
+            memory_size: 128,
+            event: json!({"label": "first"}),
+            client_context: None,
+        };
+        let first = execute(&job, &pool).await;
+        assert!(!first.failed, "{} {}", first.payload, first.logs);
+        assert_eq!(first.payload["count"], 1);
+        assert!(first.logs.contains("warm-demo: first"), "{}", first.logs);
+        let id = pool.0.lock().unwrap().idle[0].container.id.clone();
+        job.request_id = roto_core::ids::request_id();
+        job.event = json!({"label": "second"});
+        let second = execute(&job, &pool).await;
+        assert!(!second.failed, "{} {}", second.payload, second.logs);
+        assert_eq!(second.payload["count"], 2);
+        assert_ne!(first.payload["requestId"], second.payload["requestId"]);
+        assert!(second.logs.contains("warm-demo: second"));
+        assert!(!second.logs.contains("warm-demo: first"));
+        assert_eq!(pool.0.lock().unwrap().idle[0].container.id, id);
+        job.event = json!({"fail": true});
+        assert!(execute(&job, &pool).await.failed);
+        job.event = json!({});
+        assert_eq!(execute(&job, &pool).await.payload["count"], 4);
+        job.revision = "two".into();
+        assert_eq!(execute(&job, &pool).await.payload["count"], 1);
+        // Cancel the invocation while it owns a warm container.
+        job.event = json!({"sleep": 2});
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), execute(&job, &pool))
+                .await
+                .is_err()
+        );
+        assert!(pool.0.lock().unwrap().idle.is_empty());
+        job.event = json!({});
+        assert_eq!(execute(&job, &pool).await.payload["count"], 1);
+        // Overlapping calls must not share the same runtime.
+        job.event = json!({"sleep": 0.5});
+        let mut other = job.clone();
+        other.request_id = roto_core::ids::request_id();
+        let (left, right) = tokio::join!(execute(&job, &pool), execute(&other, &pool));
+        assert!(!left.failed && !right.failed);
+        assert_ne!(left.payload["count"], right.payload["count"]);
+        assert_eq!(pool.0.lock().unwrap().idle.len(), 2);
+        for entry in pool.0.lock().unwrap().idle.iter_mut() {
+            entry.used = std::time::Instant::now() - Duration::from_secs(301);
+        }
+        pool.expire();
+        assert!(pool.0.lock().unwrap().idle.is_empty());
+        job.event = json!({});
+        job.executor = Executor::Container {
+            container: "roto-lambda-warm:latest".into(),
+            warm: false,
+        };
+        assert_eq!(execute(&job, &pool).await.payload["count"], 1);
+        assert_eq!(execute(&job, &pool).await.payload["count"], 1);
+        assert!(pool.0.lock().unwrap().idle.is_empty());
     }
 }

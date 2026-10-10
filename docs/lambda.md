@@ -61,6 +61,22 @@ an empty array and `roto.null` represents JSON null. Captured locals survive
 invocations. Lua errors fail the invocation, and results have a 6 MiB limit.
 `print` writes to the server console rather than invocation logs.
 
+For a stateful Lua placeholder, capture a counter outside the callback:
+
+```lua
+local invocations = 0
+roto.lambda.function_("lua-counter", {
+  handler = function(event, context)
+    invocations = invocations + 1
+    return {count = invocations, requestId = context.request_id}
+  end,
+})
+```
+
+This closure retains its state until restart regardless of the RIE `warm` option,
+which applies only to container executors. Use `handler` for Lua callbacks; the
+serialized `inline` executor ID is internal and is not a user binding option.
+
 Inline functions use the normal invocation and event delivery machinery. Their
 bindings are process-local: rerun setup after restarting. Already-persisted jobs
 referencing an earlier process's inline handler fail rather than invoke a new
@@ -102,6 +118,43 @@ with SQS failure injection.
 
 ## Command executor
 
+Bind an echo command to function metadata created through the AWS API:
+
+```lua
+roto.lambda.bind("command-echo", {
+  command = {"sh", "-c", "cat"},
+})
+```
+
+To create the function and configure every command binding option together:
+
+```lua
+roto.lambda.function_("process-upload", {
+  timeout = 10,
+  memory_size = 256,
+  description = "Run a local Python handler",
+  environment = {MODE = "development"},
+  executor = {
+    command = {"python3", "handler.py"},
+    cwd = "./workers", -- Relative to this setup.lua file.
+    env = {DEBUG = "1"},
+  },
+})
+```
+
+Place this handler in `workers/handler.py` beside the setup script:
+
+```python
+import json
+import os
+import sys
+
+print("processing upload", file=sys.stderr)
+event = json.load(sys.stdin)
+json.dump({"received": event, "mode": os.environ["MODE"]}, sys.stdout)
+```
+
+
 `command` is an argv array. Shell syntax requires an explicit `["sh", "-c", "..."]`.
 `cwd` is resolved relative to the setup Lua file; it defaults to that file's directory.
 Use an absolute executable path when selecting a particular interpreter or local binary.
@@ -126,6 +179,31 @@ container isolation or Lambda memory-limit enforcement.
 
 ## HTTP executor
 
+Bind an already running JSON handler:
+
+```lua
+roto.lambda.bind("http-worker", {
+  url = "http://127.0.0.1:8080/invoke",
+  headers = {
+    ["authorization"] = "Bearer local-demo-token",
+    ["x-worker-mode"] = "development",
+  },
+})
+```
+
+Or create the metadata and binding in one step. Headers are optional:
+
+```lua
+roto.lambda.function_("http-echo", {
+  timeout = 10,
+  executor = {url = "http://127.0.0.1:8080/echo"},
+})
+```
+
+The HTTP handler runs separately; this binding does not start it. It receives the
+same JSON event that a command reads from stdin.
+
+
 Roto POSTs the event JSON to `url`, with the configured headers and invocation metadata in
 `X-Roto-Invocation-Id`, `X-Roto-Function-Arn`, and `X-Roto-Region`. Synchronous client context,
 if supplied, is passed in `X-Roto-Client-Context`. Content-Type is `application/json` unless
@@ -137,19 +215,102 @@ logs. Stdout, stderr, and HTTP response bodies each have a 6 MiB limit.
 
 ## Lambda container images
 
-For an image built with the AWS Lambda Runtime Interface Emulator (RIE), bind its image name:
+`container = "my-worker:latest"` names an image already available in your local
+Podman or Docker image store. Roto launches that image and sends invocation events
+to its Runtime Interface Emulator (RIE). RIE provides the local HTTP invocation
+endpoint and connects it to the Lambda runtime/client inside the container. This
+binding runs the image locally; it does not deploy a function to AWS.
+
+`warm = true` keeps an idle container available for later invocations, preserving
+its initialized runtime and handler state. `warm = false` (the default) starts a
+fresh container for each invocation. This option applies only to `container`
+executors; HTTP executors use an external server whose lifetime Roto does not manage.
+
+AWS Lambda runtime base images (for example `public.ecr.aws/lambda/python:3.12`)
+include the Runtime Interface Emulator (RIE) and Runtime Interface Client (RIC).
+AWS OS-only images include RIE but require you to add the runtime/client. Custom
+images may be valid for AWS Lambda without including RIE. Roto's `container` executor
+requires RIE in the image and an entrypoint that starts it locally on port 8080;
+Roto does not inject or mount the emulator. See [AWS's container image requirements](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html).
+
+For a RIE-compatible image, bind its image name:
 
 ```lua
-roto.lambda.bind("image-worker", {rie = "my-worker:latest"})
+-- Fresh container for every invocation (the default).
+roto.lambda.bind("cold-worker", {container = "my-worker:latest", warm = false})
+
+-- Preserve the runtime process and /tmp between sequential invocations.
+roto.lambda.bind("warm-worker", {container = "my-worker:latest", warm = true})
+
+-- Create metadata and a warm binding together.
+roto.lambda.function_("image-worker", {
+  timeout = 30,
+  memory_size = 256,
+  environment = {
+    AWS_ACCESS_KEY_ID = "testing",
+    AWS_SECRET_ACCESS_KEY = "testing",
+  },
+  executor = {container = "my-worker:latest", warm = true},
+})
 ```
 
 Roto starts the image with Podman when available, or Docker otherwise, publishes container port
 8080 to an ephemeral loopback port, discovers that port, and POSTs the event to RIE's
-`/2015-03-31/functions/function/invocations` endpoint. The container is removed after each
-invocation. The image must already exist locally and include a Lambda Runtime Interface Client
+`/2015-03-31/functions/function/invocations` endpoint. With `warm = false` (or omitted),
+the container is removed after each invocation. With `warm = true`, an idle container is
+reused for the same function and configuration. The image must already exist locally and include a Lambda Runtime Interface Client
 and RIE-compatible entrypoint; roto does not build or pull images. Function timeout includes
 container startup time, so set a longer timeout for image-based functions. Container stdout and
 stderr are returned as invocation logs.
+
+Warm containers retain module globals, initialized SDK clients, and temporary files.
+Overlapping invocations use separate containers; each container handles one invocation
+at a time. Handler errors can leave the container warm. Timeouts, transport errors,
+invalid responses discard the executing container. Rebinding, function
+configuration/code updates, deletion, and reset discard affected idle containers;
+service shutdown releases the pool. Idle containers expire after five
+minutes; at most 32 idle containers are retained across a Lambda service instance.
+Warm state is process-local and is not restored after restarting Roto.
+
+Invocation logs include only the new container output. Use the runtime's handler
+context for request IDs: `ROTO_INVOCATION_ID` is not injected in warm mode because
+process environment variables cannot change between invocations. Client context is
+still passed as `ROTO_CLIENT_CONTEXT`; changing it selects a fresh container.
+RIE generates the runtime request ID, which can differ from Roto's invocation ID.
+
+### Try warm and cold invocations
+
+The [warm counter demo](../demos/lambda-warm/setup.lua) creates both functions using
+an image whose Python handler increments a module-level counter:
+
+```sh
+podman build -t roto-lambda-warm:latest \
+  -f demos/lambda-warm/Containerfile demos/lambda-warm
+roto-server --ephemeral --setup demos/lambda-warm/setup.lua
+```
+
+Use Docker instead of Podman if needed. Invoke each function twice:
+
+```sh
+aws --endpoint-url http://localhost:5070 lambda invoke \
+  --function-name warm-counter --cli-binary-format raw-in-base64-out \
+  --payload '{"label":"hello"}' result.json
+cat result.json
+# Repeat: count becomes 2. For cold-counter, count stays 1.
+```
+
+The setup is:
+
+```lua
+roto.lambda.function_("warm-counter", {
+  timeout = 30,
+  executor = {container = "roto-lambda-warm:latest", warm = true},
+})
+roto.lambda.function_("cold-counter", {
+  timeout = 30,
+  executor = {container = "roto-lambda-warm:latest", warm = false},
+})
+```
 
 See the [container invocation demo](demos.md#invoke-a-lambda-container-image) for a sample
 `Containerfile` and Lua setup. If a handler calls AWS APIs against roto, start roto on a host
@@ -195,6 +356,36 @@ Standard SQS queues can invoke these executors through event-source mappings.
 Use `--setup setup.lua` for Lua resource setup and executor bindings; see
 [Lua setup and SQS delivery](lua.md) for supported options and retry behavior.
 
+## SQS handler configuration in Lua
+
+Create a queue and function together, then enable partial batch failure reporting:
+
+```lua
+local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
+local worker = roto.lambda.function_("process-orders", {
+  timeout = 10,
+  handler = function(event, context)
+    local failures = {}
+    for _, record in ipairs(event.Records) do
+      if record.body == "retry" then
+        failures[#failures + 1] = {itemIdentifier = record.messageId}
+      end
+    end
+    return {batchItemFailures = roto.array(failures)}
+  end,
+})
+roto.lambda.event_source(queue, worker, {
+  batch_size = 5,
+  enabled = true,
+  report_batch_item_failures = true,
+})
+```
+
+Messages whose body is `retry` become visible again after the queue visibility
+timeout; successful messages are deleted. Replace `handler` with any of the
+executor bindings above to use a process, HTTP service, or warm container.
+See [SQS delivery behavior](lua.md#sqs-delivery-behavior) for the retry contract.
+
 ## Full SDK smoke test
 
 ```sh
@@ -215,6 +406,24 @@ cargo run -p roto-server -- --ephemeral --setup examples/demo/setup.lua \
   --http-routes examples/demo/http-routes.json
 curl 'http://localhost:5070/roto-http/echo/orders/42?tag=one&tag=two'
 ```
+
+For a custom route handler, create the function in Lua setup:
+
+```lua
+roto.lambda.function_("process-order", {
+  handler = function(event, context)
+    return {
+      statusCode = 201,
+      headers = {["content-type"] = "application/json"},
+      body = '{"status":"created"}',
+    }
+  end,
+})
+```
+
+Save the following route file as `routes.json` and start
+`roto-server --ephemeral --setup setup.lua --http-routes routes.json`.
+A `POST /roto-http/orders/42` invokes this handler.
 
 The route file contains a `routes` array. Each route specifies `method`, `path`,
 `function` (a Lambda name or full ARN), and optionally `region` (default

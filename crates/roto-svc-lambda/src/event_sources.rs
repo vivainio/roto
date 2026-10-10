@@ -392,7 +392,7 @@ impl Lambda {
         }
         job.event = event.clone();
         self.record(&job, "running")?;
-        let outcome = runtime.block_on(execute(&job));
+        let outcome = runtime.block_on(execute(&job, &self.rie_pool));
         self.finish(&job, &outcome, 1, false)?;
         if outcome.failed {
             self.processing_result(ctx, id, "Function error");
