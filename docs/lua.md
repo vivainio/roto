@@ -1,7 +1,8 @@
 # Lua setup and SQS → Lambda
 
-Lua declares resources and wires queues to Lambda functions. Functions execute a local
-process or POST their event to an HTTP endpoint. Lua does not execute Lambda handlers.
+Lua declares resources and wires queues to Lambda functions. Functions can execute a local
+process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
+through RIE. Lua does not execute Lambda handlers.
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
 ```sh
@@ -67,6 +68,7 @@ local handler = roto.lambda.function_("process-job", {
   executor = { command = { "sh", "./process_jobs.sh" }, env = { DEBUG = "1" } },
 })
 -- Alternatively: executor = { url = "http://localhost:8080/jobs", headers = {} }
+-- Or invoke an existing Lambda image: executor = { rie = "my-worker:latest" }
 
 local mapping = roto.lambda.event_source(queue, handler, {
   batch_size = 10,
@@ -85,6 +87,10 @@ omitted ones remain. Function timeout/memory/description/environment and mapping
 are reconciled to the supplied values or helper defaults. Omitting a resource from the script
 does not delete it.
 
+Use `roto.lambda.bind(name, executor)` to bind an executor to function metadata created through
+the AWS API. `function_` creates/updates the metadata and binds in one step. Executors may be
+commands, HTTP endpoints, or RIE container image names; see [the Lambda reference](lambda.md).
+
 The script runs once on each startup after service initialization, before the HTTP listener
 and delivery workers start. `--account-id` and `--setup-region` (default `us-east-1`) set its
 scope. `roto.account_id`, `roto.region`, and `roto.endpoint` expose that scope to Lua.
@@ -92,9 +98,8 @@ scope. `roto.account_id`, `roto.region`, and `roto.endpoint` expose that scope t
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
 Setup errors include a source location and stop startup. Changes from earlier successful
-operations remain persisted. Setup scripts are trusted local code; executor bindings are
-local configuration and cannot be submitted through AWS APIs. Lua bindings for full function
-ARNs override the corresponding JSON binding; untouched JSON bindings remain available.
+operations remain persisted. Setup scripts are trusted local code; executor bindings are local
+configuration and cannot be submitted through AWS APIs.
 
 ## Other service operations
 

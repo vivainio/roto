@@ -110,6 +110,25 @@ pub fn run(
         lua.to_value(&json!({"name":name,"url":url,"arn":format!("arn:aws:sqs:{}:{}:{name}",q_ctx.region,q_ctx.account_id)}))
     })?)?;
 
+    let (l_service, l_ctx, bind_parent) = (lambda.clone(), ctx.clone(), parent.clone());
+    lambda_api.set(
+        "bind",
+        lua.create_function(move |lua, (name, value): (String, LuaValue)| {
+            let mut executor: roto_svc_lambda::Executor = lua.from_value(value)?;
+            executor.validate().map_err(mlua::Error::external)?;
+            if let roto_svc_lambda::Executor::Command { cwd, .. } = &mut executor {
+                *cwd = Some(
+                    cwd.take()
+                        .map_or_else(|| bind_parent.clone(), |p| bind_parent.join(p)),
+                );
+            }
+            l_service
+                .bind_executor(&l_ctx, &name, executor)
+                .map_err(mlua::Error::external)?;
+            lua.to_value(&json!({"name":name}))
+        })?,
+    )?;
+
     let (l_service, l_ctx) = (lambda.clone(), ctx.clone());
     lambda_api.set("function_",lua.create_function(move |lua,(name,opts): (String,Table)| {
         options(&opts,&["timeout","executor","environment","description","memory_size"])?;

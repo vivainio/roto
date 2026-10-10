@@ -1,16 +1,15 @@
 # Local Lambda executors
 
-Start roto with local executor bindings:
+Bind local executors through the Lua setup script:
 
 ```sh
-cargo run -p roto-server -- --ephemeral --lambda-executors examples/lambda/executors.json
+cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.lua
 ```
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using the
-same function name as a binding. Bindings may use full function ARNs for account/region-specific
-configuration. A full ARN binding takes precedence over a name binding; bare names apply in
-every account/region. No function is created implicitly by the executor file. Restart roto to
-load changes to that file. The file is local configuration, never accepted through an AWS API.
+name bound by the setup script. `roto.lambda.bind(name, executor)` works for functions created
+before or after startup. `roto.lambda.function_` can create/update metadata and bind an executor
+in one step. Bindings are local configuration and are never accepted through an AWS API.
 
 For example, with local AWS credentials configured:
 
@@ -23,10 +22,10 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
   --payload '{"hello":"world"}' result.json
 ```
 
-## Command contract
+## Command executor
 
 `command` is an argv array. Shell syntax requires an explicit `["sh", "-c", "..."]`.
-`cwd` is resolved relative to the executor config file; it defaults to that file's directory.
+`cwd` is resolved relative to the setup Lua file; it defaults to that file's directory.
 Use an absolute executable path when selecting a particular interpreter or local binary.
 The example uses `python3` from PATH and has no Python dependencies.
 
@@ -47,7 +46,7 @@ Configure SDK credentials in the inherited environment, function environment, or
 Commands execute with roto's OS permissions; this is a local execution backend, with no
 container isolation or Lambda memory-limit enforcement.
 
-## HTTP contract
+## HTTP executor
 
 Roto POSTs the event JSON to `url`, with the configured headers and invocation metadata in
 `X-Roto-Invocation-Id`, `X-Roto-Function-Arn`, and `X-Roto-Region`. Synchronous client context,
@@ -57,6 +56,27 @@ explicitly overridden. Redirects are not followed.
 A 2xx response must contain one JSON result. Non-2xx responses, connection errors, invalid
 JSON, and timeouts become function errors. Non-2xx response bodies are retained as diagnostic
 logs. Stdout, stderr, and HTTP response bodies each have a 6 MiB limit.
+
+## Lambda container images
+
+For an image built with the AWS Lambda Runtime Interface Emulator (RIE), bind its image name:
+
+```lua
+roto.lambda.bind("image-worker", {rie = "my-worker:latest"})
+```
+
+Roto starts the image with Podman when available, or Docker otherwise, publishes container port
+8080 to an ephemeral loopback port, discovers that port, and POSTs the event to RIE's
+`/2015-03-31/functions/function/invocations` endpoint. The container is removed after each
+invocation. The image must already exist locally and include a Lambda Runtime Interface Client
+and RIE-compatible entrypoint; roto does not build or pull images. Function timeout includes
+container startup time, so set a longer timeout for image-based functions. Container stdout and
+stderr are returned as invocation logs.
+
+See the [container invocation demo](../../demos/lambda-container/README.md) for a sample
+`Containerfile` and Lua setup. If a handler calls AWS APIs against roto, start roto on a host
+interface reachable from the container (for example `--host 0.0.0.0`); `AWS_ENDPOINT_URL` is
+rewritten to the host alias for the selected container engine.
 
 ## Invocation and S3 events
 

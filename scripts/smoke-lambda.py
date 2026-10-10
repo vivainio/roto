@@ -61,14 +61,17 @@ def smoke():
     threading.Thread(target=http.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory(prefix="roto-lambda-smoke-") as temp:
-            config = Path(temp) / "executors.json"
-            config.write_text(json.dumps({"functions": {
-                "process-upload": {"command": [sys.executable, str(Path(__file__).resolve()), "--handler"]},
-                "http-handler": {"url": f"http://127.0.0.1:{http.server_port}/invoke"},
-            }}))
+            setup = Path(temp) / "setup.lua"
+            command = ", ".join(json.dumps(arg) for arg in
+                                  [sys.executable, str(Path(__file__).resolve()), "--handler"])
+            url = json.dumps(f"http://127.0.0.1:{http.server_port}/invoke")
+            setup.write_text(
+                f'roto.lambda.bind("process-upload", {{command = {{{command}}}}})\n'
+                f'roto.lambda.bind("http-handler", {{url = {url}}})\n'
+            )
             with (Path(temp) / "server.log").open("w+") as log:
                 process = subprocess.Popen([str(root / "target/debug/roto-server"), "--ephemeral",
-                                            "--port", str(port), "--lambda-executors", str(config)],
+                                            "--port", str(port), "--setup", str(setup)],
                                            stdout=log, stderr=log)
                 try:
                     deadline = time.monotonic() + 10

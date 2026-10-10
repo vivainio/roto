@@ -15,8 +15,7 @@ roto-server --ephemeral --trace moto-trace.jsonl
 | `--data-dir` | `roto-data` | Persistent storage directory; also `ROTO_DATA_DIR` |
 | `--ephemeral` | Off | In-memory databases and temporary S3 files |
 | `--durable` | Off | SQLite `synchronous=FULL`, syncing each commit |
-| `--lambda-executors` | None | JSON bindings to local command or HTTP Lambda executors |
-| `--setup` | None | Lua resource setup and executor bindings before listening or processing events |
+| `--setup` | None | Lua resource setup and local Lambda executor bindings before listening or processing events |
 | `--setup-region` | `us-east-1` | Region used by Lua setup |
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |

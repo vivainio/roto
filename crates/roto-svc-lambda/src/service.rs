@@ -207,7 +207,7 @@ impl Lambda {
             .cloned()
             .ok_or_else(|| {
                 invalid(format!(
-                    "No local executor bound to {arn}; configure --lambda-executors"
+                    "No local executor bound to {arn}; bind one with Lua setup"
                 ))
             })?;
         let environment = value["Environment"]["Variables"]
@@ -226,6 +226,7 @@ impl Lambda {
             endpoint: ctx.base_url.clone(),
             environment,
             timeout: value["Timeout"].as_u64().unwrap(),
+            memory_size: value["MemorySize"].as_u64().unwrap_or(128),
             event,
             client_context,
         })

@@ -18,6 +18,7 @@ nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "Lua setup" = "lua.md" },
+  { "Demos" = "demos.md" },
   { "Runtime hooks (planned)" = "runtime-hooks.md" },
   { "Integration testing" = "integration-testing.md" },
   { "Server reference" = "server.md" },
@@ -104,6 +105,10 @@ pygments_lang_class = true
 [project.markdown_extensions.pymdownx.magiclink]
 [project.markdown_extensions.pymdownx.mark]
 [project.markdown_extensions.pymdownx.smartsymbols]
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true
+restrict_base_path = true
 [project.markdown_extensions.pymdownx.superfences]
 custom_fences = [
   { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" }

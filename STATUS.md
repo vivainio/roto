@@ -104,11 +104,9 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 
 ## Local Lambda execution
 
-`--lambda-executors <file.json>` binds function names or full ARNs to command argv arrays or
-HTTP URLs. AWS APIs create/update the function metadata; local bindings select execution.
-See [examples/lambda/README.md](examples/lambda/README.md) for configuration and contracts.
-`--setup <file.lua>` declares resources, command/HTTP bindings, and SQS mappings using embedded
-Lua. See [examples/lua/README.md](examples/lua/README.md). SQS failures retry through visibility
+`--setup <file.lua>` declares resources and binds command, HTTP, or RIE container-image
+executors using embedded Lua. See [examples/lambda/README.md](examples/lambda/README.md) for
+configuration and [the container demo](demos/lambda-container/README.md). SQS failures retry through visibility
 timeout and queue DLQ redrive, with optional partial batch responses.
 Async jobs retry up to three attempts and persist across restart. Invocation history is at
 `GET /roto-api/lambda/invocations`; pending/failed S3 handoffs at `GET /roto-api/s3/notifications`.
