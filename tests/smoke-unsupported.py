@@ -63,14 +63,14 @@ def smoke():
                 expect_error(lambda: dynamodb.describe_table(TableName="missing-table"), "ResourceNotFoundException")
                 assert snapshot()["calls"] == []
                 for _ in range(2):
-                    expect_error(lambda: iot.publish(topic="devices/123", qos=1, payload=b"private-payload"), "UnrecognizedClientException")
+                    expect_error(lambda: iot.update_thing_shadow(thingName="devices/123", payload=b"private-payload"), "UnrecognizedClientException")
                 expect_error(lambda: sts.decode_authorization_message(EncodedMessage="private-token"), "NotImplemented")
                 expect_error(lambda: lambda_.get_alias(FunctionName="demo", Name="live"), "NotImplemented")
                 expect_error(lambda: dynamodb.execute_statement(Statement="SELECT * FROM missing"), "NotImplemented")
                 calls = {c["service"]: c for c in snapshot()["calls"]}
                 assert len(calls) == 4, calls
                 assert calls["iotdata"]["count"] == 2 and calls["iotdata"]["operation"] is None
-                assert calls["iotdata"]["path"] == "/topics/devices%2F123", calls
+                assert calls["iotdata"]["path"] == "/things/devices%2F123/shadow", calls
                 assert calls["sts"]["operation"] == "DecodeAuthorizationMessage"
                 assert calls["lambda"]["operation"] == "GetAlias"
                 assert calls["dynamodb"]["operation"] == "ExecuteStatement"
@@ -83,7 +83,7 @@ def smoke():
                     urllib.request.urlopen(request).close()
                     assert snapshot() == {"calls": [], "dropped_calls": 0}
                     if path == "/roto-api/reset":
-                        expect_error(lambda: iot.publish(topic="devices/123", payload=b""), "UnrecognizedClientException")
+                        expect_error(lambda: iot.update_thing_shadow(thingName="devices/123", payload=b"private-payload"), "UnrecognizedClientException")
             finally:
                 proc.terminate()
                 proc.wait(timeout=10)

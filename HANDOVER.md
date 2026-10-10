@@ -101,3 +101,60 @@ Temporary files may disappear; the commands above regenerate the evidence.
 5. Once the cause is established, add a focused regression at the responsible
    layer, then rerun the focused test, full S3 Moto suite and demo smoke. Keep the
    original version-listing assertions intact.
+
+---
+
+# IoT WebSocket and API Gateway v2 handover
+
+Recorded 2026-10-10. A native, non-Moto integration smoke test now covers the
+local WebSocket topic channel and API Gateway Management API callbacks. API
+Gateway v2 control-plane and route execution are still unimplemented.
+
+## Current implementation
+
+- `crates/roto-server/src/websocket.rs` owns the shared connection hub.
+- Roto exposes `ws://localhost:5070/roto-api/ws` and the alias
+  `ws://localhost:5070/roto-api/iot/ws`. Clients receive a connection ID and
+  use JSON `subscribe` / `unsubscribe` messages. Topic filters support `+` and
+  `#`.
+- IoT Data Plane `Publish` delivers UTF-8 and base64-wrapped binary payloads to
+  connected matching subscribers. Delivery is local and best-effort; MQTT,
+  retained messages, durable offline delivery, and MQTT acknowledgements are
+  not implemented.
+- API Gateway Management API `PostToConnection` uses the same connection hub
+  and sends text or binary WebSocket frames. The API ID and stage are not
+  configured or isolated.
+- `docs/iot.md` documents the current endpoints and protocol.
+
+## Native coverage
+
+`tests/smoke-websocket.py` uses only Python's standard library. It starts an
+ephemeral Roto server and exercises two live WebSocket clients, wildcard topic
+delivery, unsubscribe, binary payloads, Management API text/binary callbacks,
+closed-connection `GoneException`, and invalid QoS handling. It does not use
+Moto or an AWS SDK.
+
+Verified on this worktree:
+
+```sh
+cargo build -p roto-server --locked
+python3 tests/smoke-websocket.py
+python3 -m py_compile tests/smoke-websocket.py
+git diff --check
+```
+
+All four commands passed; the smoke test printed:
+`PASS: IoT topic subscriptions, wildcard delivery, binary payloads, and API Gateway callbacks`.
+
+## Remaining API Gateway v2 work
+
+There is no API Gateway v2 service implementation yet. Roto does not create or
+deploy HTTP/WebSocket APIs, configure stages/routes/integrations, route API
+WebSocket messages, or invoke `$connect`, `$disconnect`, and message-route
+integrations. The passing smoke test covers the existing Management API
+callback path, not API Gateway v2 API creation or routing.
+
+When implementing API Gateway v2, extend native coverage to create a WebSocket
+API, configure a stage and routes/integrations, connect through that API's data
+plane URL, exercise its message route, and send a callback through
+`PostToConnection`. Keep the existing custom IoT socket flow covered as well.

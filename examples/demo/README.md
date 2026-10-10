@@ -47,7 +47,7 @@ or verify the fixture contract with the standard-library-only smoke harness:
 
 ```sh
 cargo build -p roto-server --locked
-python3 scripts/smoke-demo.py
+python3 tests/smoke-demo.py
 ```
 
 The harness starts and stops its own server on a free port and checks resource

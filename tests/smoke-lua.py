@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SDK smoke: Lua setup, SQS -> shell/HTTP, disabled mappings, and persisted restart.
 
-Run after cargo build -p roto-server with .venv-moto/bin/python scripts/smoke-lua.py.
+Run after cargo build -p roto-server with .venv-moto/bin/python tests/smoke-lua.py.
 """
 import json
 from pathlib import Path

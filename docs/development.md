@@ -88,7 +88,7 @@ names and item keys, then restarts roto and verifies items, indexes, TTL setting
 and STS credential routing:
 
 ```sh
-.venv-moto/bin/python scripts/smoke-dynamodb.py
+.venv-moto/bin/python tests/smoke-dynamodb.py
 ```
 
 To refresh vendored suites from the pinned upstream version:

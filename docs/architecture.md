@@ -28,7 +28,9 @@ The crate boundaries follow those responsibilities:
 | `roto-svc-*` | AWS service behavior, schemas, migrations, and service-specific protocol bindings. |
 
 The server currently wires handlers for CloudFormation, DynamoDB, EventBridge,
-IAM, Kinesis, KMS, Lambda, S3, Secrets Manager, SNS, SQS, SSM, and STS.
+IAM, Kinesis, KMS, Lambda, S3, Secrets Manager, SNS, SQS, SSM, and STS. A shared
+in-memory WebSocket hub handles IoT topic fan-out and API Gateway management
+callbacks to connected local clients.
 
 ## Request path
 

@@ -269,5 +269,5 @@ strict. Additional SDK checks cover wiring, index queries, updates, restart,
 account/region isolation, failure state, cleanup, and reset:
 
 ```sh
-.venv-moto/bin/python scripts/smoke-cloudformation.py
+.venv-moto/bin/python tests/smoke-cloudformation.py
 ```

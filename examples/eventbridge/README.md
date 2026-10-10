@@ -29,4 +29,4 @@ services. S3 emits object creation/deletion events for supported local operation
 using the [AWS S3 EventBridge envelope](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ev-events.html).
 
 Verification: after `cargo build -p roto-server`, run
-`.venv-moto/bin/python scripts/smoke-eventbridge.py`.
+`.venv-moto/bin/python tests/smoke-eventbridge.py`.
