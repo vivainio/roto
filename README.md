@@ -27,6 +27,32 @@ A [CloudFormation subset](docs/cloudformation.md) manages SQS, SNS, S3, DynamoDB
 IAM, and Lambda resources with persistent stacks, change sets, rollback attempts,
 references, outputs, and events.
 
+## Startup and memory
+
+Release-build measurements on an Apple M3 with 8 GiB RAM, macOS 27.0
+(seven fresh-process runs per mode):
+
+| Server state | Median startup | Median idle RSS |
+| --- | ---: | ---: |
+| Empty, ephemeral | 9.2 ms | 10.8 MiB |
+| Empty, persistent | 19.1 ms | 11.5 MiB |
+| Demo seed, ephemeral | 61.4 ms | 45.1 MiB |
+
+Startup runs from process spawn to a valid STS response. The first measured launch
+took 515 ms; all samples are retained. These are repeated starts with normal OS
+caches. See [methodology, API latency results, and raw measurements](docs/benchmarks.md).
+
+These startup and idle-memory costs make repeated disposable launches practical
+in test code: use a fresh `--ephemeral` process per test or test group for isolated
+state. Build the binary once, wait for readiness, and stop it in fixture cleanup.
+
+Run the small suite yourself; it needs only Python's standard library:
+
+```sh
+cargo build -p roto-server --release --locked
+python3 scripts/benchmark.py --output benchmark-results.json
+```
+
 ## Documentation
 
 ```sh

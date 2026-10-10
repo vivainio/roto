@@ -21,6 +21,7 @@ nav = [
   { "Demos" = "demos.md" },
   { "Runtime hooks (planned)" = "runtime-hooks.md" },
   { "Integration testing" = "integration-testing.md" },
+  { "Benchmarks" = "benchmarks.md" },
   { "Server reference" = "server.md" },
   { "Services" = [
     { "Coverage overview" = "services.md" },

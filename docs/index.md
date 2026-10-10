@@ -69,6 +69,9 @@ service coverage is narrower than LocalStack's; check
 Start with [Getting started](getting-started.md), check [service coverage](services.md),
 or read [Architecture](architecture.md) to work on the implementation.
 
+See [Benchmarks](benchmarks.md) for measured startup, idle RSS, and API latency,
+with a reproducible suite and raw results.
+
 The book also covers [Lua setup](lua.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),

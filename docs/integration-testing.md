@@ -61,8 +61,12 @@ Start a disposable server before running the test:
 roto-server --ephemeral --port 5070
 ```
 
-In a test fixture, start the server once for the test collection and stop it
-afterward; wait for `/roto-api/health` before creating clients. A unique trace
+In a test fixture, start a fresh `--ephemeral` server for each test or test group
+when you want isolated state. Roto's measured [startup time and idle memory](benchmarks.md)
+make repeated launches practical. Build once before the suite, use a free port for
+each process, and stop it in fixture cleanup. A server per test collection also
+works when tests intentionally share resources. Wait for `/roto-api/health`
+before creating clients. A unique trace
 ID keeps parallel tests' calls separate. The trace assertion checks that the
 SDK made the expected successful API request; keep ordinary state or response
 assertions too when the test needs to verify the resulting resource behavior.
