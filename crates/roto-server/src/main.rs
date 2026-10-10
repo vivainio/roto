@@ -1,6 +1,8 @@
 mod apigateway_v2;
 mod gateway;
 mod inspection;
+mod lua_service;
+mod lua_wire;
 mod setup;
 mod trace;
 mod unsupported;
@@ -49,6 +51,9 @@ struct Args {
     /// Region used by the Lua setup script.
     #[arg(long, default_value = "us-east-1")]
     setup_region: String,
+    /// Optional Lua service bundle directory or ZIP with a root manifest.json.
+    #[arg(long, env = "ROTO_LUA_SERVICES")]
+    lua_services: Option<PathBuf>,
     /// Write one JSON object per AWS HTTP request; request bodies and credentials are omitted.
     #[arg(long)]
     trace: Option<PathBuf>,
@@ -186,6 +191,26 @@ async fn main() {
         events.clone(),
     ];
     let mut services: HashMap<_, _> = handlers.into_iter().map(|h| (h.service(), h)).collect();
+    let lua_services =
+        lua_service::discover(store.clone(), args.lua_services).unwrap_or_else(|e| {
+            eprintln!("error discovering Lua services: {e}");
+            std::process::exit(1);
+        });
+    for handler in lua_services {
+        if services.contains_key(handler.service())
+            || matches!(
+                handler.service(),
+                "cloudformation" | "iotdata" | "execute-api" | "apigatewayv2"
+            )
+        {
+            eprintln!(
+                "error: Lua service {} conflicts with a Rust service",
+                handler.service()
+            );
+            std::process::exit(1);
+        }
+        services.insert(handler.service(), Arc::new(handler));
+    }
     let cloudformation =
         roto_svc_cloudformation::CloudFormationHandler::new(&store, services.clone())
             .unwrap_or_else(|e| {
@@ -608,7 +633,10 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
     let mut call =
         unsupported::Call::new(Some(handler.service()), &raw, &ctx, "not_implemented", None);
     let service_name = handler.service();
-    let mut operation = trace::operation(Some(service_name), &raw);
+    let mut operation = handler
+        .operation_name(&raw)
+        .or_else(|| trace::operation(Some(service_name), &raw));
+    call.operation = operation.clone();
     let started = std::time::Instant::now();
     let request = raw.clone();
     let context = ctx.clone();
@@ -769,8 +797,16 @@ mod discovery_tests {
         let lambda =
             roto_svc_lambda::LambdaHandler::unstarted(&store, Default::default(), sqs.0.clone())
                 .unwrap();
-        let handlers: Vec<Arc<dyn ServiceHandler>> =
-            vec![Arc::new(sts), Arc::new(sqs), Arc::new(lambda)];
+        let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
+            Arc::new(sts),
+            Arc::new(sqs),
+            Arc::new(lambda),
+            Arc::new(lua_service::test_service(
+                store.clone(),
+                "organizations",
+                None,
+            )),
+        ];
         Arc::new(App {
             services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
             store,
@@ -796,6 +832,67 @@ mod discovery_tests {
             .header("content-type", content_type)
             .body(Body::from(body.to_owned())).unwrap();
         handle(State(app.clone()), request).await
+    }
+
+    #[tokio::test]
+    async fn lua_service_routes_signed_and_unsigned_requests_and_records_trace() {
+        let app = app();
+        assert!(app.store.existing_db("organizations").is_none());
+        for (operation, signed) in [
+            ("CreateOrganization", false),
+            ("DescribeOrganization", true),
+            ("CreateAccount", true),
+        ] {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/")
+                .header(
+                    "x-amz-target",
+                    format!("AWSOrganizationsV20161128.{operation}"),
+                )
+                .header("content-type", "application/x-amz-json-1.1");
+            if signed {
+                builder = builder.header("authorization", "AWS4-HMAC-SHA256 Credential=test/20261010/us-east-1/organizations/aws4_request, SignedHeaders=host, Signature=test");
+            }
+            let response =
+                handle(State(app.clone()), builder.body(Body::from("{}")).unwrap()).await;
+            assert_eq!(
+                response.status().as_u16(),
+                if operation == "CreateAccount" {
+                    501
+                } else {
+                    200
+                }
+            );
+        }
+        let trace = app.trace.snapshot(None);
+        assert_eq!(trace["entries"][0]["service"], "organizations");
+        assert_eq!(trace["entries"][0]["operation"], "CreateOrganization");
+        assert_eq!(trace["entries"][2]["outcome"], "unsupported");
+        assert_eq!(reset(State(app.clone())).await.status(), StatusCode::OK);
+        let handler = &app.services["organizations"];
+        let response = handler
+            .handle(
+                &RequestContext {
+                    account_id: app.account_id.clone(),
+                    region: "us-east-1".into(),
+                    access_key: None,
+                    request_id: "reset".into(),
+                    base_url: "http://localhost".into(),
+                },
+                &RawRequest {
+                    method: "POST".into(),
+                    path: "/".into(),
+                    headers: vec![(
+                        "x-amz-target".into(),
+                        "AWSOrganizationsV20161128.DescribeOrganization".into(),
+                    )],
+                    body: b"{}".to_vec(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(response.status, 400);
     }
 
     #[tokio::test]
@@ -881,8 +978,8 @@ roto.intercept_request("iotdata", "Publish", function() return {status=429, body
         for _ in 0..2 {
             let response = request(
                 &app,
-                "iotdata",
-                "/topics/devices%2F123",
+                "unregistered",
+                "/unregistered",
                 "private-payload",
                 "application/octet-stream",
             )
@@ -913,9 +1010,12 @@ roto.intercept_request("iotdata", "Publish", function() return {status=429, body
         let snapshot = unsupported_calls(State(app.clone())).await.0;
         assert_eq!(snapshot["calls"].as_array().unwrap().len(), 3);
         let calls = snapshot["calls"].as_array().unwrap();
-        let iot = calls.iter().find(|c| c["service"] == "iotdata").unwrap();
-        assert_eq!(iot["count"], 2);
-        assert_eq!(iot["operation"], serde_json::Value::Null);
+        let unroutable = calls
+            .iter()
+            .find(|c| c["service"] == "unregistered")
+            .unwrap();
+        assert_eq!(unroutable["count"], 2);
+        assert_eq!(unroutable["operation"], serde_json::Value::Null);
         let lambda = calls.iter().find(|c| c["service"] == "lambda").unwrap();
         assert_eq!(lambda["operation"], "GetAlias");
         let sts = calls.iter().find(|c| c["service"] == "sts").unwrap();
@@ -932,6 +1032,19 @@ roto.intercept_request("iotdata", "Publish", function() return {status=429, body
     #[tokio::test]
     async fn normal_service_errors_and_successes_are_not_discovery_entries() {
         let app = app();
+        let response = request(
+            &app,
+            "iotdata",
+            "/topics/devices%2F123",
+            "private-payload",
+            "application/octet-stream",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let trace = app.trace.snapshot(None);
+        assert_eq!(trace["entries"][0]["service"], "iotdata");
+        assert_eq!(trace["entries"][0]["operation"], "Publish");
+        assert_eq!(trace["entries"][0]["outcome"], "success");
         let response = request(
             &app,
             "sts",

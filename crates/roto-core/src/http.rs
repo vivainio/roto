@@ -47,6 +47,11 @@ pub trait ServiceHandler: Send + Sync {
     fn service(&self) -> &'static str;
     fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError>;
 
+    /// Optional modeled operation name for protocols without X-Amz-Target.
+    fn operation_name(&self, _req: &RawRequest) -> Option<String> {
+        None
+    }
+
     /// Whether this service should handle an unsigned request that carries no credential scope
     /// (for example STS `AssumeRoleWithWebIdentity`).
     fn claims_unsigned(&self, _req: &RawRequest) -> bool {

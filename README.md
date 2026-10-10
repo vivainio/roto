@@ -73,3 +73,10 @@ belongs to the release you intend to publish.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Optional Lua services (Organizations, CUR, ACM, Budgets, Config, Cloud Map HTTP,
+OpenSearch, RDS, ECR, ECS and Glue)
+ship separately as `roto-lua-services-<tag>.zip` on GitHub releases. Load the ZIP
+without extraction using `roto-server --lua-services path/to/bundle.zip`, or load
+this checkout with `--lua-services services`. No Lua service scripts are embedded
+in the binary. See [the bundle README](services/README.md) for scope and packaging.
