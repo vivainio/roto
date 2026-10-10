@@ -1,3 +1,4 @@
+mod inspection;
 mod setup;
 mod unsupported;
 
@@ -10,7 +11,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use clap::Parser;
 use roto_core::sigv4::CredentialScope;
@@ -150,8 +151,16 @@ async fn main() {
         lambda.clone(),
         events.clone(),
     ];
+    let mut services: HashMap<_, _> = handlers.into_iter().map(|h| (h.service(), h)).collect();
+    let cloudformation =
+        roto_svc_cloudformation::CloudFormationHandler::new(&store, services.clone())
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+    services.insert("cloudformation", Arc::new(cloudformation));
     let app = Arc::new(App {
-        services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
+        services,
         store,
         account_id: args.account_id,
         unsupported: Default::default(),
@@ -186,6 +195,14 @@ async fn main() {
         });
     }
     let router = Router::new()
+        .route("/roto-api", get(inspection_ui))
+        .route("/roto-api/", get(inspection_ui))
+        .route("/roto-api/resources", get(inspection::catalog))
+        .route(
+            "/roto-api/resources/{service}/{table}",
+            get(inspection::records),
+        )
+        .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(|| async { "ok" }))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
@@ -215,6 +232,10 @@ async fn main() {
         }
     );
     axum::serve(listener, router).await.unwrap();
+}
+
+async fn inspection_ui() -> Html<&'static str> {
+    Html(include_str!("inspection.html"))
 }
 
 async fn reset(State(app): State<Arc<App>>) -> Response {

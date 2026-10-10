@@ -29,10 +29,16 @@ Botocore `models/<service>/service-2.json` files feed `roto-codegen`. Generated
 `src/generated.rs` files are checked into each service crate. Change the generator
 and regenerate rather than editing these files by hand.
 
-Query/XML serves STS, IAM, and SNS. JSON 1.0/1.1 and its error handling support
+Query/XML serves STS, IAM, SNS, and CloudFormation. JSON 1.0/1.1 and its error handling support
 services such as SQS; REST-XML bindings and generated routes support S3.
 REST-JSON and EC2 query are future work.
 
 The [project plan](https://github.com/vivainio/roto/blob/main/PLAN.md) records design
 directions. Use source code and the current coverage baseline to distinguish
 implemented behavior from planned infrastructure.
+
+CloudFormation resolves template dependencies and calls existing service handlers
+in-process with the caller's account and region. Stack/resource progress is saved
+in its own SQLite database; service databases retain the actual resource state.
+Stack mutations are serialized, but resource changes span service transactions
+and do not provide automatic rollback.

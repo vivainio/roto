@@ -62,6 +62,31 @@ for path in Path(sys.argv[1]).rglob("*.py"):
             "client_sqs.receive_message(QueueUrl=queue_url)",
             "client_sqs.receive_message(QueueUrl=queue_url, WaitTimeSeconds=1)",
         )
+    if path.as_posix().endswith("test_dynamodb/test_dynamodb_cloudformation.py"):
+        # These old Moto fixtures contain invalid index schemas and assume
+        # optional DescribeTable fields are always present (and timestamps absent).
+        adapted = adapted.replace(
+            'template["Resources"]["table"]["Properties"]["GlobalSecondaryIndexes"] = [',
+            'template["Resources"]["table"]["Properties"]["AttributeDefinitions"] += '
+            '[{"AttributeName": "gsipk", "AttributeType": "S"}, '
+            '{"AttributeName": "lsipk", "AttributeType": "S"}]\n'
+            '    template["Resources"]["table"]["Properties"]["GlobalSecondaryIndexes"] = [',
+        ).replace(
+            '{"AttributeName": "gsipk", "KeyType": "S"}',
+            '{"AttributeName": "gsipk", "KeyType": "HASH"}',
+        ).replace(
+            '{"AttributeName": "lsipk", "KeyType": "S"}',
+            '{"AttributeName": "Name", "KeyType": "HASH"}, '
+            '{"AttributeName": "lsipk", "KeyType": "RANGE"}',
+        ).replace(
+            'assert table["BillingModeSummary"] == {"BillingMode": "PAY_PER_REQUEST"}',
+            'assert table["BillingModeSummary"]["BillingMode"] == "PAY_PER_REQUEST"',
+        ).replace(
+            'assert table["BillingModeSummary"] == {"BillingMode": "PROVISIONED"}',
+            'assert table.get("BillingModeSummary", {"BillingMode": "PROVISIONED"})'
+            '["BillingMode"] == "PROVISIONED"',
+        ).replace('table["LocalSecondaryIndexes"] == []', 'table.get("LocalSecondaryIndexes", []) == []'
+        ).replace('table["GlobalSecondaryIndexes"] == []', 'table.get("GlobalSecondaryIndexes", []) == []')
     if adapted != source:
         path.write_text(adapted)
 PYPORT

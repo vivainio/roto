@@ -9,15 +9,16 @@ is a regression.
 | Service | API coverage | moto tests passing | Notes |
 |---|---|---|---|
 | **STS** | 7 / 8 operations | 25 / 25 | DynamoDB multi-account integration passes. No `DecodeAuthorizationMessage`. |
-| **SQS** | 19 / 23 | 132 / 139 (6 skipped upstream) | 7 failures need CloudFormation. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
-| **S3** | 66 / 116 | 235 / 368 (59 skipped) | See [S3](#s3) below. |
+| **SQS** | 19 / 23 | 139 / 139 (6 skipped upstream) | CloudFormation queue integration passes. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
+| **S3** | 66 / 116 | 240 / 368 (59 skipped) | See [S3](#s3) below. |
 | **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
-| **DynamoDB** | 47 / 57 | 411 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
+| **DynamoDB** | 47 / 57 | 414 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 134 (2 skipped) | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
-| **SNS** | 19 / 42 | 120 / 185 | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
+| **SNS** | 19 / 42 | 126 / 184 (1 skipped) | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
 | **Lambda** | 19 / 85 | 8 / 125 (30 skipped) | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
 | **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
+| **CloudFormation** | 6 / 90 | 21 resource integration tests | Synchronous create/update/delete, stack/resource descriptions, SQS/SNS/S3/DynamoDB resources, refs/attributes/substitution, tags, outputs, dependency ordering, persistence. No automatic rollback, change sets, nested stacks, IAM/Lambda/EventBridge/SSM resources. |
 | KMS, Kinesis | not started | – | Remaining untouched services in the target set. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
@@ -38,7 +39,7 @@ evaluation, bucket policies, ACL checks or trust-policy checks. This is delibera
 
 | Protocol | Status | Used by |
 |---|---|---|
-| `query` (form request, XML response; lists, maps, blobs) | done | STS, IAM, SNS |
+| `query` (form request, XML response; lists, maps, blobs) | done | STS, IAM, SNS, CloudFormation |
 | `json` 1.0 / 1.1 with query-compatible errors | done | SQS |
 | `rest-xml` (URI/query/header/payload bindings, XML bodies, route table) | done | S3 |
 | `rest-json` | initial model-generated bindings | Lambda (JSON, URI/query/header, raw payload and status bindings) |
@@ -88,8 +89,10 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
   against real moto to separate upstream quirks from roto gaps; `UPDATE_EXPECTED=1` re-baselines.
   Exclusions match exact test IDs. `AUDIT_EXPECTED=1` retries exclusions and reports newly passing
   tests; the weekly/manual `coverage-audit.yml` workflow runs this for every service.
-  The runner adapts upstream's port 5000 URLs, Lambda's IAM fixture, and EventBridge delivery
+  The runner adapts upstream's port 5000 URLs, Lambda's IAM fixture, DynamoDB's CloudFormation fixtures, and EventBridge delivery
   polling in a temporary copy. Docker tests are skipped; local executors have SDK smoke coverage.
+* `scripts/smoke-cloudformation.py` - SDK checks for stack wiring, updates, DynamoDB index queries,
+  restart, account/region isolation, validation, failed-resource cleanup, and reset.
 * `scripts/smoke-dynamodb.py` - SDK checks for account/region isolation with identical table names
   and item keys, persisted GSI/TTL/item state, and STS credentials across server restart.
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
