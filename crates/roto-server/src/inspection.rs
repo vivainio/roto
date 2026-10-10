@@ -14,6 +14,7 @@ use crate::App;
 
 // Explicit public resource collections; internal migrations and credentials are omitted.
 const COLLECTIONS: &[(&str, &[&str])] = &[
+    ("cloudformation", &["stacks"]),
     (
         "s3",
         &["buckets", "objects", "bucket_configs", "uploads", "parts"],
@@ -150,33 +151,34 @@ fn page(
                     ValueRef::Text(bytes) => {
                         let text = String::from_utf8_lossy(bytes);
                         // Unpack JSON documents for readable resource details.
-                        matches!(
-                            name.as_str(),
-                            "config"
-                                | "attributes"
-                                | "tags"
-                                | "item"
-                                | "metadata"
-                                | "headers"
-                                | "acl"
-                                | "code"
-                                | "policy"
-                                | "document"
-                                | "assume_role_policy"
-                                | "key_schema"
-                                | "attr_defs"
-                                | "gsis"
-                                | "lsis"
-                                | "throughput"
-                                | "stream_spec"
-                                | "sse"
-                                | "meta"
-                                | "attrs"
-                                | "labels"
-                                | "policies"
-                                | "stages"
-                                | "rotation_rules"
-                        )
+                        (table == "stacks" && name == "body"
+                            || matches!(
+                                name.as_str(),
+                                "config"
+                                    | "attributes"
+                                    | "tags"
+                                    | "item"
+                                    | "metadata"
+                                    | "headers"
+                                    | "acl"
+                                    | "code"
+                                    | "policy"
+                                    | "document"
+                                    | "assume_role_policy"
+                                    | "key_schema"
+                                    | "attr_defs"
+                                    | "gsis"
+                                    | "lsis"
+                                    | "throughput"
+                                    | "stream_spec"
+                                    | "sse"
+                                    | "meta"
+                                    | "attrs"
+                                    | "labels"
+                                    | "policies"
+                                    | "stages"
+                                    | "rotation_rules"
+                            ))
                         .then(|| serde_json::from_str::<Value>(&text).ok())
                         .flatten()
                         .filter(|v| v.is_object() || v.is_array())

@@ -47,3 +47,8 @@ jobs:
 
       - name: EventBridge SDK smoke (Lua, S3, Lambda, SQS)
         run: .venv-moto/bin/python scripts/smoke-eventbridge.py
+
+      - name: Inspection resource browser and Lua demo fixtures smoke
+        run: |
+          python scripts/smoke-inspection.py
+          python scripts/smoke-demo.py

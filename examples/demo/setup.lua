@@ -106,4 +106,43 @@ query("iam", "Action=CreateUser&Version=2010-05-08&UserName=demo-user&Path=%2Fde
 query("iam", "Action=CreateRole&Version=2010-05-08&RoleName=demo-reader&Description=Demo+read+role&AssumeRolePolicyDocument=%7B%22Version%22%3A%222012-10-17%22%2C%22Statement%22%3A%5B%5D%7D")
 query("sns", "Action=CreateTopic&Version=2010-03-31&Name=demo-updates")
 query("sns", "Action=Subscribe&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3A" .. roto.region .. "%3A" .. roto.account_id .. "%3Ademo-updates&Protocol=sqs&Endpoint=arn%3Aaws%3Asqs%3A" .. roto.region .. "%3A" .. roto.account_id .. "%3Ademo-events")
+-- CloudFormation owns a second resource set, with relationships and outputs to browse.
+local function form_encode(value)
+  return (value:gsub("[^%w%-._~]", function(char) return string.format("%%%02X", string.byte(char)) end))
+end
+local function stack(name, template)
+  query("cloudformation", "Action=CreateStack&Version=2010-05-15&StackName=" .. name .. "&TemplateBody=" .. form_encode(template)
+    .. "&Tags.member.1.Key=purpose&Tags.member.1.Value=demo-fixtures")
+end
+stack("demo-messaging", [[{
+  "Description": "Demo queue and subscribed topic managed by CloudFormation",
+  "Resources": {
+    "Queue": { "Type": "AWS::SQS::Queue", "Properties": { "QueueName": "demo-stack-jobs", "VisibilityTimeout": 30 } },
+    "Topic": { "Type": "AWS::SNS::Topic", "Properties": {
+      "TopicName": "demo-stack-updates", "DisplayName": "Stack updates",
+      "Subscription": [{ "Protocol": "sqs", "Endpoint": { "Fn::GetAtt": ["Queue", "Arn"] } }]
+    } }
+  },
+  "Outputs": {
+    "QueueURL": { "Value": { "Ref": "Queue" }, "Description": "Send stack jobs here" },
+    "TopicARN": { "Value": { "Ref": "Topic" } }
+  }
+}]])
+stack("demo-storage", [[{
+  "Description": "Demo versioned bucket and inventory table managed by CloudFormation",
+  "Resources": {
+    "Bucket": { "Type": "AWS::S3::Bucket", "Properties": {
+      "BucketName": "demo-stack-uploads", "VersioningConfiguration": { "Status": "Enabled" }
+    } },
+    "Inventory": { "Type": "AWS::DynamoDB::Table", "Properties": {
+      "TableName": "demo-stack-inventory", "BillingMode": "PAY_PER_REQUEST",
+      "KeySchema": [{ "AttributeName": "sku", "KeyType": "HASH" }],
+      "AttributeDefinitions": [{ "AttributeName": "sku", "AttributeType": "S" }]
+    } }
+  },
+  "Outputs": {
+    "BucketName": { "Value": { "Ref": "Bucket" } },
+    "TableName": { "Value": { "Ref": "Inventory" } }
+  }
+}]])
 print("Demo resources ready: " .. roto.endpoint .. "/roto-api/")

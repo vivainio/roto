@@ -2,7 +2,7 @@
 
 Use the reusable Lua seed at `examples/demo/setup.lua` when you need populated
 service state for API development, integration tests, manual exploration, or the
-inspection UI. It uses normal service APIs and seeds all nine stateful services;
+inspection UI. It uses normal service APIs and seeds ten stateful services;
 no moto installation or Python packages are needed.
 
 ```sh
@@ -21,7 +21,7 @@ fresh store: resource names are fixed and the seed is not an idempotent migratio
 The setup finishes before the listener starts; EventBridge deliveries and S3
 notification retries continue afterward.
 
-Fixtures include multi-page bucket contents, object versions and delete markers,
+Fixtures include two CloudFormation stacks with resources and outputs, multi-page bucket contents, object versions and delete markers,
 nested DynamoDB items, queue messages, disabled event-source mappings, successful
 and intentionally failed Lambda executions with logs, EventBridge deliveries,
 parameters and secret versions, IAM resources, and an SNS subscription. The

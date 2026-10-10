@@ -56,14 +56,19 @@ def smoke():
         try:
             eventually(ready)
             startup = time.monotonic() - started
-            expected = [('s3', 'buckets', 3), ('s3', 'objects', 68), ('dynamodb', 'tables', 2),
-                        ('dynamodb', 'items', 6), ('sqs', 'queues', 3), ('lambda', 'functions', 2),
+            expected = [('s3', 'buckets', 4), ('s3', 'objects', 68), ('dynamodb', 'tables', 3),
+                        ('dynamodb', 'items', 6), ('sqs', 'queues', 4), ('lambda', 'functions', 2),
                         ('lambda', 'event_source_mappings', 1), ('events', 'buses', 1),
                         ('events', 'rules', 1), ('events', 'targets', 2), ('ssm', 'parameters', 4),
                         ('secretsmanager', 'secrets', 1), ('secretsmanager', 'secret_versions', 2),
-                        ('iam', 'users', 1), ('iam', 'roles', 1), ('sns', 'topics', 1), ('sns', 'subscriptions', 1)]
+                        ('iam', 'users', 1), ('iam', 'roles', 1), ('sns', 'topics', 2), ('sns', 'subscriptions', 2), ('cloudformation', 'stacks', 2)]
             for service, collection, count in expected:
                 assert resources(service, collection)['total'] == count, (service, collection)
+            stacks = {row['name']: row['body'] for row in resources('cloudformation', 'stacks')['records']}
+            assert set(stacks) == {'demo-messaging', 'demo-storage'}
+            assert all(stack['status'] == 'CREATE_COMPLETE' and len(stack['resources']) == 2 for stack in stacks.values())
+            assert {output['key'] for output in stacks['demo-messaging']['outputs']} == {'QueueURL', 'TopicARN'}
+            assert {output['value'] for output in stacks['demo-storage']['outputs']} == {'demo-stack-uploads', 'demo-stack-inventory'}
             first = resources('s3', 'objects', field='bucket', value='demo-assets')
             second = resources('s3', 'objects', field='bucket', value='demo-assets', offset=50)
             assert first['total'] == 63 and len(first['records']) == 50
@@ -97,7 +102,7 @@ def smoke():
             assert resources('sqs', 'messages', field='queue_id', value=queues['demo-events'])['total'] == 2
             handoffs = get('/roto-api/s3/notifications')['notifications']
             assert len(handoffs) == 1 and handoffs[0]['target'].endswith(':demo-missing')
-            print(f'Lua demo smoke passed: seeded in {startup:.2f}s; 9 services, paginated objects, versions, nested items, retained messages, invocation logs, and delivery history')
+            print(f'Lua demo smoke passed: seeded in {startup:.2f}s; 10 services, two stacks, paginated objects, versions, nested items, retained messages, invocation logs, and delivery history')
         except BaseException:
             log.seek(0)
             print(log.read())

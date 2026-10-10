@@ -41,7 +41,7 @@ scripts/demo.sh                 # seeded ephemeral server on port 5071
 roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
 ```
 
-It creates useful data across all nine stateful services, including multi-page
+It creates useful data across ten stateful services, including multi-page
 bucket contents, versions, nested DynamoDB items, retained queue messages,
 Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
 No moto or Python dependencies are needed. Verify it with

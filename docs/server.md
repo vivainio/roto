@@ -45,6 +45,7 @@ Open `http://localhost:5070/roto-api/` to browse created resources and their dat
   bucket to browse its objects, preview up to 64 KiB as text, or download a version.
 - DynamoDB tables and items, including backups; SQS queues and messages.
   Browsing messages does not receive, acknowledge, or change their visibility.
+- CloudFormation stacks, including templates, resources, and outputs.
 - Lambda functions and event-source mappings; EventBridge buses, rules, and targets;
   SNS topics and subscriptions; IAM resources; SSM parameter versions; secrets
   and their versions.

@@ -58,7 +58,7 @@ footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: li
 'use strict';
 const views = { invocations: '/roto-api/lambda/invocations', notifications: '/roto-api/s3/notifications', deliveries: '/roto-api/events/deliveries' };
 const $ = id => document.getElementById(id);
-const labels = { s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM' };
+const labels = { cloudformation: 'CloudFormation', s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM' };
 let view = 'resources', rows = [], controller, updated = '', catalog = [], service = 's3', collection = 'buckets', offset = 0, total = 0, filter = null, trail = [];
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -147,7 +147,7 @@ function render() {
     const second = element('td'); const third = element('td');
     if (resources) {
       second.textContent = [row.account_id || row.account, row.region].filter(Boolean).join(' / ') || '—';
-      third.textContent = row.size !== undefined ? `${row.size} bytes${row.delete_marker ? ' · deleted' : row.is_latest ? ' · latest' : ' · previous version'}` : row.item ? 'Item' : row.body !== undefined ? 'Message' : row.type || row.protocol || row.state || '—';
+      third.textContent = row.size !== undefined ? `${row.size} bytes${row.delete_marker ? ' · deleted' : row.is_latest ? ' · latest' : ' · previous version'}` : row.item ? 'Item' : service === 'cloudformation' ? row.body?.status || 'Stack' : row.body !== undefined ? 'Message' : row.type || row.protocol || row.state || '—';
     } else {
       second.append(element('span', row.state || '—', 'badge ' + (row.state === 'failed' ? 'failed' : row.state === 'succeeded' ? 'succeeded' : '')));
       third.textContent = String(row.attempts ?? '—');

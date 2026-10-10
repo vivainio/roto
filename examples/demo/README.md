@@ -27,8 +27,9 @@ inspection defaults to `us-east-1`.
 
 | Service | Sample data |
 | --- | --- |
-| S3 | Three buckets, 68 object records, nested keys, 55 catalog JSON files for pagination, text/CSV/HTML/binary/empty objects, a large preview, versions, a delete marker |
-| DynamoDB | Six orders with nested maps/lists, sets, booleans, and nulls; an empty table |
+| CloudFormation | Messaging and storage stacks, each with two resources and outputs |
+| S3 | Four buckets, 68 object records, nested keys, 55 catalog JSON files for pagination, text/CSV/HTML/binary/empty objects, a large preview, versions, a delete marker |
+| DynamoDB | Six orders with nested maps/lists, sets, booleans, and nulls; an empty table and a stack-managed inventory table |
 | SQS | Orders and dead-letter messages kept for inspection; an event delivery queue |
 | Lambda | Echo and intentional failure executors, results and logs, a disabled queue mapping |
 | EventBridge | Custom bus, rule, two targets, four deliveries |
@@ -50,5 +51,5 @@ python3 scripts/smoke-demo.py
 ```
 
 The harness starts and stops its own server on a free port and checks resource
-counts, pagination, version downloads, nested item data, retained queue messages,
+counts, pagination, version downloads, nested item data, retained queue messages, stack resources/outputs,
 Lambda results/logs, and asynchronous deliveries.
