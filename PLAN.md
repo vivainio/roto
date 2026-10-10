@@ -91,45 +91,35 @@ standard SQS event-source mappings. EventBridge now routes custom/S3 events to L
 through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
-### Generic local API hooks (planned; IoT publish first)
+### Runtime Lua hooks (planned; IoT publish first)
 
 Unsupported-call discovery is implemented: server warnings on stderr and
 `GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
 capturing payloads. See the book's server reference for limits and reset behavior.
 
-The immediate IoT use case is an app calling boto3 `iot-data.publish` over HTTP.
-A local MQTT broker is not required to exercise that publisher. Start with a
-shared local hook mechanism, configured by trusted Lua startup setup, that can
-forward requests to an HTTP endpoint or command executor.
+Hooks registered in startup Lua setup are intended to remain active while the
+server handles later AWS requests. The initial design has two distinct hooks:
 
-- **Fallback API handlers:** explicitly registered handlers for unsupported
-  service/operation pairs. Execute synchronously and supply a response or error;
-  unregistered operations continue to return explicit unsupported errors.
-  Native implemented operations retain precedence.
-- **Event hooks:** observers of successful supported operations, with an
-  explicit asynchronous delivery/retry contract. These are distinct from
-  fallback handlers, which must produce the calling SDK's response.
-- **Shared executor contract:** reuse command argv/stdin/stdout and HTTP POST
-  execution infrastructure. Requests include account, region, service,
-  operation, method, path, query, headers and a base64 body for binary payloads.
-  Responses specify status, headers and a base64 body. Omit credentials from
-  forwarded headers. Executors have bounded timeouts and output sizes.
-- **Protocol adapters:** identify operations using JSON targets, Query actions,
-  or model-generated REST routes. The generic hook transport does not remove
-  the need for service-specific HTTP bindings or AWS-compatible response
-  serialization. Unsupported services need routing before fallback dispatch.
-- **First adapter:** `iotdata` (the SigV4 signing name for boto3 `iot-data`),
-  `Publish`, using the botocore REST-JSON model. A Lua-configured HTTP or command
-  handler consumes the topic and payload and returns the expected empty 200
-  response after successful execution. This provides local app integration,
-  without claiming MQTT subscriber delivery, retained state, or rules support.
-- **Validation:** real boto3 publish to both executor types, binary payloads,
-  account/region context, executor errors/timeouts, native-handler precedence,
-  and unchanged unsupported errors when no hook is configured.
+- **`intercept_request`:** registered for an exact service operation (for
+  example, `s3.PutObject`); it runs before native dispatch and may continue,
+  return a simulated response/error, or implement that operation itself.
+- **`missing_support`:** a single catch-all fallback after native dispatch
+  cannot handle a request. It can inspect the service and operation and provide
+  a response/error; declining preserves Roto's current unsupported response.
 
-IoT APIs and generic hooks are not implemented yet. Endpoint discovery, device
-shadows, MQTT transports, retained messages, and IoT rules remain follow-ups
-based on actual usage.
+Normal validation and resource errors from implemented operations do not invoke
+the fallback. Setup-time helper calls do not trigger runtime hooks. A no-hook
+request should continue directly to native dispatch. The book's
+[runtime-hooks plan](docs/runtime-hooks.md) tracks lifecycle, request/response,
+concurrency, timeout, and validation decisions.
+
+The first fallback use case is boto3 `iot-data.publish`. It should accept the
+botocore REST-JSON request and return the empty HTTP 200 response expected on
+success, without claiming MQTT subscriber delivery, retained state, or rules
+support. Command/HTTP forwarding may implement this use case after the Lua hook
+contract is established. IoT endpoint discovery, device shadows, MQTT
+transports, retained messages, and IoT rules remain follow-ups based on actual
+usage.
 
 ## Status
 - Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.

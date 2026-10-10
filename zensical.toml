@@ -18,6 +18,7 @@ nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
   { "Lua setup" = "lua.md" },
+  { "Runtime hooks (planned)" = "runtime-hooks.md" },
   { "Integration testing" = "integration-testing.md" },
   { "Server reference" = "server.md" },
   { "Services" = [

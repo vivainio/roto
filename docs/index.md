@@ -62,6 +62,8 @@ The book also covers [Lua setup](lua.md), [integration testing](integration-test
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),
 [Kinesis](kinesis.md), [KMS](kms.md), and [local Lambda execution](lambda.md).
+The planned [runtime Lua hook system](runtime-hooks.md) describes future request
+interception and missing-operation fallbacks.
 
 ## Project maturity
 
