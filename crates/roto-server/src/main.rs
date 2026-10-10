@@ -147,8 +147,16 @@ async fn main() {
         lambda.clone(),
         events.clone(),
     ];
+    let mut services: HashMap<_, _> = handlers.into_iter().map(|h| (h.service(), h)).collect();
+    let cloudformation =
+        roto_svc_cloudformation::CloudFormationHandler::new(&store, services.clone())
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+    services.insert("cloudformation", Arc::new(cloudformation));
     let app = Arc::new(App {
-        services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
+        services,
         store,
         account_id: args.account_id,
     });

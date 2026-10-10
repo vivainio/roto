@@ -35,6 +35,8 @@ jobs:
           scripts/run-moto-tests.sh test_events
       - name: Known-failure audit tooling tests
         run: .venv-moto/bin/python scripts/test-audit-moto-tests.py
+      - name: CloudFormation lifecycle and persistence SDK smoke
+        run: .venv-moto/bin/python scripts/smoke-cloudformation.py
       - name: DynamoDB isolation and persistence SDK smoke
         run: .venv-moto/bin/python scripts/smoke-dynamodb.py
       - name: Lambda executor SDK smoke (command, HTTP, S3 to SQS)

@@ -14,7 +14,7 @@ git diff --exit-code
 
 The final command catches generated-code drift and any other uncommitted changes;
 inspect the diff when working in a modified tree. Generation covers STS, SQS,
-IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, and EventBridge.
+IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, and CloudFormation.
 
 ## Moto compatibility tests
 
@@ -31,7 +31,8 @@ scripts/run-moto-tests.sh test_events
 
 The runner creates `.venv-moto`, installs the test requirements, builds roto, and
 starts an ephemeral instance. It adapts upstream port-5000 URLs in a temporary
-copy, gives Lambda's IAM role fixture a valid policy document, and uses a one-second
+copy, gives Lambda's IAM role fixture a valid policy document, corrects the old
+DynamoDB CloudFormation index schemas and optional-field assertions, and uses a one-second
 SQS long poll for EventBridge delivery assertions. Vendored sources
 remain unchanged. Tests requiring Docker are skipped; local Lambda executors are
 covered by the SDK smokes. The runner cleans up the server afterward. Pass additional pytest arguments after
