@@ -315,6 +315,9 @@ fn check_entity(
         "user" => {
             crate::users::load_user(tx, &ctx.account_id, name)?;
         }
+        "group" => {
+            crate::groups::load_group(tx, ctx, name)?;
+        }
         _ => return Err(validation("Invalid entity type.")),
     }
     Ok(())
@@ -557,6 +560,43 @@ fn set_policy_tags(
         tx.execute("INSERT INTO tags(account_id,kind,entity,key,value) VALUES(?1,'policy',?2,?3,?4) ON CONFLICT(account_id,kind,entity,key) DO UPDATE SET value=excluded.value",params![ctx.account_id,a,t.key,t.value])?;
     }
     Ok(())
+}
+
+pub fn attach_group_policy(
+    db: &Db,
+    ctx: &RequestContext,
+    i: AttachGroupPolicyRequest,
+) -> Result<(), AwsError> {
+    db.transaction(|tx| attach(tx, ctx, "group", &i.group_name, &i.policy_arn))
+}
+pub fn detach_group_policy(
+    db: &Db,
+    ctx: &RequestContext,
+    i: DetachGroupPolicyRequest,
+) -> Result<(), AwsError> {
+    db.transaction(|tx| detach(tx, ctx, "group", &i.group_name, &i.policy_arn))
+}
+pub fn list_attached_group_policies(
+    db: &Db,
+    ctx: &RequestContext,
+    i: ListAttachedGroupPoliciesRequest,
+) -> Result<ListAttachedGroupPoliciesResponse, AwsError> {
+    db.transaction(|tx| {
+        let (attached_policies, t, marker) = attached(
+            tx,
+            ctx,
+            "group",
+            &i.group_name,
+            i.path_prefix.as_deref(),
+            i.marker.as_deref(),
+            i.max_items,
+        )?;
+        Ok(ListAttachedGroupPoliciesResponse {
+            attached_policies,
+            is_truncated: Some(t),
+            marker,
+        })
+    })
 }
 
 #[cfg(test)]

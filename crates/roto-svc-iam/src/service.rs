@@ -5,7 +5,7 @@ use roto_core::store::{Db, Store};
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
-use crate::{MIGRATIONS, misc, policies, roles, users};
+use crate::{MIGRATIONS, groups, misc, policies, roles, users};
 
 pub struct Iam {
     pub(crate) db: Arc<Db>,
@@ -92,6 +92,104 @@ impl Iam {
 }
 
 impl Service for Iam {
+    fn create_group(
+        &self,
+        ctx: &RequestContext,
+        i: CreateGroupRequest,
+    ) -> Result<CreateGroupResponse, AwsError> {
+        groups::create_group(&self.db, ctx, i)
+    }
+    fn get_group(
+        &self,
+        ctx: &RequestContext,
+        i: GetGroupRequest,
+    ) -> Result<GetGroupResponse, AwsError> {
+        groups::get_group(&self.db, ctx, i)
+    }
+    fn list_groups(
+        &self,
+        ctx: &RequestContext,
+        i: ListGroupsRequest,
+    ) -> Result<ListGroupsResponse, AwsError> {
+        groups::list_groups(&self.db, ctx, i)
+    }
+    fn list_groups_for_user(
+        &self,
+        ctx: &RequestContext,
+        i: ListGroupsForUserRequest,
+    ) -> Result<ListGroupsForUserResponse, AwsError> {
+        groups::list_groups_for_user(&self.db, ctx, i)
+    }
+    fn get_group_policy(
+        &self,
+        ctx: &RequestContext,
+        i: GetGroupPolicyRequest,
+    ) -> Result<GetGroupPolicyResponse, AwsError> {
+        groups::get_group_policy(&self.db, ctx, i)
+    }
+    fn list_group_policies(
+        &self,
+        ctx: &RequestContext,
+        i: ListGroupPoliciesRequest,
+    ) -> Result<ListGroupPoliciesResponse, AwsError> {
+        groups::list_group_policies(&self.db, ctx, i)
+    }
+    fn list_attached_group_policies(
+        &self,
+        ctx: &RequestContext,
+        i: ListAttachedGroupPoliciesRequest,
+    ) -> Result<ListAttachedGroupPoliciesResponse, AwsError> {
+        policies::list_attached_group_policies(&self.db, ctx, i)
+    }
+    fn delete_group(&self, ctx: &RequestContext, i: DeleteGroupRequest) -> Result<(), AwsError> {
+        groups::delete_group(&self.db, ctx, i)
+    }
+    fn update_group(&self, ctx: &RequestContext, i: UpdateGroupRequest) -> Result<(), AwsError> {
+        groups::update_group(&self.db, ctx, i)
+    }
+    fn add_user_to_group(
+        &self,
+        ctx: &RequestContext,
+        i: AddUserToGroupRequest,
+    ) -> Result<(), AwsError> {
+        groups::add_user_to_group(&self.db, ctx, i)
+    }
+    fn remove_user_from_group(
+        &self,
+        ctx: &RequestContext,
+        i: RemoveUserFromGroupRequest,
+    ) -> Result<(), AwsError> {
+        groups::remove_user_from_group(&self.db, ctx, i)
+    }
+    fn put_group_policy(
+        &self,
+        ctx: &RequestContext,
+        i: PutGroupPolicyRequest,
+    ) -> Result<(), AwsError> {
+        groups::put_group_policy(&self.db, ctx, i)
+    }
+    fn delete_group_policy(
+        &self,
+        ctx: &RequestContext,
+        i: DeleteGroupPolicyRequest,
+    ) -> Result<(), AwsError> {
+        groups::delete_group_policy(&self.db, ctx, i)
+    }
+    fn attach_group_policy(
+        &self,
+        ctx: &RequestContext,
+        i: AttachGroupPolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::attach_group_policy(&self.db, ctx, i)
+    }
+    fn detach_group_policy(
+        &self,
+        ctx: &RequestContext,
+        i: DetachGroupPolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::detach_group_policy(&self.db, ctx, i)
+    }
+
     fn list_entities_for_policy(
         &self,
         ctx: &RequestContext,

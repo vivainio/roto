@@ -11,7 +11,7 @@ is a regression.
 | **STS** | 7 / 8 operations | 25 / 25 | DynamoDB multi-account integration passes. No `DecodeAuthorizationMessage`. |
 | **SQS** | 19 / 23 | 139 / 139 (6 skipped upstream) | CloudFormation queue integration passes. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
 | **S3** | 66 / 116 | 241 / 368 (59 skipped) | See [S3](#s3) below. |
-| **IAM** | 47 / 180 | 107 / 349 (13 skipped) | Users, roles, access keys, tags, account aliases, customer-managed policies and versions, user/role attachments and entity listings, and inline role policies. CloudFormation supports IAM roles and `AWS::IAM::Policy`. IAM policy evaluation is intentionally absent. Missing: AWS-managed policy catalog, full policy-document validation, groups, instance profiles, providers. |
+| **IAM** | 62 / 180 | 127 / 349 (13 skipped) | Users, roles, access keys, tags, account aliases, customer-managed policies and versions, user/role/group attachments and entity listings, group CRUD/membership, and inline role/group policies. CloudFormation supports IAM roles and `AWS::IAM::Policy`. IAM policy evaluation is intentionally absent. Missing: AWS-managed policy catalog, full policy-document validation, instance profiles, providers. |
 | **DynamoDB** | 47 / 57 | 414 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 134 (2 skipped) | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
@@ -116,4 +116,4 @@ Delivery is at least once. Commands run with roto's OS permissions, without cont
 
 ## Next
 
-Extend KMS asymmetric operations and grants as needed, then IAM groups/instance profiles; extend Lambda integrations as needed. See `PLAN.md`.
+Extend KMS asymmetric operations and grants as needed, then IAM instance profiles; extend Lambda integrations as needed. See `PLAN.md`.

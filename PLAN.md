@@ -172,3 +172,12 @@ versions block policy deletion. Native checks cover persistence, pagination, ver
 limits and IDs, attachment idempotency, account isolation, deletion conflicts and reset.
 The AWS-managed policy catalog, full policy-document validation, groups and instance
 profiles remain follow-ups. Policy documents are stored without evaluating permissions.
+
+
+## IAM groups (2026-10-10)
+
+IAM group CRUD, membership, inline policies and customer-managed policy attachments
+are implemented, bringing coverage to 62/180 operations and 127/349 portable Moto
+tests passing. Group renames preserve memberships and both kinds of policies;
+deletion requires removing users and policies first. Native checks cover account
+isolation, idempotent membership, pagination and renamed relationships across restart.
