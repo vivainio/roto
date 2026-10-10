@@ -1497,6 +1497,7 @@ dependencies = [
 name = "roto-svc-lambda"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "libc",
  "reqwest",
  "roto-core",

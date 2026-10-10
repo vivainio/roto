@@ -246,3 +246,10 @@ five native tests and service Clippy pass.
 Topics and subscriptions use named Diesel rows and typed CRUD, preserving
 creation order and fan-out behavior. Moto remains 126 passing, 1 skipped and
 58 excluded. Native tests and service Clippy pass.
+
+## SQS Diesel port (2026-10-10)
+
+Queues, messages and receipt history use typed queries. FIFO blocking uses a
+correlated alias; inserted messages return their sequence directly. Dead-letter
+moves and receipt tombstones retain their behavior. All 139 Moto tests (6 skipped),
+eight native tests and service Clippy pass.
