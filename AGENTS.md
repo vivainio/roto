@@ -34,3 +34,36 @@ Verify the fixture contract after changing it:
 cargo build -p roto-server --locked
 python3 scripts/smoke-demo.py    # starts and stops its own disposable server
 ```
+
+# API coverage from Moto tests
+
+Run the server-mode Moto tests by service and save each run's request trace:
+
+```sh
+mkdir -p api-traces
+for suite in test_awslambda test_dynamodb test_ecr test_events test_iam test_kinesis \
+  test_kms test_s3 test_secretsmanager test_sns test_sqs test_ssm test_sts
+do
+  ROTO_TRACE_FILE="api-traces/${suite}.jsonl" scripts/run-moto-tests.sh "$suite" \
+    || echo "$suite had failures; keeping its trace"
+done
+```
+
+The runner builds a Moto test environment if needed, starts a fresh ephemeral
+Roto server for each suite, and tags calls with the pytest node ID. Expected
+failures are excluded from the normal run. To also capture those known failing
+cases, run an additional pass with `AUDIT_EXPECTED=1` and distinct trace names.
+
+Build a combined, interactive report against every API operation in botocore:
+
+```sh
+.venv-moto/bin/python scripts/report-api-coverage.py \
+  --full-spec api-traces/*.jsonl --output api-coverage.html
+```
+
+The report distinguishes observed successes, errors, unsupported operations,
+and operations not exercised by the selected tests. Unseen operations are not
+necessarily unimplemented. Keep separate trace files per run; the runner
+truncates its output file when a suite starts. See
+[`docs/integration-testing.md`](docs/integration-testing.md) for app-level
+assertions using the in-memory trace endpoint.

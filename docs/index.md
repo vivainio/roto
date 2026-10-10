@@ -58,6 +58,11 @@ service coverage is narrower than LocalStack's; check
 Start with [Getting started](getting-started.md), check [service coverage](services.md),
 or read [Architecture](architecture.md) to work on the implementation.
 
+The book also covers [Lua setup](lua.md), [integration testing](integration-testing.md),
+[server options and inspection](server.md), and [persistent storage](storage.md).
+Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),
+[Kinesis](kinesis.md), [KMS](kms.md), and [local Lambda execution](lambda.md).
+
 ## Project maturity
 
 roto is under active development. Eight services have implementations, with

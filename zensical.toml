@@ -17,6 +17,7 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
+  { "Lua setup" = "lua.md" },
   { "Integration testing" = "integration-testing.md" },
   { "Server reference" = "server.md" },
   { "Services" = [
