@@ -1,6 +1,8 @@
+use crate::schema::*;
 use crate::{generated::*, pattern};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::{Db, Store};
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext, ids};
 use roto_protocol::{FromJson, Timestamp, ToJson};
 use serde_json::{Value, json};
@@ -74,30 +76,33 @@ fn rule_arn(ctx: &RequestContext, bus: &str, rule: &str) -> String {
         rule
     )
 }
-fn ensure_bus(tx: &Transaction<'_>, ctx: &RequestContext, bus: &str) -> Result<(), AwsError> {
+fn ensure_bus(tx: &mut SqliteConnection, ctx: &RequestContext, bus: &str) -> Result<(), AwsError> {
     if bus != "default"
-        && !tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM buses WHERE account=?1 AND region=?2 AND name=?3)",
-            params![ctx.account_id, ctx.region, bus],
-            |r| r.get::<_, bool>(0),
-        )?
+        && !diesel::select(diesel::dsl::exists(
+            buses::table
+                .filter(buses::account.eq(&ctx.account_id))
+                .filter(buses::region.eq(&ctx.region))
+                .filter(buses::name.eq(&bus)),
+        ))
+        .first::<bool>(tx)?
     {
         return Err(missing(bus));
     }
     Ok(())
 }
 fn load_rule(
-    tx: &Transaction<'_>,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     bus: &str,
     rule: &str,
 ) -> Result<Value, AwsError> {
-    let text: Option<String> = tx
-        .query_row(
-            "SELECT config FROM rules WHERE account=?1 AND region=?2 AND bus=?3 AND name=?4",
-            params![ctx.account_id, ctx.region, bus, rule],
-            |r| r.get(0),
-        )
+    let text: Option<String> = rules::table
+        .filter(rules::account.eq(&ctx.account_id))
+        .filter(rules::region.eq(&ctx.region))
+        .filter(rules::bus.eq(&bus))
+        .filter(rules::name.eq(&rule))
+        .select(rules::config)
+        .first::<String>(tx)
         .optional()?;
     serde_json::from_str(&text.ok_or_else(|| missing(rule))?)
         .map_err(|e| AwsError::internal(e.to_string()))
@@ -153,17 +158,17 @@ impl EventBridge {
         sqs: Arc<roto_svc_sqs::Sqs>,
     ) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("events", crate::MIGRATIONS)?,
+            db: store.diesel_db("events", crate::MIGRATIONS)?,
             lambda,
             sqs,
         })
     }
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM targets", [])?;
-            tx.execute("DELETE FROM rules", [])?;
-            tx.execute("DELETE FROM buses", [])?;
-            tx.execute("DELETE FROM deliveries", [])?;
+            diesel::delete(targets::table).execute(tx)?;
+            diesel::delete(rules::table).execute(tx)?;
+            diesel::delete(buses::table).execute(tx)?;
+            diesel::delete(deliveries::table).execute(tx)?;
             Ok(())
         })
     }
@@ -174,30 +179,57 @@ impl EventBridge {
         event: Value,
     ) -> Result<(), AwsError> {
         let bus = bus_name(ctx, Some(bus))?;
-        self.db.transaction(|tx|{
-            ensure_bus(tx,ctx,&bus)?;
-            let mut stmt=tx.prepare("SELECT name,config FROM rules WHERE account=?1 AND region=?2 AND bus=?3 ORDER BY name")?;
-            let rules=stmt.query_map(params![ctx.account_id,ctx.region,bus],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
-            for (rule,text) in rules {
-                let config:Value=serde_json::from_str(&text).map_err(|e|AwsError::internal(e.to_string()))?;
-                if config["State"]!="ENABLED" {continue;}
-                let pattern=pattern::parse(config["EventPattern"].as_str().unwrap())?;
-                if !pattern::matches(&pattern,&event){continue;}
-                let mut stmt=tx.prepare("SELECT config FROM targets WHERE account=?1 AND region=?2 AND bus=?3 AND rule=?4 ORDER BY id")?;
-                let targets=stmt.query_map(params![ctx.account_id,ctx.region,bus,rule],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-                for source in targets {
-                    let target:Value=serde_json::from_str(&source).map_err(|e|AwsError::internal(e.to_string()))?;
-                    // Keep the source event in the queue; input selection happens at delivery so failures are inspectable.
-                    tx.execute("INSERT INTO deliveries(id,account,region,endpoint,target,config,event) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![ids::request_id(),ctx.account_id,ctx.region,ctx.base_url,target["Arn"].as_str(),source,event.to_string()])?;
+        self.db.transaction(|tx| {
+            ensure_bus(tx, ctx, &bus)?;
+            let rules = rules::table
+                .filter(rules::account.eq(&ctx.account_id))
+                .filter(rules::region.eq(&ctx.region))
+                .filter(rules::bus.eq(&bus))
+                .order(rules::name)
+                .select((rules::name, rules::config))
+                .load::<(String, String)>(tx)?;
+            for (rule, text) in rules {
+                let config: Value =
+                    serde_json::from_str(&text).map_err(|e| AwsError::internal(e.to_string()))?;
+                if config["State"] != "ENABLED" {
+                    continue;
                 }
-            }Ok(())
+                let pattern = pattern::parse(config["EventPattern"].as_str().unwrap())?;
+                if !pattern::matches(&pattern, &event) {
+                    continue;
+                }
+                let targets = targets::table
+                    .filter(targets::account.eq(&ctx.account_id))
+                    .filter(targets::region.eq(&ctx.region))
+                    .filter(targets::bus.eq(&bus))
+                    .filter(targets::rule.eq(&rule))
+                    .order(targets::id)
+                    .select(targets::config)
+                    .load::<String>(tx)?;
+                for source in targets {
+                    let target: Value = serde_json::from_str(&source)
+                        .map_err(|e| AwsError::internal(e.to_string()))?;
+                    // Keep the source event in the queue; input selection happens at delivery so failures are inspectable.
+                    diesel::insert_into(deliveries::table)
+                        .values((
+                            deliveries::id.eq(&ids::request_id()),
+                            deliveries::account.eq(&ctx.account_id),
+                            deliveries::region.eq(&ctx.region),
+                            deliveries::endpoint.eq(&ctx.base_url),
+                            deliveries::target.eq(target["Arn"].as_str().unwrap_or("")),
+                            deliveries::config.eq(&source),
+                            deliveries::event.eq(&event.to_string()),
+                        ))
+                        .execute(tx)?;
+                }
+            }
+            Ok(())
         })
     }
     pub fn history(&self, ctx: &RequestContext) -> Result<Value, AwsError> {
         self.db.read(|c|{
-        let mut stmt=c.prepare("SELECT id,target,state,attempts,error FROM deliveries WHERE account=?1 AND region=?2 ORDER BY rowid DESC LIMIT 100")?;
-        let rows=stmt.query_map(params![ctx.account_id,ctx.region],|r|Ok(json!({"id":r.get::<_,String>(0)?,"target":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,"attempts":r.get::<_,i32>(3)?,"error":r.get::<_,Option<String>>(4)?})))?;
-        Ok(json!({"deliveries":rows.collect::<Result<Vec<_>,_>>()?}))
+        let rows=deliveries::table.filter(deliveries::account.eq(&ctx.account_id)).filter(deliveries::region.eq(&ctx.region)).order(diesel::dsl::sql::<diesel::sql_types::BigInt>("rowid").desc()).limit(100).select((deliveries::id,deliveries::target,deliveries::state,deliveries::attempts,deliveries::error)).load::<(String,String,String,i32,Option<String>)>(c)?;
+        Ok(json!({"deliveries":rows.into_iter().map(|(id,target,state,attempts,error)|json!({"id":id,"target":target,"state":state,"attempts":attempts,"error":error})).collect::<Vec<_>>() }))
     })
     }
     pub fn start(this: &Arc<Self>) {
@@ -216,7 +248,24 @@ impl EventBridge {
             .expect("EventBridge worker");
     }
     fn deliver_next(&self) -> Result<(), AwsError> {
-        let row=self.db.read(|c|Ok(c.query_row("SELECT id,account,region,endpoint,target,config,event,attempts FROM deliveries WHERE state='queued' AND due<=?1 ORDER BY rowid LIMIT 1",[now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,i32>(7)?))).optional()?))?;
+        let row = self.db.read(|c| {
+            Ok(deliveries::table
+                .filter(deliveries::state.eq("queued"))
+                .filter(deliveries::due.le(now()))
+                .order(diesel::dsl::sql::<diesel::sql_types::BigInt>("rowid"))
+                .select((
+                    deliveries::id,
+                    deliveries::account,
+                    deliveries::region,
+                    deliveries::endpoint,
+                    deliveries::target,
+                    deliveries::config,
+                    deliveries::event,
+                    deliveries::attempts,
+                ))
+                .first::<(String, String, String, String, String, String, String, i32)>(c)
+                .optional()?)
+        })?;
         let Some((id, account_id, region, base_url, arn, config, event, attempts)) = row else {
             return Ok(());
         };
@@ -264,16 +313,14 @@ impl EventBridge {
         };
         let error = result.err().map(|e| e.to_string());
         self.db.transaction(|tx| {
-            tx.execute(
-                "UPDATE deliveries SET state=?2,attempts=?3,due=?4,error=?5 WHERE id=?1",
-                params![
-                    id,
-                    state,
-                    attempts,
-                    now() + 1000 * i64::from(attempts),
-                    error
-                ],
-            )?;
+            diesel::update(deliveries::table.filter(deliveries::id.eq(&id)))
+                .set((
+                    deliveries::state.eq(&state),
+                    deliveries::attempts.eq(&attempts),
+                    deliveries::due.eq(now() + 1000 * i64::from(attempts)),
+                    deliveries::error.eq(&error),
+                ))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -288,10 +335,15 @@ impl EventBridge {
         self.db.transaction(|tx| {
             let mut value = load_rule(tx, ctx, &bus, rule)?;
             value["State"] = json!(state);
-            tx.execute(
-                "UPDATE rules SET config=?5 WHERE account=?1 AND region=?2 AND bus=?3 AND name=?4",
-                params![ctx.account_id, ctx.region, bus, rule, value.to_string()],
-            )?;
+            diesel::update(
+                rules::table
+                    .filter(rules::account.eq(&ctx.account_id))
+                    .filter(rules::region.eq(&ctx.region))
+                    .filter(rules::bus.eq(&bus))
+                    .filter(rules::name.eq(&rule)),
+            )
+            .set(rules::config.eq(&value.to_string()))
+            .execute(tx)?;
             Ok(())
         })
     }
@@ -311,11 +363,13 @@ impl Service for EventBridge {
         let arn = bus_arn(ctx, &i.name);
         let config = json!({"Name":i.name,"Arn":arn,"Description":i.description});
         self.db.transaction(|tx| {
-            let exists: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM buses WHERE account=?1 AND region=?2 AND name=?3)",
-                params![ctx.account_id, ctx.region, i.name],
-                |r| r.get(0),
-            )?;
+            let exists: bool = diesel::select(diesel::dsl::exists(
+                buses::table
+                    .filter(buses::account.eq(&ctx.account_id))
+                    .filter(buses::region.eq(&ctx.region))
+                    .filter(buses::name.eq(&i.name)),
+            ))
+            .first::<bool>(tx)?;
             if exists {
                 return Err(AwsError::sender(
                     400,
@@ -323,10 +377,14 @@ impl Service for EventBridge {
                     "Event bus already exists",
                 ));
             }
-            tx.execute(
-                "INSERT INTO buses(account,region,name,config) VALUES (?1,?2,?3,?4)",
-                params![ctx.account_id, ctx.region, i.name, config.to_string()],
-            )?;
+            diesel::insert_into(buses::table)
+                .values((
+                    buses::account.eq(&ctx.account_id),
+                    buses::region.eq(&ctx.region),
+                    buses::name.eq(&i.name),
+                    buses::config.eq(&config.to_string()),
+                ))
+                .execute(tx)?;
             Ok(())
         })?;
         CreateEventBusResponse::from_json(
@@ -345,11 +403,12 @@ impl Service for EventBridge {
             if bus == "default" {
                 return Ok(json!({"Name":bus,"Arn":bus_arn(ctx,&bus)}));
             }
-            let text: String = tx.query_row(
-                "SELECT config FROM buses WHERE account=?1 AND region=?2 AND name=?3",
-                params![ctx.account_id, ctx.region, bus],
-                |r| r.get(0),
-            )?;
+            let text: String = buses::table
+                .filter(buses::account.eq(&ctx.account_id))
+                .filter(buses::region.eq(&ctx.region))
+                .filter(buses::name.eq(&bus))
+                .select(buses::config)
+                .first::<String>(tx)?;
             serde_json::from_str(&text).map_err(|e| AwsError::internal(e.to_string()))
         })?;
         DescribeEventBusResponse::from_json(&value, "")
@@ -364,18 +423,22 @@ impl Service for EventBridge {
             return Err(invalid("Cannot delete default event bus"));
         }
         self.db.transaction(|tx| {
-            let count: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM rules WHERE account=?1 AND region=?2 AND bus=?3",
-                params![ctx.account_id, ctx.region, bus],
-                |r| r.get(0),
-            )?;
+            let count: i64 = rules::table
+                .filter(rules::account.eq(&ctx.account_id))
+                .filter(rules::region.eq(&ctx.region))
+                .filter(rules::bus.eq(&bus))
+                .count()
+                .first::<i64>(tx)?;
             if count > 0 {
                 return Err(invalid("Event bus still has rules"));
             }
-            tx.execute(
-                "DELETE FROM buses WHERE account=?1 AND region=?2 AND name=?3",
-                params![ctx.account_id, ctx.region, bus],
-            )?;
+            diesel::delete(
+                buses::table
+                    .filter(buses::account.eq(&ctx.account_id))
+                    .filter(buses::region.eq(&ctx.region))
+                    .filter(buses::name.eq(&bus)),
+            )
+            .execute(tx)?;
             Ok(())
         })
     }
@@ -385,13 +448,12 @@ impl Service for EventBridge {
         i: ListEventBusesRequest,
     ) -> Result<ListEventBusesResponse, AwsError> {
         let mut values = self.db.read(|c| {
-            let mut stmt =
-                c.prepare("SELECT config FROM buses WHERE account=?1 AND region=?2 ORDER BY name")?;
-            let texts = stmt
-                .query_map(params![ctx.account_id, ctx.region], |r| {
-                    r.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+            let texts = buses::table
+                .filter(buses::account.eq(&ctx.account_id))
+                .filter(buses::region.eq(&ctx.region))
+                .order(buses::name)
+                .select(buses::config)
+                .load::<String>(c)?;
             Ok(texts
                 .iter()
                 .map(|s| serde_json::from_str::<Value>(s).unwrap())
@@ -436,7 +498,22 @@ impl Service for EventBridge {
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
         let arn = rule_arn(ctx, &bus, &i.name);
         let value = json!({"Name":i.name,"Arn":arn,"EventBusName":bus,"EventPattern":pattern,"State":state,"Description":i.description});
-        self.db.transaction(|tx|{ensure_bus(tx,ctx,&bus)?;tx.execute("INSERT INTO rules(account,region,bus,name,config) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(account,region,bus,name) DO UPDATE SET config=excluded.config",params![ctx.account_id,ctx.region,bus,i.name,value.to_string()])?;Ok(())})?;
+        self.db.transaction(|tx| {
+            ensure_bus(tx, ctx, &bus)?;
+            diesel::insert_into(rules::table)
+                .values((
+                    rules::account.eq(&ctx.account_id),
+                    rules::region.eq(&ctx.region),
+                    rules::bus.eq(&bus),
+                    rules::name.eq(&i.name),
+                    rules::config.eq(&value.to_string()),
+                ))
+                .on_conflict((rules::account, rules::region, rules::bus, rules::name))
+                .do_update()
+                .set(rules::config.eq(diesel::upsert::excluded(rules::config)))
+                .execute(tx)?;
+            Ok(())
+        })?;
         Ok(PutRuleResponse {
             rule_arn: Some(arn),
         })
@@ -454,7 +531,27 @@ impl Service for EventBridge {
     }
     fn delete_rule(&self, ctx: &RequestContext, i: DeleteRuleRequest) -> Result<(), AwsError> {
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
-        self.db.transaction(|tx|{let count:i64=tx.query_row("SELECT COUNT(*) FROM targets WHERE account=?1 AND region=?2 AND bus=?3 AND rule=?4",params![ctx.account_id,ctx.region,bus,i.name],|r|r.get(0))?;if count>0{return Err(invalid("Remove targets before deleting the rule"));}tx.execute("DELETE FROM rules WHERE account=?1 AND region=?2 AND bus=?3 AND name=?4",params![ctx.account_id,ctx.region,bus,i.name])?;Ok(())})
+        self.db.transaction(|tx| {
+            let count: i64 = targets::table
+                .filter(targets::account.eq(&ctx.account_id))
+                .filter(targets::region.eq(&ctx.region))
+                .filter(targets::bus.eq(&bus))
+                .filter(targets::rule.eq(&i.name))
+                .count()
+                .first::<i64>(tx)?;
+            if count > 0 {
+                return Err(invalid("Remove targets before deleting the rule"));
+            }
+            diesel::delete(
+                rules::table
+                    .filter(rules::account.eq(&ctx.account_id))
+                    .filter(rules::region.eq(&ctx.region))
+                    .filter(rules::bus.eq(&bus))
+                    .filter(rules::name.eq(&i.name)),
+            )
+            .execute(tx)?;
+            Ok(())
+        })
     }
     fn enable_rule(&self, ctx: &RequestContext, i: EnableRuleRequest) -> Result<(), AwsError> {
         self.set_state(ctx, i.event_bus_name.as_deref(), &i.name, "ENABLED")
@@ -470,14 +567,13 @@ impl Service for EventBridge {
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
         let mut values = self.db.transaction(|tx| {
             ensure_bus(tx, ctx, &bus)?;
-            let mut stmt = tx.prepare(
-                "SELECT config FROM rules WHERE account=?1 AND region=?2 AND bus=?3 ORDER BY name",
-            )?;
-            let texts = stmt
-                .query_map(params![ctx.account_id, ctx.region, bus], |r| {
-                    r.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
+            let texts = rules::table
+                .filter(rules::account.eq(&ctx.account_id))
+                .filter(rules::region.eq(&ctx.region))
+                .filter(rules::bus.eq(&bus))
+                .order(rules::name)
+                .select(rules::config)
+                .load::<String>(tx)?;
             Ok(texts
                 .iter()
                 .map(|s| serde_json::from_str::<Value>(s).unwrap())
@@ -498,18 +594,73 @@ impl Service for EventBridge {
             return Err(invalid("Targets must contain 1–10 entries"));
         }
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
-        self.db.transaction(|tx|{load_rule(tx,ctx,&bus,&i.rule)?;let mut failed=Vec::new();
+        self.db.transaction(|tx| {
+            load_rule(tx, ctx, &bus, &i.rule)?;
+            let mut failed = Vec::new();
             for target in i.targets {
-                let result=(||{name(&target.id)?;if target.id.len()>64{return Err(invalid("Target ID exceeds 64 characters"));}
-                    supported(&target.to_json(),&["Id","Arn","Input","InputPath","SqsParameters"])?;
-                    let lambda_prefix=format!("arn:aws:lambda:{}:{}:function:",ctx.region,ctx.account_id);let sqs_prefix=format!("arn:aws:sqs:{}:{}:",ctx.region,ctx.account_id);
-                    if !target.arn.starts_with(&lambda_prefix)&&!target.arn.starts_with(&sqs_prefix){return Err(invalid("Only Lambda and SQS targets in the same account/region are supported"));}
-                    if target.input.is_some()&&target.input_path.is_some(){return Err(invalid("Input and InputPath are mutually exclusive"));}
-                    if let Some(input)=&target.input{serde_json::from_str::<Value>(input).map_err(|_|invalid("Input must be valid JSON"))?;}
-                    if let Some(path)=&target.input_path && path!="$"&&(!path.starts_with("$.")||path.contains(['[',']','*'])){return Err(invalid("InputPath supports dot-separated object keys"));}
-                    tx.execute("INSERT INTO targets(account,region,bus,rule,id,config) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(account,region,bus,rule,id) DO UPDATE SET config=excluded.config",params![ctx.account_id,ctx.region,bus,i.rule,target.id,target.to_json().to_string()])?;Ok(())})();
-                if let Err(e)=result{failed.push(json!({"TargetId":target.id,"ErrorCode":e.code,"ErrorMessage":e.message}));}
-            }PutTargetsResponse::from_json(&json!({"FailedEntryCount":failed.len(),"FailedEntries":failed}),"")
+                let result = (|| {
+                    name(&target.id)?;
+                    if target.id.len() > 64 {
+                        return Err(invalid("Target ID exceeds 64 characters"));
+                    }
+                    supported(
+                        &target.to_json(),
+                        &["Id", "Arn", "Input", "InputPath", "SqsParameters"],
+                    )?;
+                    let lambda_prefix =
+                        format!("arn:aws:lambda:{}:{}:function:", ctx.region, ctx.account_id);
+                    let sqs_prefix = format!("arn:aws:sqs:{}:{}:", ctx.region, ctx.account_id);
+                    if !target.arn.starts_with(&lambda_prefix)
+                        && !target.arn.starts_with(&sqs_prefix)
+                    {
+                        return Err(invalid(
+                            "Only Lambda and SQS targets in the same account/region are supported",
+                        ));
+                    }
+                    if target.input.is_some() && target.input_path.is_some() {
+                        return Err(invalid("Input and InputPath are mutually exclusive"));
+                    }
+                    if let Some(input) = &target.input {
+                        serde_json::from_str::<Value>(input)
+                            .map_err(|_| invalid("Input must be valid JSON"))?;
+                    }
+                    if let Some(path) = &target.input_path
+                        && path != "$"
+                        && (!path.starts_with("$.") || path.contains(['[', ']', '*']))
+                    {
+                        return Err(invalid("InputPath supports dot-separated object keys"));
+                    }
+                    diesel::insert_into(targets::table)
+                        .values((
+                            targets::account.eq(&ctx.account_id),
+                            targets::region.eq(&ctx.region),
+                            targets::bus.eq(&bus),
+                            targets::rule.eq(&i.rule),
+                            targets::id.eq(&target.id),
+                            targets::config.eq(&target.to_json().to_string()),
+                        ))
+                        .on_conflict((
+                            targets::account,
+                            targets::region,
+                            targets::bus,
+                            targets::rule,
+                            targets::id,
+                        ))
+                        .do_update()
+                        .set(targets::config.eq(diesel::upsert::excluded(targets::config)))
+                        .execute(tx)?;
+                    Ok(())
+                })();
+                if let Err(e) = result {
+                    failed.push(
+                        json!({"TargetId":target.id,"ErrorCode":e.code,"ErrorMessage":e.message}),
+                    );
+                }
+            }
+            PutTargetsResponse::from_json(
+                &json!({"FailedEntryCount":failed.len(),"FailedEntries":failed}),
+                "",
+            )
         })
     }
     fn remove_targets(
@@ -518,7 +669,24 @@ impl Service for EventBridge {
         i: RemoveTargetsRequest,
     ) -> Result<RemoveTargetsResponse, AwsError> {
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
-        self.db.transaction(|tx|{load_rule(tx,ctx,&bus,&i.rule)?;for id in i.ids{tx.execute("DELETE FROM targets WHERE account=?1 AND region=?2 AND bus=?3 AND rule=?4 AND id=?5",params![ctx.account_id,ctx.region,bus,i.rule,id])?;}Ok(RemoveTargetsResponse{failed_entry_count:Some(0),..Default::default()})})
+        self.db.transaction(|tx| {
+            load_rule(tx, ctx, &bus, &i.rule)?;
+            for id in i.ids {
+                diesel::delete(
+                    targets::table
+                        .filter(targets::account.eq(&ctx.account_id))
+                        .filter(targets::region.eq(&ctx.region))
+                        .filter(targets::bus.eq(&bus))
+                        .filter(targets::rule.eq(&i.rule))
+                        .filter(targets::id.eq(&id)),
+                )
+                .execute(tx)?;
+            }
+            Ok(RemoveTargetsResponse {
+                failed_entry_count: Some(0),
+                ..Default::default()
+            })
+        })
     }
     fn list_targets_by_rule(
         &self,
@@ -526,7 +694,21 @@ impl Service for EventBridge {
         i: ListTargetsByRuleRequest,
     ) -> Result<ListTargetsByRuleResponse, AwsError> {
         let bus = bus_name(ctx, i.event_bus_name.as_deref())?;
-        let values=self.db.transaction(|tx|{load_rule(tx,ctx,&bus,&i.rule)?;let mut stmt=tx.prepare("SELECT config FROM targets WHERE account=?1 AND region=?2 AND bus=?3 AND rule=?4 ORDER BY id")?;let texts=stmt.query_map(params![ctx.account_id,ctx.region,bus,i.rule],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;Ok(texts.iter().map(|s|serde_json::from_str::<Value>(s).unwrap()).collect::<Vec<_>>())})?;
+        let values = self.db.transaction(|tx| {
+            load_rule(tx, ctx, &bus, &i.rule)?;
+            let texts = targets::table
+                .filter(targets::account.eq(&ctx.account_id))
+                .filter(targets::region.eq(&ctx.region))
+                .filter(targets::bus.eq(&bus))
+                .filter(targets::rule.eq(&i.rule))
+                .order(targets::id)
+                .select(targets::config)
+                .load::<String>(tx)?;
+            Ok(texts
+                .iter()
+                .map(|s| serde_json::from_str::<Value>(s).unwrap())
+                .collect::<Vec<_>>())
+        })?;
         let (values, next) = page(values, i.limit, i.next_token, "Id")?;
         ListTargetsByRuleResponse::from_json(&json!({"Targets":values,"NextToken":next}), "")
     }
@@ -660,7 +842,9 @@ mod tests {
             events
                 .db
                 .transaction(|tx| {
-                    tx.execute("UPDATE deliveries SET due=0", [])?;
+                    diesel::update(deliveries::table)
+                        .set(deliveries::due.eq(0_i64))
+                        .execute(tx)?;
                     Ok(())
                 })
                 .unwrap();

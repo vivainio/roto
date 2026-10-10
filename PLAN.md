@@ -227,3 +227,10 @@ and service Clippy pass; Moto remains 152 passing for KMS and 25 for STS.
 Secret metadata and version records now use named Diesel row models. All CRUD,
 version-stage updates, deletion, filters and batch reads use typed queries.
 Moto remains 104 passing, 2 skipped and 30 excluded; service Clippy passes.
+
+## CloudFormation and EventBridge Diesel port (2026-10-10)
+
+Stack snapshots and EventBridge buses, rules, targets and delivery queues now use
+typed queries. Delivery retry ordering remains SQLite rowid order. CloudFormation
+has 22 passing native tests (one existing ignored); EventBridge keeps its 23-pass,
+5-skip Moto baseline. Service Clippy and the seeded demo smoke pass.

@@ -1447,6 +1447,7 @@ dependencies = [
 name = "roto-svc-eventbridge"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "roto-core",
  "roto-protocol",
  "roto-svc-lambda",
@@ -1471,6 +1472,7 @@ name = "roto-svc-kinesis"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
+ "diesel",
  "md5",
  "roto-core",
  "roto-protocol",
