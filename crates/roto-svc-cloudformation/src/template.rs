@@ -159,9 +159,73 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
             }
         }
     }
+    validate_conditions(&template["Conditions"])?;
     validate_functions(&template)?;
     order(&template)?;
     Ok(template)
+}
+
+/// Reject condition cycles before the resolver can recursively follow them.
+fn validate_conditions(conditions: &Value) -> Result<(), AwsError> {
+    fn references(value: &Value, names: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(object) => {
+                if let Some(name) = object.get("Condition").and_then(Value::as_str) {
+                    names.insert(name.into());
+                }
+                if let Some(name) = object
+                    .get("Fn::If")
+                    .and_then(Value::as_array)
+                    .and_then(|args| args.first())
+                    .and_then(Value::as_str)
+                {
+                    names.insert(name.into());
+                }
+                for child in object.values() {
+                    references(child, names);
+                }
+            }
+            Value::Array(array) => {
+                for child in array {
+                    references(child, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn visit(
+        name: &str,
+        conditions: &Value,
+        active: &mut BTreeSet<String>,
+        done: &mut BTreeSet<String>,
+    ) -> Result<(), AwsError> {
+        if done.contains(name) {
+            return Ok(());
+        }
+        if active.len() >= 128 || !active.insert(name.into()) {
+            return Err(validation(format!(
+                "Circular or excessively nested condition: {name}"
+            )));
+        }
+        let definition = conditions
+            .get(name)
+            .ok_or_else(|| validation(format!("Unknown condition: {name}")))?;
+        let mut names = BTreeSet::new();
+        references(definition, &mut names);
+        for reference in names {
+            visit(&reference, conditions, active, done)?;
+        }
+        active.remove(name);
+        done.insert(name.into());
+        Ok(())
+    }
+    let mut done = BTreeSet::new();
+    if let Some(object) = conditions.as_object() {
+        for name in object.keys() {
+            visit(name, conditions, &mut BTreeSet::new(), &mut done)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_functions(value: &Value) -> Result<(), AwsError> {
@@ -676,6 +740,29 @@ mod tests {
             resolver
                 .resolve(&json!({"Fn::Sub":"${unterminated"}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn condition_cycles_and_unknown_references_fail_validation() {
+        for conditions in [
+            json!({"A": {"Condition": "A"}}),
+            json!({"A": {"Condition": "B"}, "B": {"Condition": "A"}}),
+            json!({"A": {"Fn::Equals": [{"Fn::If": ["A", 1, 2]}, 1]}}),
+            json!({"A": {"Condition": "Missing"}}),
+        ] {
+            assert!(
+                parse(&json!({"Resources": {}, "Conditions": conditions}).to_string()).is_err()
+            );
+        }
+        assert!(
+            parse(
+                &json!({"Resources": {}, "Conditions": {
+                    "A": {"Fn::Equals": [1, 1]}, "B": {"Condition": "A"}
+                }})
+                .to_string()
+            )
+            .is_ok()
         );
     }
 

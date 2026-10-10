@@ -162,8 +162,7 @@ fn name_key(ty: &str) -> &'static str {
 }
 
 /// Whether moving `old` to `props` requires replacing the physical resource.
-/// The published spec's `Immutable` properties decide when it is available;
-/// otherwise a built-in list is used.
+/// Uses a built-in list of immutable properties.
 pub fn replacement(old: &Resource, ty: &str, props: &Value) -> bool {
     if old.resource_type != ty {
         return true;

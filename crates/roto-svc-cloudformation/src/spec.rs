@@ -201,7 +201,10 @@ fn verify(bytes: &[u8]) -> bool {
 fn fetch() -> Result<Vec<u8>, String> {
     // A dedicated thread keeps the blocking client away from the async runtime.
     let bytes = std::thread::spawn(|| -> Result<Vec<u8>, String> {
-        let response = reqwest::blocking::get(URL)
+        let response = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .and_then(|client| client.get(URL).send())
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|e| e.to_string())?;
         response

@@ -1465,6 +1465,32 @@ mod tests {
     }
 
     #[test]
+    fn change_set_reports_replacement_when_only_resource_type_changes() {
+        let svc = service();
+        create(
+            &svc,
+            "type-change",
+            template(json!({"Resource": {"Type": "AWS::SQS::Queue"}})),
+        )
+        .unwrap();
+        svc.create_change_set(
+            &ctx(),
+            CreateChangeSetInput {
+                stack_name: "type-change".into(),
+                change_set_name: "replace".into(),
+                template_body: Some(template(json!({"Resource": {"Type": "AWS::SNS::Topic"}}))),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stack = svc.load(&ctx(), "type-change").unwrap();
+        let changes = &stack.change_sets[0].changes;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].action, "Modify");
+        assert_eq!(changes[0].replacement, Some(true));
+    }
+
+    #[test]
     fn events_are_newest_first_and_paginate() {
         let svc = service();
         let resources: serde_json::Map<String, Value> = (0..60)

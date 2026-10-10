@@ -45,8 +45,9 @@ publishing out of the experiment.
 All three stacks reach `CREATE_COMPLETE`. A second run reports
 `(no changes)`, and adding a resource to a stack goes through `UpdateStack` to
 `UPDATE_COMPLETE`. Stack events are recorded for every status change, so CDK's
-event poll completes. Change sets, stack policies, rollback configuration and
-deletion modes are not supported yet.
+event poll completes. Roto supports create/update change sets, stack policies,
+termination protection, rollback on failure, and standard/forced deletion.
+Rollback triggers, nested change sets, and resource imports remain unsupported.
 
 CDK deployments normally synthesize a CloudFormation template and submit it to
 CloudFormation, with assets uploaded separately when present. This demo keeps
