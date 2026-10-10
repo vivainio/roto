@@ -64,6 +64,7 @@ struct App {
     gateway: gateway::Gateway,
     api_gateway_v2: apigateway_v2::Registry,
     websockets: websocket::Hub,
+    hooks: std::sync::Mutex<setup::Hooks>,
 }
 
 #[tokio::main]
@@ -201,6 +202,7 @@ async fn main() {
         gateway,
         api_gateway_v2: apigateway_v2::Registry::default(),
         websockets: websocket::Hub::default(),
+        hooks: Default::default(),
     });
 
     let endpoint = format!(
@@ -221,7 +223,7 @@ async fn main() {
             base_url: endpoint.clone(),
         };
         let services = app.services.clone();
-        tokio::task::spawn_blocking(move || {
+        let hooks = tokio::task::spawn_blocking(move || {
             setup::run(&path, ctx, setup_sqs, setup_lambda, services).map_err(|e| e.to_string())
         })
         .await
@@ -230,6 +232,7 @@ async fn main() {
             eprintln!("error in Lua setup: {e}");
             std::process::exit(1);
         });
+        *app.hooks.lock().unwrap() = hooks;
     }
     let router = Router::new()
         .route("/roto-api", get(inspection_ui))
@@ -367,6 +370,71 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .map(|h| format!("http://{h}"))
             .unwrap_or_else(|| "http://localhost:5070".into()),
     };
+
+    let hook_service = service.clone().or_else(|| {
+        (ctx.access_key.is_none())
+            .then(|| {
+                app.services
+                    .values()
+                    .find(|h| h.claims_unsigned(&raw))
+                    .map(|h| h.service().to_owned())
+            })
+            .flatten()
+    });
+    if let Some(hook_service) = hook_service {
+        let hooks = app.hooks.lock().unwrap().clone();
+        let operation = if hook_service == "iotdata"
+            && raw.method == "POST"
+            && raw.path.starts_with("/topics/")
+        {
+            Some("Publish".to_owned())
+        } else {
+            trace::operation(Some(&hook_service), &raw)
+        };
+        if hooks.matches(&hook_service, operation.as_deref()) {
+            let context = ctx.clone();
+            let request = raw.clone();
+            let callback_operation = operation.clone();
+            let callback_service = hook_service.clone();
+            let started = std::time::Instant::now();
+            let intercepted = tokio::task::spawn_blocking(move || {
+                hooks.intercept(
+                    &callback_service,
+                    callback_operation.as_deref(),
+                    &context,
+                    &request,
+                )
+            })
+            .await;
+            let response = match intercepted {
+                Ok(Ok(None)) => None,
+                Ok(Ok(Some(response))) => Some(response),
+                Ok(Err(error)) => Some(plain_error(&error, &request_id)),
+                Err(_) => Some(plain_error(
+                    &AwsError::internal("Lua interceptor panicked"),
+                    &request_id,
+                )),
+            };
+            if let Some(response) = response {
+                let error_code = trace::response_error_code(&response);
+                app.trace.record(trace::entry(
+                    &raw,
+                    &ctx,
+                    Some(&hook_service),
+                    operation,
+                    response.status,
+                    if response.status < 400 {
+                        "success"
+                    } else {
+                        "error"
+                    },
+                    error_code.as_deref(),
+                    started.elapsed().as_millis(),
+                ));
+                return into_request_response(response, &raw);
+            }
+        }
+    }
 
     if raw.path == "/roto-http" || raw.path.starts_with("/roto-http/") {
         let source_ip = parts
@@ -706,6 +774,8 @@ mod discovery_tests {
             trace: trace::Trace::create(None).unwrap(),
             gateway: Default::default(),
             websockets: Default::default(),
+            api_gateway_v2: Default::default(),
+            hooks: Default::default(),
         })
     }
 
@@ -721,6 +791,83 @@ mod discovery_tests {
             .header("content-type", content_type)
             .body(Body::from(body.to_owned())).unwrap();
         handle(State(app.clone()), request).await
+    }
+
+    #[tokio::test]
+    async fn lua_interception_precedes_dispatch_and_traces_stubbed_operations() {
+        let app = app();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&app.store).unwrap());
+        let lambda =
+            Arc::new(roto_svc_lambda::Lambda::new(&app.store, Default::default()).unwrap());
+        let path = std::env::temp_dir().join(format!("roto-hooks-{}.lua", ids::request_id()));
+        std::fs::write(
+            &path,
+            r#"
+roto.intercept_request("sts", "DecodeAuthorizationMessage", function(request)
+  assert(request.headers.authorization == nil)
+  return {status=200, headers={["content-type"]="text/xml"}, body="stubbed"}
+end)
+roto.intercept_request("sts", "GetCallerIdentity", function() return nil end)
+roto.intercept_request("iotdata", "Publish", function() return {status=429, body="throttled"} end)
+"#,
+        )
+        .unwrap();
+        let ctx = RequestContext {
+            account_id: app.account_id.clone(),
+            region: "us-east-1".into(),
+            access_key: None,
+            request_id: "setup".into(),
+            base_url: "http://localhost:5070".into(),
+        };
+        let services = app.services.clone();
+        let script = path.clone();
+        let hooks =
+            tokio::task::spawn_blocking(move || setup::run(&script, ctx, sqs, lambda, services))
+                .await
+                .unwrap()
+                .unwrap();
+        *app.hooks.lock().unwrap() = hooks;
+        let response = request(
+            &app,
+            "sts",
+            "/",
+            "Action=DecodeAuthorizationMessage",
+            "application/x-www-form-urlencoded",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1000)
+                .await
+                .unwrap()
+                .as_ref(),
+            b"stubbed"
+        );
+        let response = request(
+            &app,
+            "sts",
+            "/",
+            "Action=GetCallerIdentity",
+            "application/x-www-form-urlencoded",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = request(&app, "iotdata", "/topics/demo", "{}", "application/json").await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            app.unsupported.snapshot()["calls"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            app.trace.snapshot(None)["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

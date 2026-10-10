@@ -12,7 +12,7 @@ use roto_core::store::{Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
 use std::sync::Arc;
 
-pub use executor::{Executor, Executors};
+pub use executor::{Executor, Executors, inline_executor};
 pub use generated::{OPERATIONS, ROUTES, Service};
 use roto_protocol::{FromJson, ToJson};
 
