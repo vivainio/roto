@@ -234,3 +234,9 @@ Stack snapshots and EventBridge buses, rules, targets and delivery queues now us
 typed queries. Delivery retry ordering remains SQLite rowid order. CloudFormation
 has 22 passing native tests (one existing ignored); EventBridge keeps its 23-pass,
 5-skip Moto baseline. Service Clippy and the seeded demo smoke pass.
+
+## Kinesis Diesel port (2026-10-10)
+
+Streams, records, shard sequences and iterator tokens now use typed queries,
+including record retention and stream token invalidation. All 76 Moto tests,
+five native tests and service Clippy pass.
