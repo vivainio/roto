@@ -1,5 +1,6 @@
 mod inspection;
 mod setup;
+mod trace;
 mod unsupported;
 
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -45,6 +46,9 @@ struct Args {
     /// Region used by the Lua setup script.
     #[arg(long, default_value = "us-east-1")]
     setup_region: String,
+    /// Write one JSON object per AWS HTTP request; request bodies and credentials are omitted.
+    #[arg(long)]
+    trace: Option<PathBuf>,
 }
 
 struct App {
@@ -53,6 +57,7 @@ struct App {
     store: Arc<Store>,
     account_id: String,
     unsupported: unsupported::Unsupported,
+    trace: trace::Trace,
 }
 
 #[tokio::main]
@@ -64,6 +69,10 @@ async fn main() {
         )
         .init();
     let args = Args::parse();
+    let trace = trace::Trace::create(args.trace.as_deref()).unwrap_or_else(|e| {
+        eprintln!("error opening trace file: {e}");
+        std::process::exit(1);
+    });
 
     let store = Arc::new(if args.ephemeral {
         Store::ephemeral()
@@ -174,6 +183,7 @@ async fn main() {
         store,
         account_id: args.account_id,
         unsupported: Default::default(),
+        trace,
     });
 
     let endpoint = format!(
@@ -214,6 +224,7 @@ async fn main() {
         )
         .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(|| async { "ok" }))
+        .route("/roto-api/trace", get(request_trace))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
         // moto's server-mode test harness resets state through this path.
@@ -265,6 +276,14 @@ async fn reset(State(app): State<Arc<App>>) -> Response {
 
 async fn unsupported_calls(State(app): State<Arc<App>>) -> axum::Json<serde_json::Value> {
     axum::Json(app.unsupported.snapshot())
+}
+
+async fn request_trace(
+    State(app): State<Arc<App>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let trace_id = params.get("trace_id").map(String::as_str);
+    axum::Json(app.trace.snapshot(trace_id))
 }
 
 async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
@@ -328,6 +347,16 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
                 .flatten()
         });
     let Some(handler) = handler else {
+        app.trace.record(trace::entry(
+            &raw,
+            &ctx,
+            service.as_deref(),
+            trace::operation(service.as_deref(), &raw),
+            400,
+            "unroutable",
+            Some("UnrecognizedClientException"),
+            0,
+        ));
         app.unsupported.record(unsupported::Call::new(
             service.as_deref(),
             &raw,
@@ -346,18 +375,61 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
     };
     let mut call =
         unsupported::Call::new(Some(handler.service()), &raw, &ctx, "not_implemented", None);
-    let result = tokio::task::spawn_blocking(move || handler.handle(&ctx, &raw)).await;
+    let service_name = handler.service();
+    let mut operation = trace::operation(Some(service_name), &raw);
+    let started = std::time::Instant::now();
+    let request = raw.clone();
+    let context = ctx.clone();
+    let result = tokio::task::spawn_blocking(move || handler.handle(&context, &request)).await;
     let unsupported = match &result {
         Ok(Ok(response)) => unsupported::response(response),
         Ok(Err(error)) => unsupported::error(error),
         Err(_) => None,
     };
-    if let Some((reason, operation)) = unsupported {
+    if let Some((reason, reported_operation)) = unsupported {
         call.reason = reason;
-        if operation.is_some() {
-            call.operation = operation;
+        if reported_operation.is_some() {
+            call.operation = reported_operation.clone();
+            operation = reported_operation;
         }
         app.unsupported.record(call);
+    }
+    {
+        let (status, outcome, error_code) = match &result {
+            Ok(Ok(response)) if response.status < 400 => (response.status, "success", None),
+            Ok(Ok(response)) => {
+                let is_unsupported = unsupported::response(response).is_some();
+                (
+                    response.status,
+                    if is_unsupported {
+                        "unsupported"
+                    } else {
+                        "error"
+                    },
+                    trace::response_error_code(response),
+                )
+            }
+            Ok(Err(error)) => (
+                error.status,
+                if unsupported::error(error).is_some() {
+                    "unsupported"
+                } else {
+                    "error"
+                },
+                Some(error.code.clone()),
+            ),
+            Err(_) => (500, "handler_panic", Some("HandlerPanic".to_owned())),
+        };
+        app.trace.record(trace::entry(
+            &raw,
+            &ctx,
+            Some(service_name),
+            operation,
+            status,
+            outcome,
+            error_code.as_deref(),
+            started.elapsed().as_millis(),
+        ));
     }
     match result {
         Ok(Ok(resp)) => into_response(resp),
@@ -448,6 +520,7 @@ mod discovery_tests {
             store,
             account_id: "123456789012".into(),
             unsupported: Default::default(),
+            trace: trace::Trace::create(None).unwrap(),
         })
     }
 

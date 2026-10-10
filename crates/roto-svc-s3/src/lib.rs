@@ -26,8 +26,18 @@ use roto_core::store::{Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
 use roto_protocol::restxml::rest_xml_error;
 
-pub use generated::{OPERATIONS, Service, dispatch};
+pub use generated::{OPERATIONS, Service, dispatch, route};
 pub use service::S3;
+
+/// Resolve a modelled S3 REST-XML operation without decoding its payload.
+pub fn operation_name(request: &RawRequest) -> Option<&'static str> {
+    let mut request = request.clone();
+    if let Some(bucket) = request.header("host").and_then(virtual_host_bucket) {
+        request.path = format!("/{bucket}{}", request.path);
+    }
+    let query = roto_protocol::QueryParams::parse(&request.query);
+    route(&request, &query).map(|(name, _)| name)
+}
 
 pub const MIGRATIONS: &[Migration] = &[
     Migration {

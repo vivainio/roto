@@ -17,7 +17,9 @@ if [[ "${TARGET:-roto}" == moto ]]; then
   # Reference run: the same tests against real moto, to tell upstream quirks from roto gaps.
   "$venv/bin/moto_server" -p "$port" >"$data/server.log" 2>&1 &
 else
-  "$root/target/debug/roto-server" --port "$port" --ephemeral >"$data/server.log" 2>&1 &
+  server_args=(--port "$port" --ephemeral)
+  [[ -n "${ROTO_TRACE_FILE:-}" ]] && server_args+=(--trace "$ROTO_TRACE_FILE")
+  "$root/target/debug/roto-server" "${server_args[@]}" >"$data/server.log" 2>&1 &
 fi
 pid=$!
 trap 'kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true; rm -rf "$data"' EXIT

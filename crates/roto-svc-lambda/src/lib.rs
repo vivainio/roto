@@ -12,7 +12,7 @@ use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandle
 use std::sync::Arc;
 
 pub use executor::{Executor, Executors};
-pub use generated::{OPERATIONS, Service};
+pub use generated::{OPERATIONS, ROUTES, Service};
 use roto_protocol::{FromJson, ToJson};
 
 pub fn dispatch(

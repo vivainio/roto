@@ -3,7 +3,6 @@
 
 import sys
 from pathlib import Path
-
 import pytest
 
 
@@ -12,6 +11,40 @@ class Audit:
         self.passed = set()
         self.failed = set()
         self.excluded = set(excluded)
+        self.active_test = None
+        self.original_send = None
+
+    def pytest_configure(self, config):
+        # Add a harmless correlation header after signing so the server trace can
+        # associate each HTTP request with the Moto test that made it.
+        from botocore.endpoint import Endpoint
+
+        self.original_send = Endpoint._send
+        original_send = self.original_send
+        audit = self
+
+        def traced_send(endpoint, request):
+            if audit.active_test:
+                trace_id = "".join(
+                    char if char.isascii() and char.isprintable() else "_"
+                    for char in audit.active_test
+                )
+                request.headers["X-Roto-Trace-ID"] = trace_id[:256]
+            return original_send(endpoint, request)
+
+        Endpoint._send = traced_send
+
+    def pytest_unconfigure(self, config):
+        if self.original_send is not None:
+            from botocore.endpoint import Endpoint
+
+            Endpoint._send = self.original_send
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_protocol(self, item, nextitem):
+        self.active_test = item.nodeid
+        yield
+        self.active_test = None
 
     def pytest_collection_modifyitems(self, session, config, items):
         if self.excluded:

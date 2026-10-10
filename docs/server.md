@@ -4,6 +4,8 @@ Pass options to the installed `roto-server` command:
 
 ```sh
 roto-server --data-dir ./test-data --durable
+# Capture API calls while running Moto's suite:
+roto-server --ephemeral --trace moto-trace.jsonl
 ```
 
 | Option | Default | Behavior |
@@ -17,6 +19,7 @@ roto-server --data-dir ./test-data --durable
 | `--setup` | None | Lua resource setup and executor bindings before listening or processing events |
 | `--setup-region` | `us-east-1` | Region used by Lua setup |
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
+| `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
 
 Use `--help` for the executable's current options. `RUST_LOG` controls tracing output:
 
@@ -33,6 +36,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
 | `GET` | `/roto-api/s3/object` | Download an object or read a bounded preview |
 | `GET` | `/roto-api/health` | Returns `ok` |
+| `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
@@ -127,6 +131,70 @@ account and region. SDK retries count as additional requests.
 The list is kept in memory and cleared on restart or either reset endpoint.
 It holds up to 1,000 distinct entries; existing entries keep counting after that
 limit, while `dropped_calls` counts requests for additional distinct entries.
+
+Roto always keeps the latest 10,000 AWS requests in memory. Query
+`/roto-api/trace` to inspect them, even when `--trace` is off. Each entry
+contains a timestamp, request ID, optional `trace_id`, service, operation, method,
+path, account, region, response status, outcome, and duration. Query strings,
+headers, credentials, and request/response bodies are excluded. S3 and Lambda
+REST operations are resolved from their generated route tables. When using
+`scripts/run-moto-tests.sh`, the test runner adds the Moto pytest node ID as
+`trace_id`, so calls can be traced back to their tests. Any client can send an
+`X-Roto-Trace-ID` header to group calls under a scenario, job, or test run. This
+is an ordinary HTTP header, so the same approach works for C# and other AWS SDKs
+or custom clients. When `--trace` is enabled, the file is truncated when Roto
+starts and flushed after each request.
+
+An app can use a stable ID for one scenario, make its AWS calls, then fetch the
+recent matching requests to assert that the expected operations occurred:
+
+```sh
+curl 'http://localhost:5070/roto-api/trace?trace_id=ROTO_checkout-42'
+```
+
+The endpoint returns the latest 10,000 requests held in memory, with
+`dropped_entries` indicating whether older requests were evicted. Calls without
+a trace ID are still recorded and can be inspected without a filter. To retain
+the full trace across the in-memory limit or server restarts, also pass
+`--trace calls.jsonl`; that file is truncated on startup and flushed after
+each request.
+
+For local tests, clients can carry the trace ID in a fake access key. Give each
+scenario a key beginning with `ROTO`; Roto records that full access key as
+`trace_id`. This works with ordinary AWS SDK client construction, without
+request hooks:
+
+```csharp
+using Amazon.Runtime;
+using Amazon.S3;
+
+var traceId = "ROTO_checkout-42";
+var credentials = new BasicAWSCredentials(traceId, "local-secret");
+var s3 = new AmazonS3Client(credentials, s3Config);
+```
+
+For the example above, query with `trace_id=ROTO_checkout-42`. Use the same
+fake access key for each service client in the scenario. The
+secret key is never included in the trace. The explicit `X-Roto-Trace-ID`
+header remains available to clients that support request customization or
+when access keys need to stay fixed. Roto does not verify signatures or enforce
+IAM policies, so these local credentials are only used to construct normal
+signed SDK requests.
+
+Capture calls from the Moto server-mode suite with `ROTO_TRACE_FILE`, then make a
+filterable, self-contained HTML report against every operation in botocore's
+AWS service models:
+
+```sh
+ROTO_TRACE_FILE=moto-trace.jsonl scripts/run-moto-tests.sh test_sqs
+.venv-moto/bin/python scripts/report-api-coverage.py --full-spec moto-trace.jsonl --output api-coverage.html
+```
+
+The trace file is truncated at the start of each run. Keep a separate file for
+each service suite, then merge runs by passing multiple trace files. The dashboard separates
+unseen operations, observed successes, observed errors, and unsupported calls;
+clicking an operation shows the correlated trace IDs. These are observations
+from the selected traces, not a claim that unseen APIs are unimplemented.
 The recorder stores no request bodies, query strings, or headers. Paths remain
 visible, including resource names supplied in the URL. Payload capture and Lua
 fallback handlers are not implemented yet.
