@@ -106,9 +106,10 @@ Temporary files may disappear; the commands above regenerate the evidence.
 
 # IoT WebSocket and API Gateway v2 handover
 
-Recorded 2026-10-10. A native, non-Moto integration smoke test now covers the
-local WebSocket topic channel and API Gateway Management API callbacks. API
-Gateway v2 control-plane and route execution are still unimplemented.
+Recorded 2026-10-10 and updated after implementing the API Gateway v2 WebSocket
+subset. A native, non-Moto integration smoke test covers the local WebSocket
+topic channel, API creation and route execution, Lambda integrations, and
+Management API callbacks.
 
 ## Current implementation
 
@@ -123,16 +124,26 @@ Gateway v2 control-plane and route execution are still unimplemented.
   not implemented.
 - API Gateway Management API `PostToConnection` uses the same connection hub
   and sends text or binary WebSocket frames. The API ID and stage are not
-  configured or isolated.
+  configured for the custom local sockets.
+- API Gateway v2 control-plane calls under `/v2/apis` create WebSocket APIs,
+  Lambda proxy integrations, routes, `$default` route responses, stages, and
+  deployments. Configuration is in memory and is cleared on reset or restart.
+- API Gateway WebSocket clients connect to `/{apiId}/{stage}` (or `/{apiId}` for
+  `$default`). `$connect`, `$disconnect`, and selected message routes invoke the
+  configured Lambda integration. A `$default` route response sends the Lambda
+  payload to the client; Management API callback paths check API ID and stage.
 - `docs/iot.md` documents the current endpoints and protocol.
 
 ## Native coverage
 
 `tests/smoke-websocket.py` uses only Python's standard library. It starts an
-ephemeral Roto server and exercises two live WebSocket clients, wildcard topic
-delivery, unsubscribe, binary payloads, Management API text/binary callbacks,
-closed-connection `GoneException`, and invalid QoS handling. It does not use
-Moto or an AWS SDK.
+ephemeral Roto server and exercises two custom WebSocket clients, wildcard topic
+delivery, unsubscribe, binary payloads, custom Management API text/binary
+callbacks, closed-connection `GoneException`, and invalid QoS handling. It also
+creates a WebSocket API through `/v2/apis`, configures a Lambda proxy route and
+auto-deploy stage, connects through the API ID/stage path, checks route selection
+and the Lambda event, and posts a callback through the API-specific Management
+API path. It does not use Moto or an AWS SDK.
 
 Verified on this worktree:
 
@@ -144,17 +155,10 @@ git diff --check
 ```
 
 All four commands passed; the smoke test printed:
-`PASS: IoT topic subscriptions, wildcard delivery, binary payloads, and API Gateway callbacks`.
+`PASS: IoT topic sockets and API Gateway v2 routes, Lambda integrations, and callbacks`.
 
-## Remaining API Gateway v2 work
-
-There is no API Gateway v2 service implementation yet. Roto does not create or
-deploy HTTP/WebSocket APIs, configure stages/routes/integrations, route API
-WebSocket messages, or invoke `$connect`, `$disconnect`, and message-route
-integrations. The passing smoke test covers the existing Management API
-callback path, not API Gateway v2 API creation or routing.
-
-When implementing API Gateway v2, extend native coverage to create a WebSocket
-API, configure a stage and routes/integrations, connect through that API's data
-plane URL, exercise its message route, and send a callback through
-`PostToConnection`. Keep the existing custom IoT socket flow covered as well.
+Remaining API Gateway gaps are HTTP APIs, custom domains, authorizers, request
+models, non-Lambda integrations, automatic Lambda permissions, integration
+responses beyond the `$default` route response, and `GetConnection`/
+`DeleteConnection`. The data plane currently supports route-selection
+expressions of the form `$request.body.field`; API configuration is in memory.

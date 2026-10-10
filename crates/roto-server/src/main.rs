@@ -1,3 +1,4 @@
+mod apigateway_v2;
 mod gateway;
 mod inspection;
 mod setup;
@@ -15,7 +16,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use clap::Parser;
 use roto_core::sigv4::CredentialScope;
 use roto_core::store::{Store, StoreOptions};
@@ -61,6 +62,7 @@ struct App {
     unsupported: unsupported::Unsupported,
     trace: trace::Trace,
     gateway: gateway::Gateway,
+    api_gateway_v2: apigateway_v2::Registry,
     websockets: websocket::Hub,
 }
 
@@ -197,6 +199,7 @@ async fn main() {
         unsupported: Default::default(),
         trace,
         gateway,
+        api_gateway_v2: apigateway_v2::Registry::default(),
         websockets: websocket::Hub::default(),
     });
 
@@ -241,6 +244,16 @@ async fn main() {
         .route("/roto-api/health", get(|| async { "ok" }))
         .route("/roto-api/ws", get(websocket::websocket))
         .route("/roto-api/iot/ws", get(websocket::websocket))
+        .route("/v2/apis", any(handle))
+        .route("/v2/apis/{api_id}", any(handle))
+        .route(
+            "/{api_id}",
+            get(websocket::apigateway_default_websocket).fallback(handle),
+        )
+        .route(
+            "/{api_id}/{stage_name}",
+            get(websocket::apigateway_websocket).fallback(handle),
+        )
         .route("/roto-api/trace", get(request_trace))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
@@ -290,6 +303,7 @@ async fn reset(State(app): State<Arc<App>>) -> Response {
     match res {
         Ok(()) => {
             app.unsupported.reset();
+            app.api_gateway_v2.reset();
             (StatusCode::OK, r#"{"status":"ok"}"#).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -410,6 +424,28 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             &ctx,
             Some("iotdata"),
             Some("Publish".into()),
+            response.status,
+            outcome,
+            error_code.as_deref(),
+            started.elapsed().as_millis(),
+        ));
+        return finish_request_response(into_response(response), &raw);
+    }
+
+    if raw.path == "/v2/apis" || raw.path.starts_with("/v2/apis/") {
+        let started = std::time::Instant::now();
+        let response = app.api_gateway_v2.handle(&raw);
+        let outcome = if response.status < 400 {
+            "success"
+        } else {
+            "error"
+        };
+        let error_code = trace::response_error_code(&response);
+        app.trace.record(trace::entry(
+            &raw,
+            &ctx,
+            Some("apigatewayv2"),
+            apigateway_v2::operation(&raw),
             response.status,
             outcome,
             error_code.as_deref(),

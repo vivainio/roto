@@ -3,12 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use roto_core::{AwsError, RawRequest};
+use roto_core::{AwsError, RawRequest, RequestContext};
 use roto_protocol::{QueryParams, restxml::percent_decode_path};
 use serde_json::{Value, json};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 use crate::App;
@@ -25,6 +27,7 @@ enum OutboundFrame {
 struct Client {
     outbound: mpsc::Sender<OutboundFrame>,
     subscriptions: HashSet<String>,
+    api_gateway: Option<(String, String)>,
 }
 
 #[derive(Default)]
@@ -97,7 +100,12 @@ impl Hub {
         Ok(())
     }
 
-    pub fn post_to_connection(&self, id: &str, data: &[u8]) -> Result<(), PostError> {
+    pub fn post_to_connection(
+        &self,
+        id: &str,
+        data: &[u8],
+        api_stage: Option<(&str, &str)>,
+    ) -> Result<(), PostError> {
         if data.len() > API_GATEWAY_MAX_MESSAGE_SIZE {
             return Err(PostError::TooLarge);
         }
@@ -109,6 +117,16 @@ impl Hub {
         let Some(client) = state.clients.get(id) else {
             return Err(PostError::Gone);
         };
+        if let Some((api_id, stage_name)) = api_stage
+            && client
+                .api_gateway
+                .as_ref()
+                .is_none_or(|(client_api, client_stage)| {
+                    client_api != api_id || client_stage != stage_name
+                })
+        {
+            return Err(PostError::Gone);
+        }
         match client.outbound.try_send(frame) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => Err(PostError::LimitExceeded),
@@ -125,6 +143,422 @@ pub async fn websocket(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Res
         .into_response()
 }
 
+pub async fn apigateway_default_websocket(
+    State(app): State<Arc<App>>,
+    Path(api_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    apigateway_upgrade(app, api_id, "$default".into(), query, headers, ws).await
+}
+
+pub async fn apigateway_websocket(
+    State(app): State<Arc<App>>,
+    Path((api_id, stage_name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    apigateway_upgrade(app, api_id, stage_name, query, headers, ws).await
+}
+
+async fn apigateway_upgrade(
+    app: Arc<App>,
+    api_id: String,
+    stage_name: String,
+    query: HashMap<String, String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(api) = app.api_gateway_v2.runtime_api(&api_id, &stage_name) else {
+        return (StatusCode::NOT_FOUND, "Unknown WebSocket API or stage").into_response();
+    };
+    let connection_id = roto_core::ids::request_id();
+    let connected_at = epoch_millis();
+    let event_headers = headers_json(&headers);
+    let query_string = query_string(&query);
+    let host = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost")
+        .to_owned();
+    let source_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .unwrap_or("127.0.0.1")
+        .trim()
+        .to_owned();
+
+    if let Some(integration_uri) = integration_uri(&api, "$connect") {
+        let event = api_event(
+            &api,
+            "$connect",
+            "CONNECT",
+            &connection_id,
+            &host,
+            &source_ip,
+            &event_headers,
+            &query,
+            &query_string,
+            connected_at,
+            None,
+        );
+        if let Err(reason) = invoke_lambda(&app, &integration_uri, event).await {
+            tracing::warn!(%reason, "API Gateway $connect integration failed");
+            return (
+                StatusCode::BAD_GATEWAY,
+                "WebSocket connect integration failed",
+            )
+                .into_response();
+        }
+    }
+
+    ws.on_upgrade(move |socket| {
+        serve_api_gateway(
+            socket,
+            app,
+            api,
+            connection_id,
+            host,
+            source_ip,
+            event_headers,
+            query,
+            query_string,
+            connected_at,
+        )
+    })
+    .into_response()
+}
+
+async fn serve_api_gateway(
+    mut socket: WebSocket,
+    app: Arc<App>,
+    api: crate::apigateway_v2::RuntimeApi,
+    connection_id: String,
+    host: String,
+    source_ip: String,
+    headers: Value,
+    query: HashMap<String, String>,
+    query_string: String,
+    connected_at: u64,
+) {
+    let (outbound, mut receiver) = mpsc::channel(OUTBOUND_CAPACITY);
+    app.websockets.0.lock().unwrap().clients.insert(
+        connection_id.clone(),
+        Client {
+            outbound,
+            subscriptions: HashSet::new(),
+            api_gateway: Some((api.api_id.clone(), api.stage_name.clone())),
+        },
+    );
+    // The local endpoint exposes the connection ID so a local client can call the
+    // Management API without a separate Lambda or inspection endpoint.
+    if send_json(
+        &mut socket,
+        json!({"type":"ready", "connectionId":connection_id}),
+    )
+    .await
+    .is_err()
+    {
+        app.websockets
+            .0
+            .lock()
+            .unwrap()
+            .clients
+            .remove(&connection_id);
+        return;
+    }
+
+    loop {
+        tokio::select! {
+            frame = socket.recv() => {
+                let Some(Ok(frame)) = frame else { break; };
+                match frame {
+                    Message::Text(text) => {
+                        let raw = text.as_str().as_bytes();
+                        if let Some(route_key) = selected_route(&api, raw) {
+                            if let Some(integration_uri) = integration_uri(&api, &route_key) {
+                                let event = api_event(
+                                    &api, &route_key, "MESSAGE", &connection_id, &host,
+                                    &source_ip, &headers, &query, &query_string, connected_at, Some(raw),
+                                );
+                                if api.route_responses.contains(&route_key) {
+                                    if let Ok(payload) = invoke_lambda(&app, &integration_uri, event).await {
+                                        let response = match String::from_utf8(payload) {
+                                            Ok(text) => Message::Text(text.into()),
+                                            Err(error) => Message::Binary(error.into_bytes().into()),
+                                        };
+                                        if socket.send(response).await.is_err() { break; }
+                                    }
+                                } else {
+                                    let _ = invoke_lambda(&app, &integration_uri, event).await;
+                                }
+                            }
+                        }
+                    }
+                    Message::Binary(bytes) => {
+                        if let Some(integration_id) = api.routes.get("$default") {
+                            if let Some(integration_uri) = api.integrations.get(integration_id) {
+                                let event = api_event(
+                                    &api, "$default", "MESSAGE", &connection_id, &host,
+                                    &source_ip, &headers, &query, &query_string, connected_at, Some(&bytes),
+                                );
+                                if api.route_responses.contains("$default") {
+                                    if let Ok(payload) = invoke_lambda(&app, integration_uri, event).await {
+                                        let response = match String::from_utf8(payload) {
+                                            Ok(text) => Message::Text(text.into()),
+                                            Err(error) => Message::Binary(error.into_bytes().into()),
+                                        };
+                                        if socket.send(response).await.is_err() { break; }
+                                    }
+                                } else {
+                                    let _ = invoke_lambda(&app, integration_uri, event).await;
+                                }
+                            }
+                        }
+                    }
+                    Message::Ping(payload) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() { break; }
+                    }
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break,
+                }
+            }
+            outbound = receiver.recv() => {
+                let Some(outbound) = outbound else { break; };
+                let frame = match outbound {
+                    OutboundFrame::Text(text) => Message::Text(text.into()),
+                    OutboundFrame::Binary(data) => Message::Binary(data.into()),
+                };
+                if socket.send(frame).await.is_err() { break; }
+            }
+        }
+    }
+    app.websockets
+        .0
+        .lock()
+        .unwrap()
+        .clients
+        .remove(&connection_id);
+    if let Some(integration_uri) = integration_uri(&api, "$disconnect") {
+        let event = api_event(
+            &api,
+            "$disconnect",
+            "DISCONNECT",
+            &connection_id,
+            &host,
+            &source_ip,
+            &headers,
+            &query,
+            &query_string,
+            connected_at,
+            None,
+        );
+        let _ = invoke_lambda(&app, &integration_uri, event).await;
+    }
+}
+
+fn selected_route(api: &crate::apigateway_v2::RuntimeApi, body: &[u8]) -> Option<String> {
+    let expression = api
+        .route_selection_expression
+        .strip_prefix("$request.body.");
+    let selected = expression
+        .and_then(|expression| {
+            serde_json::from_slice::<Value>(body)
+                .ok()
+                .map(|value| (expression, value))
+        })
+        .and_then(|(expression, value)| {
+            expression
+                .split('.')
+                .try_fold(&value, |value, key| value.get(key))
+                .map(|selected| {
+                    selected
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| selected.to_string())
+                })
+        });
+    selected
+        .filter(|key| api.routes.contains_key(key))
+        .or_else(|| {
+            api.routes
+                .contains_key("$default")
+                .then(|| "$default".into())
+        })
+}
+
+fn integration_uri(api: &crate::apigateway_v2::RuntimeApi, route_key: &str) -> Option<String> {
+    api.routes
+        .get(route_key)
+        .and_then(|id| api.integrations.get(id))
+        .cloned()
+}
+
+fn api_event(
+    api: &crate::apigateway_v2::RuntimeApi,
+    route_key: &str,
+    event_type: &str,
+    connection_id: &str,
+    host: &str,
+    source_ip: &str,
+    headers: &Value,
+    query: &HashMap<String, String>,
+    raw_query: &str,
+    connected_at: u64,
+    body: Option<&[u8]>,
+) -> Value {
+    let now = epoch_millis();
+    let date = roto_protocol::timestamp::Timestamp((now / 1000) as i64).to_http_date();
+    let date_parts: Vec<_> = date.split(' ').collect();
+    let request_time = format!(
+        "{}/{}/{}:{} +0000",
+        date_parts[1], date_parts[2], date_parts[3], date_parts[4]
+    );
+    let request_id = roto_core::ids::request_id();
+    let mut context = json!({
+        "routeKey":route_key,
+        "eventType":event_type,
+        "extendedRequestId":request_id,
+        "requestTimeEpoch":now,
+        "messageDirection":"IN",
+        "stage":api.stage_name,
+        "connectedAt":connected_at,
+        "requestTime":request_time,
+        "apiId":api.api_id,
+        "domainName":host,
+        "connectionId":connection_id,
+        "requestId":request_id,
+        "identity":{"sourceIp":source_ip,"userAgent":headers.get("user-agent").and_then(Value::as_str).unwrap_or("")}
+    });
+    if event_type == "MESSAGE" {
+        context["messageId"] = json!(roto_core::ids::request_id());
+    }
+    let mut event = json!({
+        "headers":headers,
+        "queryStringParameters":query,
+        "requestContext":context,
+        "isBase64Encoded":false
+    });
+    if !raw_query.is_empty() {
+        event["multiValueQueryStringParameters"] = json!(
+            query
+                .iter()
+                .map(|(key, value)| (key.clone(), vec![value.clone()]))
+                .collect::<HashMap<_, _>>()
+        );
+    }
+    if let Some(body) = body {
+        match std::str::from_utf8(body) {
+            Ok(text) => event["body"] = json!(text),
+            Err(_) => {
+                event["body"] = json!(roto_protocol::base64::encode(body));
+                event["isBase64Encoded"] = json!(true);
+            }
+        }
+    }
+    event
+}
+
+async fn invoke_lambda(
+    app: &Arc<App>,
+    integration_uri: &str,
+    event: Value,
+) -> Result<Vec<u8>, String> {
+    let function = integration_uri
+        .split("functions/")
+        .nth(1)
+        .and_then(|suffix| suffix.split("/invocations").next())
+        .or_else(|| {
+            integration_uri
+                .starts_with("arn:aws:lambda:")
+                .then_some(integration_uri)
+        })
+        .ok_or_else(|| "unsupported API Gateway integration URI".to_owned())?;
+    let fields: Vec<_> = function.split(':').collect();
+    let mut context = RequestContext {
+        account_id: app.account_id.clone(),
+        region: "us-east-1".into(),
+        access_key: None,
+        request_id: roto_core::ids::request_id(),
+        base_url: "http://localhost".into(),
+    };
+    if fields.len() >= 7 && fields[0] == "arn" && fields[2] == "lambda" {
+        context.region = fields[3].into();
+        context.account_id = fields[4].into();
+    }
+    let request = RawRequest {
+        method: "POST".into(),
+        path: format!("/2015-03-31/functions/{function}/invocations"),
+        query: "LogType=Tail".into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: serde_json::to_vec(&event).map_err(|error| error.to_string())?,
+    };
+    let lambda = app
+        .services
+        .get("lambda")
+        .cloned()
+        .ok_or_else(|| "Lambda service is unavailable".to_owned())?;
+    let response = tokio::task::spawn_blocking(move || lambda.handle(&context, &request))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    if response.status >= 400
+        || response
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("x-amz-function-error"))
+    {
+        return Err("Lambda integration failed".into());
+    }
+    Ok(response.body)
+}
+
+fn headers_json(headers: &HeaderMap) -> Value {
+    let mut result = serde_json::Map::new();
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            result
+                .entry(name.as_str().to_ascii_lowercase())
+                .and_modify(|existing| {
+                    if let Some(previous) = existing.as_str() {
+                        *existing = json!(format!("{previous},{value}"));
+                    }
+                })
+                .or_insert_with(|| json!(value));
+        }
+    }
+    Value::Object(result)
+}
+
+fn query_string(query: &HashMap<String, String>) -> String {
+    query
+        .iter()
+        .map(|(key, value)| format!("{}={}", url_encode(key), url_encode(value)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn url_encode(value: &str) -> String {
+    value.bytes().fold(String::new(), |mut result, byte| {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            result.push(char::from(byte));
+        } else {
+            result.push_str(&format!("%{byte:02X}"));
+        }
+        result
+    })
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 async fn serve(mut socket: WebSocket, hub: Hub) {
     let id = roto_core::ids::request_id();
     let (outbound, mut receiver) = mpsc::channel(OUTBOUND_CAPACITY);
@@ -133,6 +567,7 @@ async fn serve(mut socket: WebSocket, hub: Hub) {
         Client {
             outbound,
             subscriptions: HashSet::new(),
+            api_gateway: None,
         },
     );
     if send_json(&mut socket, json!({"type":"ready", "connectionId":id}))
@@ -263,7 +698,7 @@ async fn send_json(socket: &mut WebSocket, value: Value) -> Result<(), axum::Err
 
 pub fn handle_management_post(hub: &Hub, request: &RawRequest) -> Result<(), AwsError> {
     let marker = "/@connections/";
-    let Some((_, encoded_id)) = request.path.rsplit_once(marker) else {
+    let Some((prefix, encoded_id)) = request.path.rsplit_once(marker) else {
         return Err(AwsError::invalid_action("PostToConnection"));
     };
     if encoded_id.is_empty() || encoded_id.contains('/') {
@@ -274,7 +709,9 @@ pub fn handle_management_post(hub: &Hub, request: &RawRequest) -> Result<(), Aws
         ));
     }
     let id = percent_decode_path(encoded_id);
-    hub.post_to_connection(&id, &request.body)
+    let prefix_parts: Vec<_> = prefix.split('/').filter(|part| !part.is_empty()).collect();
+    let api_stage = (prefix_parts.len() >= 2).then(|| (prefix_parts[0], prefix_parts[1]));
+    hub.post_to_connection(&id, &request.body, api_stage)
         .map_err(|error| match error {
             PostError::Gone => {
                 AwsError::sender(410, "GoneException", "Connection is no longer available")

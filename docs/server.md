@@ -59,7 +59,7 @@ Open `http://localhost:5070/roto-api/` to browse created resources and their dat
 - CloudFormation stacks, including templates, resources, and outputs.
 - Lambda functions and event-source mappings; EventBridge buses, rules, and targets;
   SNS topics and subscriptions; IAM resources; SSM parameter versions; secrets
-  and their versions.
+  and their versions; CloudWatch Logs groups and events.
 - Lambda invocation results and logs, S3 notification handoffs, and EventBridge
   delivery history.
 
@@ -83,9 +83,11 @@ accepts `bucket`, `key`, an optional `version`, and `preview=true` for the first
 64 KiB. Downloads are served as attachments. These inspection endpoints only
 read resources; they do not modify service state.
 
-The local WebSocket endpoint accepts topic subscriptions for IoT publishes and
-also exposes connection IDs for API Gateway Management API `PostToConnection`.
-See [IoT topics and WebSockets](iot.md) for the browser protocol and SDK examples.
+The local WebSocket endpoints accept topic subscriptions for IoT publishes and
+also expose connection IDs for API Gateway Management API `PostToConnection`.
+API Gateway v2 WebSocket APIs connect through `/{apiId}/{stage}` and support
+Lambda proxy route integrations. See [IoT topics and WebSockets](iot.md) for
+the control-plane subset, route events, browser protocol, and SDK examples.
 
 Reset deletes the instance's service state, including persistent state:
 

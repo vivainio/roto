@@ -108,11 +108,11 @@ class WebSocket:
         self.sock.close()
 
 
-def http_request(endpoint, port, service, path, data, expected_status=200):
+def http_request(endpoint, port, service, path, data, expected_status=200, method="POST"):
     request = urllib.request.Request(
         endpoint + path,
         data=data,
-        method="POST",
+        method=method,
         headers={"Host": f"{service}.localhost:{port}"},
     )
     try:
@@ -124,6 +124,26 @@ def http_request(endpoint, port, service, path, data, expected_status=200):
     return body
 
 
+def api_json(endpoint, port, method, path, value=None, expected_status=200):
+    data = None if value is None else json.dumps(value).encode()
+    request = urllib.request.Request(
+        endpoint + path,
+        data=data,
+        method=method,
+        headers={
+            "Host": f"apigatewayv2.localhost:{port}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            status, body = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, body = error.code, error.read()
+    assert status == expected_status, (path, status, body)
+    return json.loads(body) if body else None
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     with socket.socket() as sock:
@@ -133,9 +153,14 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="roto-websocket-smoke-") as directory:
         log_path = Path(directory) / "server.log"
+        setup_path = Path(directory) / "setup.lua"
+        setup_path.write_text(
+            'roto.lambda.function_("ws-echo", { timeout = 5, '
+            'executor = { command = { "sh", "-c", "cat" } } })\n'
+        )
         with log_path.open("w+") as log:
             process = subprocess.Popen(
-                [str(root / "target/debug/roto-server"), "--ephemeral", "--port", str(port)],
+                [str(root / "target/debug/roto-server"), "--ephemeral", "--port", str(port), "--setup", str(setup_path)],
                 stdout=log,
                 stderr=log,
             )
@@ -226,6 +251,72 @@ def main():
                 opcode, payload = second.receive()
                 assert opcode == 0x2 and payload == b"\x00\xff"
 
+                # Create a WebSocket API through the v2 control plane, deploy an
+                # echo Lambda route, connect through its API/stage URL, and use
+                # the Management API against the API-specific connection path.
+                api = api_json(endpoint, port, "POST", "/v2/apis", {
+                    "Name": "smoke-websocket",
+                    "ProtocolType": "WEBSOCKET",
+                    "RouteSelectionExpression": "$request.body.action",
+                }, 201)
+                api_id = api["apiId"]
+                integration = api_json(endpoint, port, "POST", f"/v2/apis/{api_id}/integrations", {
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationMethod": "POST",
+                    "IntegrationUri": "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:ws-echo/invocations",
+                    "PayloadFormatVersion": "1.0",
+                }, 201)
+                target = f"integrations/{integration['integrationId']}"
+                for route_key in ("$connect", "$disconnect", "echo"):
+                    route = api_json(endpoint, port, "POST", f"/v2/apis/{api_id}/routes", {
+                        "RouteKey": route_key,
+                        "Target": target,
+                    }, 201)
+                    if route_key == "echo":
+                        api_json(endpoint, port, "POST", f"/v2/apis/{api_id}/routes/{route['routeId']}/routeresponses", {
+                            "RouteResponseKey": "$default",
+                        }, 201)
+                api_json(endpoint, port, "POST", f"/v2/apis/{api_id}/stages", {
+                    "StageName": "dev",
+                    "AutoDeploy": True,
+                }, 201)
+                try:
+                    gateway_client = WebSocket("127.0.0.1", port, f"/{api_id}/dev")
+                except AssertionError as error:
+                    log.seek(0)
+                    raise AssertionError(f"{error}\n{log.read()}") from error
+                clients.append(gateway_client)
+                gateway_ready = gateway_client.receive_json()
+                assert gateway_ready["type"] == "ready"
+                gateway_client.send_json({"action": "echo", "message": "routed"})
+                routed_event = gateway_client.receive_json()
+                assert routed_event["requestContext"]["eventType"] == "MESSAGE"
+                assert routed_event["requestContext"]["routeKey"] == "echo"
+                assert json.loads(routed_event["body"]) == {"action": "echo", "message": "routed"}
+                api_connection_path = f"/{api_id}/dev/@connections/" + urllib.parse.quote(gateway_ready["connectionId"], safe="")
+                http_request(endpoint, port, "execute-api", api_connection_path, b"api-callback")
+                opcode, payload = gateway_client.receive()
+                assert opcode == 0x1 and payload == b"api-callback"
+                wrong_api_path = f"/wrong-api/dev/@connections/" + urllib.parse.quote(gateway_ready["connectionId"], safe="")
+                http_request(endpoint, port, "execute-api", wrong_api_path, b"wrong-target", expected_status=410)
+
+                gateway_client.close()
+                clients.remove(gateway_client)
+                deadline = time.monotonic() + 2
+                while True:
+                    history = json.loads(http_request(
+                        endpoint, port, "lambda", "/roto-api/lambda/invocations", None, method="GET"
+                    ))
+                    if any(
+                        item.get("result", {}).get("requestContext", {}).get("eventType") == "DISCONNECT"
+                        for item in history["invocations"]
+                    ):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise AssertionError("API Gateway $disconnect integration was not invoked")
+                    time.sleep(0.05)
+                http_request(endpoint, port, "execute-api", api_connection_path, b"after-close", expected_status=410)
+
                 second.close()
                 clients.remove(second)
                 deadline = time.monotonic() + 2
@@ -254,7 +345,7 @@ def main():
                     expected_status=400,
                 )
                 assert b"InvalidRequestException" in error_body
-                print("PASS: IoT topic subscriptions, wildcard delivery, binary payloads, and API Gateway callbacks")
+                print("PASS: IoT topic sockets and API Gateway v2 routes, Lambda integrations, and callbacks")
             finally:
                 for client in clients:
                     client.close()
