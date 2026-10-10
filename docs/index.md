@@ -26,6 +26,16 @@ that makes LocalStack an impractical choice. roto is intended to offer an
 MIT-licensed alternative that runs locally without a vendor account, license
 key, or subscription.
 
+[MiniStack](https://ministack.org/) is another open-source LocalStack alternative,
+with much broader [AWS service coverage](https://ministack.org/docs/services/)
+than roto. roto aims to offer solid support for core AWS services in a
+dependency-free Rust binary you can drop into a development environment or CI
+without Docker containers or language runtimes. Check roto's
+[service coverage](services.md) to see whether it supports your workload.
+An embedded Lua interpreter lets you [create and wire services](lua.md), define
+inline Lambda handlers, and [intercept AWS requests](runtime-hooks.md), without
+installing a separate Lua runtime.
+
 **roto will be free forever.** This project has no revenue goal and no interest
 in monetization. There is no plan for paid tiers, license fees, or a commercial
 edition. The MIT license lets you use, modify, and redistribute the code,
@@ -64,8 +74,8 @@ Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventb
 [CloudWatch Logs](cloudwatch-logs.md), [Kinesis](kinesis.md), [KMS](kms.md),
 [IoT topics and WebSockets](iot.md), and
 [local Lambda execution](lambda.md).
-The planned [runtime Lua hook system](runtime-hooks.md) describes future request
-interception and missing-operation fallbacks.
+The [runtime Lua handler and interception guide](runtime-hooks.md) covers inline
+Lambda handlers and request interceptors.
 
 ## Project maturity
 
