@@ -6,6 +6,30 @@ use crate::generated::*;
 use crate::misc::*;
 use crate::util::*;
 
+pub fn attach_role_policy(
+    db: &Db,
+    ctx: &RequestContext,
+    i: AttachRolePolicyRequest,
+) -> Result<(), AwsError> {
+    db.transaction(|tx| {
+        load_role(tx, &ctx.account_id, &i.role_name)?;
+        tx.execute("INSERT OR IGNORE INTO attachments(account_id,kind,entity,policy_arn) VALUES(?1,'role',?2,?3)", params![ctx.account_id, i.role_name, i.policy_arn])?;
+        Ok(())
+    })
+}
+
+pub fn detach_role_policy(
+    db: &Db,
+    ctx: &RequestContext,
+    i: DetachRolePolicyRequest,
+) -> Result<(), AwsError> {
+    db.transaction(|tx| {
+        load_role(tx, &ctx.account_id, &i.role_name)?;
+        tx.execute("DELETE FROM attachments WHERE account_id=?1 AND kind='role' AND entity=?2 AND policy_arn=?3", params![ctx.account_id, i.role_name, i.policy_arn])?;
+        Ok(())
+    })
+}
+
 pub struct RoleRow {
     pub name: String,
     pub path: String,

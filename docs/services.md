@@ -10,7 +10,7 @@ full AWS compatibility.
 | STS | Caller identity, sessions, role assumption | Authorization-message decoding |
 | SQS | Queues, messages, batches, FIFO, deduplication, long polling, DLQ redrive, tags | Message-move tasks, dead-letter source listing |
 | S3 | Buckets, objects, listing, versioning, multipart, tagging, stored ACLs and bucket configuration | Object lock, restore, select, checksum details, SNS/SQS notification delivery, policy enforcement |
-| IAM | Users, roles, access keys, tags, account aliases | Managed policies, groups, instance profiles, providers |
+| IAM | Users, roles, access keys, tags, account aliases, role policy attachments and inline role policies; CloudFormation roles and `AWS::IAM::Policy` | Managed policy CRUD, groups, instance profiles, providers; policy evaluation is not performed |
 | DynamoDB | Tables, items, expressions, query/scan, GSI/LSI, batch, transactions, tags, TTL, backups | PartiQL, import, streams |
 | SSM | Parameter Store, versions, labels, history, hierarchy, tags, SecureString | Documents, commands, maintenance windows, patch baselines, public parameters |
 | Secrets Manager | Secrets, versions, staging labels, deletion/restore, tags, policies, rotation bookkeeping, batch get | Cross-region replication, Lambda rotation execution |
@@ -41,7 +41,7 @@ ACLs and policies are stored without enforcement.
 SNS can deliver to SQS in-process, including raw delivery and filters on message
 attributes or bodies. STS and IAM share account credential information.
 The [CloudFormation subset](cloudformation.md) creates and updates SQS queues, SNS
-topics, S3 buckets, DynamoDB tables, and Kinesis streams through those same handlers. IAM, Lambda,
+topics, S3 buckets, DynamoDB tables, Kinesis streams, and IAM roles through those same handlers. IAM, Lambda,
 EventBridge, and SSM CloudFormation resources remain unsupported.
 
 Lua startup setup and execution contracts are covered in [Lua setup](lua.md),

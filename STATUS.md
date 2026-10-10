@@ -11,7 +11,7 @@ is a regression.
 | **STS** | 7 / 8 operations | 25 / 25 | DynamoDB multi-account integration passes. No `DecodeAuthorizationMessage`. |
 | **SQS** | 19 / 23 | 139 / 139 (6 skipped upstream) | CloudFormation queue integration passes. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
 | **S3** | 66 / 116 | 241 / 368 (59 skipped) | See [S3](#s3) below. |
-| **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
+| **IAM** | 30 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases, role policy attachments, and inline role policies. CloudFormation supports IAM roles and `AWS::IAM::Policy`. IAM policy evaluation is intentionally absent. Missing: managed policy CRUD, groups, instance profiles, providers. |
 | **DynamoDB** | 47 / 57 | 414 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 134 (2 skipped) | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |

@@ -83,6 +83,16 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             "TimeToLiveSpecification",
             "PointInTimeRecoverySpecification",
         ],
+        "AWS::IAM::Role" => &[
+            "RoleName",
+            "Path",
+            "AssumeRolePolicyDocument",
+            "Description",
+            "MaxSessionDuration",
+            "Tags",
+            "ManagedPolicyArns",
+        ],
+        "AWS::IAM::Policy" => &["PolicyName", "PolicyDocument", "Roles"],
         _ => return Err(validation(format!("Unsupported resource type: {ty}"))),
     };
     let object = props
@@ -93,6 +103,24 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             return Err(validation(format!("Unsupported property {ty}.{key}")));
         }
     }
+    match ty {
+        "AWS::IAM::Role" if !object.contains_key("AssumeRolePolicyDocument") => {
+            return Err(validation(
+                "AWS::IAM::Role requires AssumeRolePolicyDocument",
+            ));
+        }
+        "AWS::IAM::Policy"
+            if !object.contains_key("PolicyDocument") || !object.contains_key("Roles") =>
+        {
+            return Err(validation(
+                "AWS::IAM::Policy requires PolicyDocument and Roles",
+            ));
+        }
+        "AWS::IAM::Policy" if !object["PolicyDocument"].is_object() => {
+            return Err(validation("PolicyDocument must be an object"));
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -102,6 +130,8 @@ fn name_key(ty: &str) -> &'static str {
         "AWS::SNS::Topic" => "TopicName",
         "AWS::S3::Bucket" => "BucketName",
         "AWS::Kinesis::Stream" => "Name",
+        "AWS::IAM::Role" => "RoleName",
+        "AWS::IAM::Policy" => "PolicyName",
         _ => "TableName",
     }
 }
@@ -239,6 +269,35 @@ impl Resources {
             .request(
                 ctx,
                 "sns",
+                RawRequest {
+                    method: "POST".into(),
+                    path: "/".into(),
+                    body: body.into_bytes(),
+                    ..Default::default()
+                },
+            )?
+            .body)
+    }
+
+    fn iam(&self, ctx: &RequestContext, op: &str, input: Value) -> Result<Vec<u8>, AwsError> {
+        let mut params = vec![
+            ("Action".to_string(), op.to_string()),
+            ("Version".to_string(), "2010-05-08".to_string()),
+        ];
+        if let Some(object) = input.as_object() {
+            for (key, value) in object {
+                flatten(key, value, &mut params)?;
+            }
+        }
+        let body = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        Ok(self
+            .request(
+                ctx,
+                "iam",
                 RawRequest {
                     method: "POST".into(),
                     path: "/".into(),
@@ -411,6 +470,25 @@ impl Resources {
                 }
                 name.clone()
             }
+            "AWS::IAM::Role" => {
+                let trust = props.get("AssumeRolePolicyDocument").ok_or_else(|| {
+                    validation("AWS::IAM::Role requires AssumeRolePolicyDocument")
+                })?;
+                let trust =
+                    serde_json::to_string(trust).map_err(|e| AwsError::internal(e.to_string()))?;
+                let mut input = json!({"RoleName":name,"AssumeRolePolicyDocument":trust});
+                for key in ["Path", "Description", "MaxSessionDuration", "Tags"] {
+                    if let Some(value) = props.get(key) {
+                        input[key] = value.clone();
+                    }
+                }
+                let response = self.iam(ctx, "CreateRole", input)?;
+                let arn = xml_text(&response, "Arn")?;
+                attrs.insert("Arn".into(), json!(arn));
+                attrs.insert("RoleId".into(), json!(xml_text(&response, "RoleId")?));
+                name.clone()
+            }
+            "AWS::IAM::Policy" => name.clone(),
             _ => return Err(validation(format!("Unsupported resource type: {ty}"))),
         };
         Ok(Resource {
@@ -482,6 +560,42 @@ impl Resources {
                 }
                 if !tags.is_empty() {
                     self.json(ctx, "sqs", "TagQueue", json!({"QueueUrl":url,"Tags":tags}))?;
+                }
+            }
+            "AWS::IAM::Policy" => {
+                let document = serde_json::to_string(&props["PolicyDocument"])
+                    .map_err(|e| AwsError::internal(e.to_string()))?;
+                let roles: Vec<String> = props
+                    .get("Roles")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| validation("AWS::IAM::Policy requires Roles"))?
+                    .iter()
+                    .map(text)
+                    .collect::<Result<_, _>>()?;
+                if roles.is_empty() {
+                    return Err(validation("AWS::IAM::Policy requires at least one role"));
+                }
+                let old: Vec<String> = if updating {
+                    resource
+                        .properties
+                        .get("Roles")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(text)
+                        .collect::<Result<_, _>>()?
+                } else {
+                    Vec::new()
+                };
+                for role in old.iter().filter(|role| !roles.contains(role)) {
+                    self.iam(
+                        ctx,
+                        "DeleteRolePolicy",
+                        json!({"RoleName":role,"PolicyName":resource.name}),
+                    )?;
+                }
+                for role in &roles {
+                    self.iam(ctx, "PutRolePolicy", json!({"RoleName":role,"PolicyName":resource.name,"PolicyDocument":document}))?;
                 }
             }
             "AWS::SNS::Topic" => {
@@ -749,6 +863,84 @@ impl Resources {
                     }
                 }
             }
+            "AWS::IAM::Role" => {
+                let old: Vec<String> = if updating {
+                    resource
+                        .properties
+                        .get("ManagedPolicyArns")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let attached: Vec<String> = props
+                    .get("ManagedPolicyArns")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect();
+                for arn in old.iter().filter(|arn| !attached.contains(arn)) {
+                    self.iam(
+                        ctx,
+                        "DetachRolePolicy",
+                        json!({"RoleName":resource.name,"PolicyArn":arn}),
+                    )?;
+                }
+                for arn in attached.iter().filter(|arn| !old.contains(arn)) {
+                    self.iam(
+                        ctx,
+                        "AttachRolePolicy",
+                        json!({"RoleName":resource.name,"PolicyArn":arn}),
+                    )?;
+                }
+                if updating {
+                    if resource.properties.get("AssumeRolePolicyDocument")
+                        != props.get("AssumeRolePolicyDocument")
+                    {
+                        let document = serde_json::to_string(&props["AssumeRolePolicyDocument"])
+                            .map_err(|e| AwsError::internal(e.to_string()))?;
+                        self.iam(
+                            ctx,
+                            "UpdateAssumeRolePolicy",
+                            json!({"RoleName":resource.name,"PolicyDocument":document}),
+                        )?;
+                    }
+                    if resource.properties.get("Description") != props.get("Description") {
+                        self.iam(ctx, "UpdateRoleDescription", json!({"RoleName":resource.name,"Description":props.get("Description").cloned().unwrap_or(Value::String(String::new()))}))?;
+                    }
+                    let old_tags = tag_map(&resource.properties)?;
+                    let tags = tag_map(props)?;
+                    let removed: Vec<_> = old_tags
+                        .keys()
+                        .filter(|k| !tags.contains_key(*k))
+                        .cloned()
+                        .collect();
+                    if !removed.is_empty() {
+                        self.iam(
+                            ctx,
+                            "UntagRole",
+                            json!({"RoleName":resource.name,"TagKeys":removed}),
+                        )?;
+                    }
+                    let added: BTreeMap<_, _> = tags
+                        .into_iter()
+                        .filter(|(k, v)| old_tags.get(k) != Some(v))
+                        .collect();
+                    if !added.is_empty() {
+                        self.iam(
+                            ctx,
+                            "TagRole",
+                            json!({"RoleName":resource.name,"Tags":tag_list(added)}),
+                        )?;
+                    }
+                }
+            }
             _ => return Err(validation("Unsupported resource type")),
         }
         resource.properties = props.clone();
@@ -785,6 +977,35 @@ impl Resources {
                     json!({"TableName":resource.name}),
                 )
                 .map(|_| ()),
+            "AWS::IAM::Role" => {
+                if let Some(arns) = resource
+                    .properties
+                    .get("ManagedPolicyArns")
+                    .and_then(Value::as_array)
+                {
+                    for arn in arns.iter().filter_map(Value::as_str) {
+                        self.iam(
+                            ctx,
+                            "DetachRolePolicy",
+                            json!({"RoleName":resource.name,"PolicyArn":arn}),
+                        )?;
+                    }
+                }
+                self.iam(ctx, "DeleteRole", json!({"RoleName":resource.name}))
+                    .map(|_| ())
+            }
+            "AWS::IAM::Policy" => {
+                if let Some(roles) = resource.properties.get("Roles").and_then(Value::as_array) {
+                    for role in roles.iter().filter_map(Value::as_str) {
+                        self.iam(
+                            ctx,
+                            "DeleteRolePolicy",
+                            json!({"RoleName":role,"PolicyName":resource.name}),
+                        )?;
+                    }
+                }
+                Ok(())
+            }
             _ => Err(validation("Unsupported resource type")),
         };
         match result {

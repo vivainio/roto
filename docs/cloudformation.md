@@ -1,6 +1,6 @@
 # CloudFormation
 
-roto supports synchronous CloudFormation stacks for five resource types:
+roto supports synchronous CloudFormation stacks for seven resource types:
 
 | Resource | Supported properties |
 | --- | --- |
@@ -9,9 +9,12 @@ roto supports synchronous CloudFormation stacks for five resource types:
 | `AWS::S3::Bucket` | Name, tags, encryption, versioning, public access block configuration |
 | `AWS::DynamoDB::Table` | Name, tags, keys/attribute definitions, billing/throughput, GSI/LSI, stream/SSE metadata, table class, deletion protection, TTL, point-in-time recovery configuration |
 | `AWS::Kinesis::Stream` | Name, shard count, retention, tags, stream mode, stored encryption settings |
+| `AWS::IAM::Role` | Name, path, trust policy, description, session duration, tags, managed policy ARN attachments |
+| `AWS::IAM::Policy` | Inline policy document attached to one or more roles |
 
-Resources use the existing service handlers and storage, so their behavior and
-limitations match resources created directly with the AWS SDK.
+Resources use the existing service handlers and storage. IAM role policy documents
+and managed-policy attachments are stored as configuration; they do not grant or
+deny requests because IAM policy evaluation is not implemented.
 
 ## Stack APIs
 
@@ -94,7 +97,7 @@ for in-place updates and is removed with its table on replacement or deletion.
 Changing an SNS inline subscription reconciles subscriptions owned by the stack.
 
 Unsupported resource types, properties, template sections, and intrinsic
-functions fail explicitly. IAM, Lambda, EventBridge, and SSM resource types,
+functions fail explicitly. IAM users, groups, and managed policy resources, plus Lambda, EventBridge, and SSM resource types,
 change sets, conditions, transforms, nested stacks, template URLs, deletion/retention
 policies, termination protection, stack policies, pagination, and automatic
 rollback are not implemented. Some property removals also fail explicitly when

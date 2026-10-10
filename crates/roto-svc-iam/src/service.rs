@@ -5,7 +5,7 @@ use roto_core::store::{Db, Store};
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
-use crate::{MIGRATIONS, misc, roles, users};
+use crate::{MIGRATIONS, misc, policies, roles, users};
 
 pub struct Iam {
     pub(crate) db: Arc<Db>,
@@ -91,6 +91,34 @@ impl Iam {
 }
 
 impl Service for Iam {
+    fn put_role_policy(
+        &self,
+        ctx: &RequestContext,
+        i: PutRolePolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::put_role_policy(&self.db, ctx, i)
+    }
+    fn delete_role_policy(
+        &self,
+        ctx: &RequestContext,
+        i: DeleteRolePolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::delete_role_policy(&self.db, ctx, i)
+    }
+    fn attach_role_policy(
+        &self,
+        ctx: &RequestContext,
+        i: AttachRolePolicyRequest,
+    ) -> Result<(), AwsError> {
+        roles::attach_role_policy(&self.db, ctx, i)
+    }
+    fn detach_role_policy(
+        &self,
+        ctx: &RequestContext,
+        i: DetachRolePolicyRequest,
+    ) -> Result<(), AwsError> {
+        roles::detach_role_policy(&self.db, ctx, i)
+    }
     fn create_user(
         &self,
         ctx: &RequestContext,
