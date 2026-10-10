@@ -28,7 +28,8 @@ key, or subscription.
 
 [MiniStack](https://ministack.org/) is another open-source LocalStack alternative,
 with much broader [AWS service coverage](https://ministack.org/docs/services/)
-than roto. roto aims to offer solid support for core AWS services in a
+than roto. MiniStack is also committed to remaining free and open source under
+the MIT license. roto aims to offer solid support for core AWS services in a
 dependency-free Rust binary you can drop into a development environment or CI
 without Docker containers or language runtimes. Check roto's
 [service coverage](services.md) to see whether it supports your workload.
