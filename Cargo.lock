@@ -1200,6 +1200,7 @@ dependencies = [
  "roto-core",
  "roto-protocol",
  "roto-svc-dynamodb",
+ "roto-svc-eventbridge",
  "roto-svc-iam",
  "roto-svc-lambda",
  "roto-svc-s3",
@@ -1223,6 +1224,17 @@ dependencies = [
  "roto-protocol",
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "roto-svc-eventbridge"
+version = "0.0.1"
+dependencies = [
+ "roto-core",
+ "roto-protocol",
+ "roto-svc-lambda",
+ "roto-svc-sqs",
+ "serde_json",
 ]
 
 [[package]]
@@ -1259,6 +1271,7 @@ dependencies = [
  "md-5",
  "roto-core",
  "roto-protocol",
+ "roto-svc-eventbridge",
  "roto-svc-lambda",
  "roxmltree",
  "serde_json",

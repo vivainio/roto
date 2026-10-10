@@ -82,12 +82,13 @@ $ROTO_DATA_DIR/s3/
 - Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
 
 ## Target services (what the user's stack actually uses)
-`s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam` (plus STS, which clients need for identity).
+`s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam, events` (plus STS, which clients need for identity).
 Everything else in moto is out of scope. Order after DynamoDB: **SNS, SSM, Secrets Manager, KMS, Kinesis**, then
 **IAM completion** (managed policies, groups, instance profiles). Lambda now has a local execution
 backend: command argv or HTTP POST bindings, configured separately from AWS function metadata,
 with synchronous/asynchronous Invoke and S3 notifications. Embedded Lua (`mlua`) provides startup resource setup over the same service operations, including
-standard SQS event-source mappings. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
+standard SQS event-source mappings. EventBridge now routes custom/S3 events to Lambda and SQS
+through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
 ## Status

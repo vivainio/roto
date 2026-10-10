@@ -30,6 +30,9 @@ RUST_LOG=debug roto-server --ephemeral
 | --- | --- | --- |
 | `GET` | `/roto-api/health` | Returns `ok` |
 | `POST` | `/roto-api/reset` | Clears state across services |
+| `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
+| `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
+| `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
 | `POST` | `/moto-api/reset` | Alias used by moto's server-mode tests |
 
 Reset deletes the instance's service state, including persistent state:
@@ -54,7 +57,7 @@ or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
 ## Lua setup
 
 Lua can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
-event-source mappings. See the [setup reference and runnable example](https://github.com/vivainio/roto/tree/main/examples/lua).
+event-source mappings. See [Lua setup](lua.md), [Lambda executors](lambda.md), and [EventBridge wiring](eventbridge.md).
 
 ```sh
 roto-server --ephemeral --setup examples/lua/setup.lua

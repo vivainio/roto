@@ -36,3 +36,6 @@ jobs:
 
       - name: Lua setup and SQS pipeline SDK smoke (shell, HTTP, restart)
         run: .venv-moto/bin/python scripts/smoke-lua.py
+
+      - name: EventBridge SDK smoke (Lua, S3, Lambda, SQS)
+        run: .venv-moto/bin/python scripts/smoke-eventbridge.py

@@ -175,8 +175,13 @@ pub fn run(
                 let result = match service.as_str() {
                     "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
-                    "dynamodb" | "ssm" | "secretsmanager" => {
-                        let handler = call_services.get(service.as_str()).ok_or_else(|| {
+                    "dynamodb" | "ssm" | "secretsmanager" | "events" | "eventbridge" => {
+                        let service = if service == "eventbridge" {
+                            "events"
+                        } else {
+                            service.as_str()
+                        };
+                        let handler = call_services.get(service).ok_or_else(|| {
                             mlua::Error::external(format!("Service unavailable: {service}"))
                         })?;
                         decode(

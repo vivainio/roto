@@ -1,6 +1,6 @@
 # Service coverage
 
-This overview describes the implementation on **2026-10-09**. See
+This overview describes the implementation on **2026-10-10**. See
 [STATUS.md](https://github.com/vivainio/roto/blob/main/STATUS.md) for operation counts,
 moto test results, and detailed gaps. A service being listed here does not mean
 full AWS compatibility.
@@ -9,13 +9,14 @@ full AWS compatibility.
 | --- | --- | --- |
 | STS | Caller identity, sessions, role assumption | Authorization-message decoding |
 | SQS | Queues, messages, batches, FIFO, deduplication, long polling, DLQ redrive, tags | Message-move tasks, dead-letter source listing, CloudFormation integration |
-| S3 | Buckets, objects, listing, versioning, multipart, tagging, stored ACLs and bucket configuration | Object lock, restore, select, checksum details, event delivery, policy enforcement |
+| S3 | Buckets, objects, listing, versioning, multipart, tagging, stored ACLs and bucket configuration | Object lock, restore, select, checksum details, SNS/SQS notification delivery, policy enforcement |
 | IAM | Users, roles, access keys, tags, account aliases | Managed policies, groups, instance profiles, providers |
 | DynamoDB | Tables, items, expressions, query/scan, GSI/LSI, batch, transactions, tags, TTL, backups | PartiQL, import, streams |
 | SSM | Parameter Store, versions, labels, history, hierarchy, tags, SecureString | Documents, commands, maintenance windows, patch baselines, public parameters |
 | Secrets Manager | Secrets, versions, staging labels, deletion/restore, tags, policies, rotation bookkeeping, batch get | Cross-region replication, Lambda rotation execution |
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
 | Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
+| EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
 
 KMS and Kinesis have not been started.
 
@@ -28,7 +29,7 @@ Listings use SQLite metadata. Current object bodies are visible in the
 
 Many bucket sub-resources are stored and returned without executing their
 behavior. For example, storing lifecycle, website, CORS, or notification settings
-does not implement lifecycle execution or website/CORS serving. S3 Lambda notifications execute supported object events.
+does not implement lifecycle execution or website/CORS serving. S3 Lambda and EventBridge notifications execute supported object events.
 ACLs and policies are stored without enforcement.
 
 ## Cross-service behavior
@@ -37,3 +38,6 @@ SNS can deliver to SQS in-process, including raw delivery and filters on message
 attributes or bodies. STS and IAM share account credential information.
 CloudFormation is not implemented, so tests requiring it remain outside the
 passing baseline.
+
+Lua startup setup and execution contracts are covered in [Lua setup](lua.md),
+[local Lambda execution](lambda.md), and [EventBridge](eventbridge.md).

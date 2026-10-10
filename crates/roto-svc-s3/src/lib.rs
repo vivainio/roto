@@ -178,6 +178,13 @@ impl S3Handler {
     pub fn start_notifications(&self, lambda: Arc<roto_svc_lambda::Lambda>) {
         notifications::start_worker(&self.0, lambda);
     }
+    pub fn start_notifications_with_events(
+        &self,
+        lambda: Arc<roto_svc_lambda::Lambda>,
+        events: Arc<roto_svc_eventbridge::EventBridge>,
+    ) {
+        notifications::start_worker_with_events(&self.0, lambda, Some(events));
+    }
     pub fn with_lambda(
         store: &Store,
         lambda: Arc<roto_svc_lambda::Lambda>,

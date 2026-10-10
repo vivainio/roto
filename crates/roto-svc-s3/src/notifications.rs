@@ -102,10 +102,61 @@ pub(crate) fn record(
             params![id, payload.to_string()],
         )?;
     }
+    if config.event_bridge_configuration.is_some() {
+        let id = ids::request_id();
+        let target = format!(
+            "arn:aws:events:{}:{}:event-bus/default",
+            bucket.region, bucket.account_id
+        );
+        let context = json!({"account_id":bucket.account_id,"region":bucket.region,"request_id":ctx.request_id,"base_url":ctx.base_url});
+        tx.execute(
+            "INSERT INTO notification_outbox (id,target,context,event) VALUES (?1,?2,?3,'{}')",
+            params![id, target, context.to_string()],
+        )?;
+        let sequence = tx.last_insert_rowid();
+        let created = event.starts_with("ObjectCreated:");
+        let mut obj = json!({"key":key,"sequencer":format!("{sequence:016X}")});
+        if let Some(o) = object {
+            if created {
+                obj["size"] = json!(o.size);
+                obj["etag"] = json!(o.etag);
+            }
+            if o.version_id != "null" {
+                obj["version-id"] = json!(o.version_id);
+            }
+        }
+        let reason = match event {
+            "ObjectCreated:Put" => "PutObject",
+            "ObjectCreated:Copy" => "CopyObject",
+            "ObjectCreated:CompleteMultipartUpload" => "CompleteMultipartUpload",
+            _ => "DeleteObject",
+        };
+        let mut detail = json!({"version":"0","bucket":{"name":bucket.name},"object":obj,"request-id":ctx.request_id,"requester":ctx.account_id,"source-ip-address":"127.0.0.1","reason":reason});
+        if !created {
+            detail["deletion-type"] = json!(if event.ends_with("DeleteMarkerCreated") {
+                "Delete Marker Created"
+            } else {
+                "Permanently Deleted"
+            });
+        }
+        let payload = json!({"version":"0","id":id,"source":"aws.s3","detail-type":if created {"Object Created"} else {"Object Deleted"},"account":bucket.account_id,"region":bucket.region,"time":Timestamp::now().to_iso8601_millis(),"resources":[format!("arn:aws:s3:::{}",bucket.name)],"detail":detail});
+        tx.execute(
+            "UPDATE notification_outbox SET event=?2 WHERE id=?1",
+            params![id, payload.to_string()],
+        )?;
+    }
     Ok(())
 }
 
 pub(crate) fn start_worker(s3: &Arc<S3>, lambda: Arc<roto_svc_lambda::Lambda>) {
+    start_worker_with_events(s3, lambda, None);
+}
+
+pub(crate) fn start_worker_with_events(
+    s3: &Arc<S3>,
+    lambda: Arc<roto_svc_lambda::Lambda>,
+    events: Option<Arc<roto_svc_eventbridge::EventBridge>>,
+) {
     let weak = Arc::downgrade(s3);
     std::thread::Builder::new().name("roto-s3-events".into()).spawn(move || {
         while let Some(s3)=weak.upgrade() {
@@ -116,7 +167,10 @@ pub(crate) fn start_worker(s3: &Arc<S3>, lambda: Arc<roto_svc_lambda::Lambda>) {
                 Ok(Some((id,target,context,event,attempts)))=> {
                     let context:Value=serde_json::from_str(&context).unwrap();
                     let ctx=RequestContext {account_id:context["account_id"].as_str().unwrap().into(),region:context["region"].as_str().unwrap().into(),request_id:context["request_id"].as_str().unwrap().into(),base_url:context["base_url"].as_str().unwrap().into(),access_key:None};
-                    let result=lambda.enqueue(&ctx,&target,serde_json::from_str(&event).unwrap());
+                    let payload = serde_json::from_str(&event).unwrap();
+                    let result = if target.starts_with("arn:aws:events:") {
+                        events.as_ref().ok_or_else(|| AwsError::sender(400,"ServiceUnavailable","EventBridge delivery is unavailable")).and_then(|events| events.enqueue_event(&ctx,"default",payload))
+                    } else { lambda.enqueue(&ctx,&target,payload).map(|_| ()) };
                     let result=s3.db.transaction(|tx| {
                         match result {
                             Ok(_)=>{tx.execute("DELETE FROM notification_outbox WHERE id=?1",[id])?;},

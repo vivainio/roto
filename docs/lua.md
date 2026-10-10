@@ -11,11 +11,24 @@ aws --endpoint-url http://localhost:5070 sqs send-message \
 curl http://localhost:5070/roto-api/lambda/invocations
 ```
 
-The shell example requires Python 3. See [setup.lua](setup.lua) for an optional HTTP binding.
+The shell example requires Python 3. See [setup.lua](https://github.com/vivainio/roto/blob/main/examples/lua/setup.lua) for an optional HTTP binding.
 Both executors receive the AWS SQS event with a `Records` array. A shell script must read
 stdin and write exactly one JSON result to stdout; logs go to stderr. An HTTP endpoint must
 return a 2xx response containing one JSON result. The full contracts, environment variables,
-timeouts and output limits are in [the Lambda executor reference](../lambda/README.md).
+timeouts and output limits are in [the Lambda executor reference](lambda.md).
+
+For a standalone first setup, save this as `setup.lua`:
+
+```lua
+local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
+local handler = roto.lambda.function_("echo-job", {
+  executor = {command = {"sh", "-c", "cat"}}, timeout = 5
+})
+roto.lambda.event_source(queue, handler)
+```
+
+Start `roto-server --setup setup.lua`, then send a message with the command above.
+The handler returns the incoming event as its JSON result.
 
 ## Setup helpers
 
@@ -90,6 +103,12 @@ roto.request("sns", "POST", "/", {
   body = "Action=CreateTopic&Version=2010-03-31&Name=events",
 })
 ```
+
+## EventBridge wiring
+
+Use `roto.call("events", "PutRule", input)` and `PutTargets` to route custom or S3
+events to these same functions and queues. See [EventBridge](eventbridge.md) for a
+complete setup and supported patterns.
 
 ## SQS delivery behavior
 

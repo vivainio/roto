@@ -17,6 +17,7 @@ is a regression.
 | **Secrets Manager** | 20 / 23 | 104 / 136 | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
 | **SNS** | 19 / 42 | 120 / 185 | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
 | **Lambda** | 19 / 85 | not yet baselined | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
+| **EventBridge** | 15 / 57 | not yet baselined | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
 | KMS, Kinesis | not started | – | Remaining untouched services in the target set. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
@@ -72,10 +73,11 @@ lifecycle, website, encryption, replication, ownership controls, public-access-b
 notification, accelerate, request-payment, tagging, policy); path-style and virtual-host
 addressing; `aws-chunked` uploads. S3 → Lambda notifications for Put/Copy/multipart completion
 and single/batch delete, with prefix/suffix filters and a persistent transactional outbox.
+Buckets with `EventBridgeConfiguration` emit object creation/deletion events to the default bus.
 
 Not working yet (the bulk of the 133 known failures): object lock / retention / legal hold,
 `RestoreObject`, `SelectObjectContent`, response checksums (CRC32/SHA1/SHA256), KMS/SSE details,
-inventory/analytics/metrics configurations, event notifications to EventBridge/SNS/SQS,
+inventory/analytics/metrics configurations, direct event notifications to SNS/SQS,
 server access logging delivery, lifecycle execution, website/CORS serving, and anything that
 depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 
@@ -88,7 +90,7 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,
-  vendored moto suites, and `scripts/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
+  vendored moto suites, Lua/EventBridge SDK smokes, and `scripts/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
 
 ## Local Lambda execution
 
