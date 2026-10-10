@@ -28,12 +28,48 @@ RUST_LOG=debug roto-server --ephemeral
 
 | Method | Path | Result |
 | --- | --- | --- |
+| `GET` | `/roto-api/` | HTML resource and history browser (also `/roto-api`) |
+| `GET` | `/roto-api/resources` | Resource collection catalog |
+| `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
+| `GET` | `/roto-api/s3/object` | Download an object or read a bounded preview |
 | `GET` | `/roto-api/health` | Returns `ok` |
 | `POST` | `/roto-api/reset` | Clears state across services |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
 | `POST` | `/moto-api/reset` | Alias used by moto's server-mode tests |
+
+Open `http://localhost:5070/roto-api/` to browse created resources and their data:
+
+- S3 buckets, object versions, bucket settings, and multipart uploads. Open a
+  bucket to browse its objects, preview up to 64 KiB as text, or download a version.
+- DynamoDB tables and items, including backups; SQS queues and messages.
+  Browsing messages does not receive, acknowledge, or change their visibility.
+- Lambda functions and event-source mappings; EventBridge buses, rules, and targets;
+  SNS topics and subscriptions; IAM resources; SSM parameter versions; secrets
+  and their versions.
+- Lambda invocation results and logs, S3 notification handoffs, and EventBridge
+  delivery history.
+
+The page includes search, expandable JSON details, manual refresh, optional
+refresh every five seconds, and pagination. Resource lists include **all stored
+accounts and regions**, with 50 records per page. History tabs use unsigned
+inspection in the default server account and `us-east-1`, limited to the API's
+latest 100 records. Search applies to the loaded page. The UI is embedded in the
+server binary and requires no frontend build or external assets.
+
+Resource JSON supports `offset` (default `0`) and an optional exact-match
+`field`/`value` filter, for example:
+
+```sh
+curl 'http://localhost:5070/roto-api/resources/s3/objects?field=bucket&value=uploads&offset=0'
+curl 'http://localhost:5070/roto-api/s3/object?bucket=uploads&key=hello.txt&preview=true'
+```
+
+Responses contain `records`, `total`, `offset`, and `limit`. The object endpoint
+accepts `bucket`, `key`, an optional `version`, and `preview=true` for the first
+64 KiB. Downloads are served as attachments. These inspection endpoints only
+read resources; they do not modify service state.
 
 Reset deletes the instance's service state, including persistent state:
 

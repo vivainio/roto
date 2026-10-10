@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roto · Inspection</title>
+<style>
+:root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; --border: #8885; --muted: #777; }
+body { margin: 0; background: light-dark(#f6f7f9, #14171c); color: light-dark(#202631, #e1e6ef); }
+main { max-width: 1200px; margin: auto; padding: 32px 24px; }
+h1 { margin: 0; font-size: 26px; } h1 span { font-weight: 400; color: var(--muted); }
+p { margin: 8px 0 24px; } nav, .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0; align-items: center; }
+button, input, select { font: inherit; border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; background: light-dark(white, #222832); color: inherit; }
+button { cursor: pointer; } button[aria-pressed="true"] { background: #2659bb; color: white; border-color: #2659bb; }
+input[type="search"] { flex: 1; min-width: 180px; } button:disabled { opacity: .5; cursor: wait; }
+#status { color: var(--muted); min-height: 24px; } #status.error { color: light-dark(#b42318, #ffa097); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: light-dark(white, #1b2028); }
+table { width: 100%; border-collapse: collapse; text-align: left; } th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); } tbody:last-child tr:last-child td { border-bottom: 0; }
+.resource { overflow-wrap: anywhere; min-width: 200px; } .id { font: 12px ui-monospace, monospace; color: var(--muted); margin-top: 4px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; background: #8882; } .failed { color: light-dark(#b42318, #ffa097); } .succeeded { color: light-dark(#18794e, #7bddb2); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.6 ui-monospace, monospace; max-height: 500px; overflow: auto; margin-bottom: 0; } summary { cursor: pointer; } #empty { padding: 40px 20px; text-align: center; }
+[hidden] { display: none !important; }
+footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: light-dark(#2659bb, #91b5ff); }
+</style>
+</head>
+<body><main>
+<h1>roto <span>/ Inspection</span></h1>
+<p>Browse resources, stored data, execution history, and delivery queues.</p>
+<nav aria-label="Inspection data">
+<button type="button" data-view="resources" aria-pressed="true">Resources</button>
+<button type="button" data-view="invocations" aria-pressed="false">Lambda invocations</button>
+<button type="button" data-view="notifications" aria-pressed="false">S3 notifications</button>
+<button type="button" data-view="deliveries" aria-pressed="false">EventBridge deliveries</button>
+</nav>
+<div id="resource-controls" class="toolbar">
+<label>Service <select id="service" aria-label="Resource service"></select></label>
+<label>Collection <select id="collection" aria-label="Resource collection"></select></label>
+</div>
+<div id="breadcrumbs" aria-label="Resource navigation"></div>
+<div class="toolbar">
+<input id="search" type="search" aria-label="Search records" placeholder="Search IDs, resources, logs, or payloads…">
+<select id="state" aria-label="Filter by state"><option value="">All states</option></select>
+<button id="refresh" type="button">Refresh</button>
+<label><input id="auto" type="checkbox"> Auto-refresh (5s)</label>
+<a id="json" href="/roto-api/resources/s3/buckets" target="_blank" rel="noopener">Raw JSON ↗</a>
+</div>
+<div id="status" role="status" aria-live="polite">Loading…</div>
+<div class="table-wrap">
+<table aria-label="Inspection records"><thead><tr><th>Resource / ID</th><th id="column2">Account / region</th><th id="column3">Summary</th><th>Details</th></tr></thead><tbody id="records"></tbody></table>
+<div id="empty" hidden>No records yet.</div>
+</div>
+<div id="pagination" class="toolbar"><button id="previous" type="button">← Previous</button><span id="page"></span><button id="next" type="button">Next →</button></div>
+<footer id="scope">Resource browsing includes all stored accounts and regions. Lists contain 50 records per page; search applies to the loaded page. Object previews show up to 64 KiB as plain text.</footer>
+
+</main>
+<script>
+'use strict';
+const views = { invocations: '/roto-api/lambda/invocations', notifications: '/roto-api/s3/notifications', deliveries: '/roto-api/events/deliveries' };
+const $ = id => document.getElementById(id);
+const labels = { s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM' };
+let view = 'resources', rows = [], controller, updated = '', catalog = [], service = 's3', collection = 'buckets', offset = 0, total = 0, filter = null, trail = [];
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+function endpoint() {
+  if (view !== 'resources') return views[view];
+  const params = new URLSearchParams({ offset });
+  if (filter) { params.set('field', filter.field); params.set('value', filter.value); }
+  return `/roto-api/resources/${service}/${collection}?${params}`;
+}
+function action(label, callback) {
+  const button = element('button', label); button.type = 'button'; button.addEventListener('click', callback); return button;
+}
+function chooseCollection() {
+  $('collection').replaceChildren();
+  for (const name of catalog.find(entry => entry.service === service)?.collections || []) $('collection').add(new Option(name.replaceAll('_', ' '), name));
+  $('collection').value = collection;
+  $('service').value = service;
+}
+function navigate(nextCollection, nextFilter, label) {
+  trail.push({ collection, filter, label: filter?.label || collection.replaceAll('_', ' ') });
+  collection = nextCollection; filter = { ...nextFilter, label }; offset = 0; $('search').value = '';
+  chooseCollection(); clearRows(); load();
+}
+function breadcrumbs() {
+  $('breadcrumbs').replaceChildren();
+  trail.forEach((entry, index) => {
+    $('breadcrumbs').append(action(entry.label, () => {
+      collection = entry.collection; filter = entry.filter; trail = trail.slice(0, index); offset = 0;
+      $('search').value = ''; chooseCollection(); clearRows(); load();
+    }), document.createTextNode(' / '));
+  });
+  if (filter) $('breadcrumbs').append(element('span', filter.label));
+}
+function objectUrl(row, preview = false) {
+  const params = new URLSearchParams({ bucket: row.bucket, key: row.key, version: row.version_id });
+  if (preview) params.set('preview', 'true');
+  return '/roto-api/s3/object?' + params;
+}
+function resourceActions(row, cell) {
+  const drill = (label, table, field, value) => cell.append(action(label, () => navigate(table, { field, value: String(value) }, String(row.name || row.key || row.arn || row.id || value))));
+  if (service === 's3' && collection === 'buckets') { drill('Browse objects', 'objects', 'bucket', row.name); drill('Bucket settings', 'bucket_configs', 'bucket', row.name); }
+  if (service === 'dynamodb' && collection === 'tables') drill('Browse items', 'items', 'table_id', row.table_id);
+  if (service === 'dynamodb' && collection === 'backups') drill('Backup items', 'backup_items', 'arn', row.arn);
+  if (service === 'sqs' && collection === 'queues') drill('Browse messages', 'messages', 'queue_id', row.id);
+  if (service === 'sns' && collection === 'topics') drill('Subscriptions', 'subscriptions', 'topic_arn', row.arn);
+  if (service === 's3' && collection === 'uploads') drill('Parts', 'parts', 'upload_id', row.upload_id);
+  if (service === 's3' && collection === 'objects' && !row.delete_marker) {
+    const link = element('a', 'Download'); link.href = objectUrl(row); link.download = row.key.split('/').pop() || 'object'; cell.append(link);
+    const preview = element('details'); const summary = element('summary', 'Preview as text'); const content = element('pre');
+    preview.append(summary, content); cell.append(preview);
+    let loading = false, loaded = false;
+    preview.addEventListener('toggle', async () => {
+      if (!preview.open || loading || loaded) return;
+      if (!row.size) { content.textContent = '(Empty object)'; loaded = true; return; }
+      loading = true; content.textContent = 'Loading…';
+      try {
+        const response = await fetch(objectUrl(row, true), { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        content.textContent = await response.text();
+        if (row.size > 65536) content.prepend(document.createTextNode('[First 64 KiB only; download for the full object]\n\n'));
+        loaded = true;
+      } catch (error) { content.textContent = 'Unable to preview: ' + error.message + '. Close and reopen to retry.'; }
+      finally { loading = false; }
+    });
+  }
+}
+function render() {
+  const resources = view === 'resources';
+  $('resource-controls').hidden = !resources; $('breadcrumbs').hidden = !resources; $('pagination').hidden = !resources; $('state').hidden = resources;
+  $('column2').textContent = resources ? 'Account / region' : 'State'; $('column3').textContent = resources ? 'Summary' : 'Attempts';
+  $('scope').textContent = resources ? 'Resource browsing includes all stored accounts and regions. Lists contain 50 records per page; search applies to the loaded page. Object previews show up to 64 KiB as plain text.' : 'Unsigned history: default server account, us-east-1. API results are limited to 100 records; S3 shows pending and failed handoffs. Filters apply to loaded records.';
+  breadcrumbs();
+  const query = $('search').value.toLowerCase();
+  const filtered = rows.filter(row => (resources || !$('state').value || row.state === $('state').value) && JSON.stringify(row).toLowerCase().includes(query));
+  $('records').replaceChildren();
+  for (const row of filtered) {
+    const tr = element('tr'); const resource = element('td', undefined, 'resource');
+    const name = resources ? row.key ?? row.name ?? row.arn ?? row.message_id ?? row.uuid ?? row.id ?? row.table_id ?? row.entity ?? row.resource_id ?? row.upload_id ?? row.policy_arn ?? row.secret_name ?? 'Record' : row.functionArn || row.target || '—';
+    resource.append(element('div', String(name)));
+    const identity = resources ? row.version_id || row.version || row.id || row.table_id || row.user_id || row.role_id : row.id;
+    if (identity !== undefined) resource.append(element('div', String(identity), 'id'));
+    const second = element('td'); const third = element('td');
+    if (resources) {
+      second.textContent = [row.account_id || row.account, row.region].filter(Boolean).join(' / ') || '—';
+      third.textContent = row.size !== undefined ? `${row.size} bytes${row.delete_marker ? ' · deleted' : row.is_latest ? ' · latest' : ' · previous version'}` : row.item ? 'Item' : row.body !== undefined ? 'Message' : row.type || row.protocol || row.state || '—';
+    } else {
+      second.append(element('span', row.state || '—', 'badge ' + (row.state === 'failed' ? 'failed' : row.state === 'succeeded' ? 'succeeded' : '')));
+      third.textContent = String(row.attempts ?? '—');
+    }
+    const detailsCell = element('td');
+    if (resources) resourceActions(row, detailsCell);
+    const details = element('details'); details.append(element('summary', 'View record'), element('pre', JSON.stringify(row, null, 2))); detailsCell.append(details);
+    tr.append(resource, second, third, detailsCell); $('records').append(tr);
+  }
+  $('empty').hidden = filtered.length !== 0;
+  $('empty').textContent = rows.length ? 'No records match your filters on this page.' : 'No records yet.';
+  $('status').className = '';
+  $('status').textContent = `${filtered.length} of ${rows.length} loaded records${resources ? ` · ${total} total` : ''}${updated ? ` · Updated ${updated}` : ''}`;
+  $('previous').disabled = offset === 0; $('next').disabled = offset + 50 >= total;
+  $('page').textContent = total ? `${offset + 1}–${Math.min(offset + 50, total)} of ${total}` : '0 records';
+}
+function clearRows() { rows = []; total = 0; updated = ''; render(); }
+async function load() {
+  if (controller) controller.abort();
+  const request = new AbortController(); controller = request;
+  const requestedView = view; const url = endpoint(); $('json').href = url;
+  $('refresh').disabled = true; $('previous').disabled = true; $('next').disabled = true;
+  $('status').className = ''; $('status').textContent = 'Loading…';
+  try {
+    const response = await fetch(url, { signal: request.signal, cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+    const data = await response.json(); const records = data[requestedView === 'resources' ? 'records' : requestedView];
+    if (!Array.isArray(records)) throw new Error('Unexpected API response');
+    if (request !== controller) return;
+    rows = records; total = data.total || 0;
+    if (requestedView === 'resources' && offset > 0 && offset >= total) {
+      offset = Math.floor(Math.max(0, total - 1) / 50) * 50; load(); return;
+    }
+    const previousState = $('state').value; $('state').replaceChildren(new Option('All states', ''));
+    for (const state of [...new Set(rows.map(row => row.state).filter(Boolean))].sort()) $('state').add(new Option(state, state));
+    if ([...$('state').options].some(option => option.value === previousState)) $('state').value = previousState;
+    updated = new Date().toLocaleTimeString(); render();
+  } catch (error) {
+    if (error.name !== 'AbortError' && request === controller) { $('status').className = 'error'; $('status').textContent = `Unable to load records: ${error.message}. Use Refresh to retry.${updated ? ' Displayed data is from ' + updated + '.' : ''}`; }
+  } finally { if (request === controller) { controller = null; $('refresh').disabled = false; } }
+}
+document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+  view = button.dataset.view; document.querySelectorAll('[data-view]').forEach(tab => tab.setAttribute('aria-pressed', String(tab === button)));
+  $('state').value = ''; clearRows(); load();
+}));
+$('service').addEventListener('change', () => { service = $('service').value; collection = catalog.find(entry => entry.service === service).collections[0]; filter = null; trail = []; offset = 0; $('search').value = ''; chooseCollection(); clearRows(); load(); });
+$('collection').addEventListener('change', () => { collection = $('collection').value; filter = null; trail = []; offset = 0; $('search').value = ''; clearRows(); load(); });
+$('previous').addEventListener('click', () => { offset = Math.max(0, offset - 50); clearRows(); load(); });
+$('next').addEventListener('click', () => { offset += 50; clearRows(); load(); });
+$('search').addEventListener('input', render); $('state').addEventListener('change', render); $('refresh').addEventListener('click', load);
+setInterval(() => { if ($('auto').checked && !document.hidden && !controller) load(); }, 5000);
+async function init() {
+  try {
+    const response = await fetch('/roto-api/resources'); if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    catalog = (await response.json()).services;
+    for (const entry of catalog) $('service').add(new Option(labels[entry.service] || entry.service, entry.service));
+    chooseCollection(); render(); load();
+  } catch (error) { $('status').className = 'error'; $('status').textContent = 'Unable to load resource catalog: ' + error.message + '. Reload the page to retry.'; }
+}
+init();
+</script></body></html>
