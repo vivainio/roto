@@ -51,16 +51,140 @@ fn lambda_call(
     )
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct Hooks(Arc<std::sync::Mutex<HashMap<(String, String), Callback>>>);
+#[derive(Clone, Debug)]
+struct Callback {
+    lua: Lua,
+    function: mlua::Function,
+    lock: Arc<std::sync::Mutex<()>>,
+}
+
+fn timed_call(
+    lua: &Lua,
+    function: &mlua::Function,
+    args: (Value, Value),
+    timeout: u64,
+) -> mlua::Result<Value> {
+    lua.set_named_registry_value("roto_runtime_callback", true)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    lua.set_hook(
+        mlua::HookTriggers::new().every_nth_instruction(1000),
+        move |_, _| {
+            if std::time::Instant::now() >= deadline {
+                return Err(mlua::Error::external("Lua callback timed out"));
+            }
+            Ok(mlua::VmState::Continue)
+        },
+    )?;
+    let result = (|| {
+        let value: LuaValue = function.call((lua.to_value(&args.0)?, lua.to_value(&args.1)?))?;
+        lua.from_value(value)
+    })();
+    lua.remove_hook();
+    lua.set_named_registry_value("roto_runtime_callback", false)?;
+    result
+}
+
+impl Hooks {
+    pub fn matches(&self, service: &str, operation: Option<&str>) -> bool {
+        operation.is_some_and(|operation| {
+            self.0
+                .lock()
+                .unwrap()
+                .contains_key(&(service.into(), operation.into()))
+        })
+    }
+
+    pub fn intercept(
+        &self,
+        service: &str,
+        operation: Option<&str>,
+        ctx: &RequestContext,
+        req: &RawRequest,
+    ) -> Result<Option<roto_core::RawResponse>, roto_core::AwsError> {
+        let Some(operation) = operation else {
+            return Ok(None);
+        };
+        let callback = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&(service.into(), operation.into()))
+            .cloned();
+        let Some(callback) = callback else {
+            return Ok(None);
+        };
+        let _guard = callback
+            .lock
+            .lock()
+            .map_err(|e| roto_core::AwsError::internal(e.to_string()))?;
+        let request = json!({"service":service,"operation":operation,"method":req.method,"path":req.path,"query":req.query,"headers":req.headers.iter().filter(|(name,_)| !name.eq_ignore_ascii_case("authorization")).cloned().collect::<HashMap<_,_>>(),"body":String::from_utf8_lossy(&req.body),"input":serde_json::from_slice::<Value>(&req.body).ok()});
+        let context =
+            json!({"account_id":ctx.account_id,"region":ctx.region,"request_id":ctx.request_id});
+        let value = timed_call(&callback.lua, &callback.function, (request, context), 1)
+            .map_err(|e| roto_core::AwsError::internal(e.to_string()))?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let status = value["status"]
+            .as_u64()
+            .filter(|s| (100..=599).contains(s))
+            .ok_or_else(|| {
+                roto_core::AwsError::internal("Lua interceptor requires status between 100 and 599")
+            })? as u16;
+        let body = value["body"]
+            .as_str()
+            .ok_or_else(|| roto_core::AwsError::internal("Lua interceptor requires a string body"))?
+            .as_bytes()
+            .to_vec();
+        let headers = match value.get("headers") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_object()
+                .ok_or_else(|| {
+                    roto_core::AwsError::internal("Lua response headers must be a table")
+                })?
+                .iter()
+                .map(|(k, v)| {
+                    v.as_str().map(|v| (k.clone(), v.into())).ok_or_else(|| {
+                        roto_core::AwsError::internal("Lua response header values must be strings")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(Some(roto_core::RawResponse {
+            status,
+            headers,
+            body,
+        }))
+    }
+}
+
+fn setup_only(lua: &Lua) -> mlua::Result<()> {
+    if lua
+        .named_registry_value::<bool>("roto_runtime_callback")
+        .unwrap_or(false)
+    {
+        return Err(mlua::Error::external(
+            "Roto setup APIs cannot be called from runtime callbacks",
+        ));
+    }
+    Ok(())
+}
+
 pub fn run(
     path: &Path,
     ctx: RequestContext,
     sqs: Arc<roto_svc_sqs::Sqs>,
     lambda: Arc<roto_svc_lambda::Lambda>,
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
-) -> mlua::Result<()> {
+) -> mlua::Result<Hooks> {
     let path = std::fs::canonicalize(path).map_err(mlua::Error::external)?;
     let parent = path.parent().unwrap().to_path_buf();
     let lua = Lua::new();
+    let hooks = Hooks::default();
+    let runtime_lock = Arc::new(std::sync::Mutex::new(()));
     let roto = lua.create_table()?;
     roto.set("account_id", ctx.account_id.clone())?;
     roto.set("region", ctx.region.clone())?;
@@ -89,6 +213,7 @@ pub fn run(
 
     let (q_service, q_ctx) = (sqs.clone(), ctx.clone());
     sqs_api.set("queue",lua.create_function(move |lua,(name,opts): (String,Option<Table>)| {
+        setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
         options(&opts,&["visibility_timeout","attributes","tags"])?;
         let mut attributes: std::collections::BTreeMap<String,String> = match opts.get::<LuaValue>("attributes")? {
@@ -114,6 +239,7 @@ pub fn run(
     lambda_api.set(
         "bind",
         lua.create_function(move |lua, (name, value): (String, LuaValue)| {
+            setup_only(lua)?;
             let mut executor: roto_svc_lambda::Executor = lua.from_value(value)?;
             executor.validate().map_err(mlua::Error::external)?;
             if let roto_svc_lambda::Executor::Command { cwd, .. } = &mut executor {
@@ -130,9 +256,23 @@ pub fn run(
     )?;
 
     let (l_service, l_ctx) = (lambda.clone(), ctx.clone());
+    let handler_lock = runtime_lock.clone();
     lambda_api.set("function_",lua.create_function(move |lua,(name,opts): (String,Table)| {
-        options(&opts,&["timeout","executor","environment","description","memory_size"])?;
-        let mut executor: roto_svc_lambda::Executor = lua.from_value(opts.get::<LuaValue>("executor")?)?;
+        setup_only(lua)?;
+        options(&opts,&["timeout","executor","handler","environment","description","memory_size"])?;
+        let mut executor = match opts.get::<Option<mlua::Function>>("handler")? {
+            Some(function) => {
+                if !matches!(opts.get::<LuaValue>("executor")?, LuaValue::Nil) { return Err(mlua::Error::external("Specify handler or executor, not both")); }
+                let runtime = lua.clone();
+                let lock = handler_lock.clone();
+                roto_svc_lambda::inline_executor(move |event, context| {
+                    let timeout = context["timeout"].as_u64().unwrap_or(3);
+                    let _guard = lock.lock().map_err(|e| e.to_string())?;
+                    timed_call(&runtime, &function, (event, context), timeout).map_err(|e| e.to_string())
+                })
+            }
+            None => lua.from_value(opts.get::<LuaValue>("executor")?)?,
+        };
         executor.validate().map_err(mlua::Error::external)?;
         if let roto_svc_lambda::Executor::Command { cwd,.. } = &mut executor {
             *cwd = Some(cwd.take().map_or_else(|| parent.clone(),|p| parent.join(p)));
@@ -161,6 +301,7 @@ pub fn run(
 
     let (m_service, m_ctx) = (lambda.clone(), ctx.clone());
     lambda_api.set("event_source",lua.create_function(move |lua,(queue,function,opts): (Table,Table,Option<Table>)| {
+        setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
         options(&opts,&["batch_size","enabled","report_batch_item_failures"])?;
         let source: String = queue.get("arn")?;
@@ -191,6 +332,7 @@ pub fn run(
                 } else {
                     lua.from_value(input)?
                 };
+                setup_only(lua)?;
                 let result = match service.as_str() {
                     "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
@@ -232,6 +374,7 @@ pub fn run(
     )?;
     // Escape hatch for every AWS service/protocol, without requiring the listener to be running.
     roto.set("request",lua.create_function(move |lua,(service,method,path,opts): (String,String,String,Option<Table>)| {
+        setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
         options(&opts,&["headers","body","query"])?;
         let headers: std::collections::BTreeMap<String,String> = match opts.get::<LuaValue>("headers")? {
@@ -246,13 +389,33 @@ pub fn run(
         if response.status >= 400 { return Err(mlua::Error::external(format!("AWS request failed ({}): {}",response.status,String::from_utf8_lossy(&response.body)))); }
         lua.to_value(&json!({"status":response.status,"headers":response.headers,"body":String::from_utf8_lossy(&response.body)}))
     })?)?;
+    let registrations = hooks.clone();
+    let hook_lock = runtime_lock.clone();
+    roto.set(
+        "intercept_request",
+        lua.create_function(
+            move |lua, (service, operation, callback): (String, String, mlua::Function)| {
+                setup_only(lua)?;
+                registrations.0.lock().unwrap().insert(
+                    (service, operation),
+                    Callback {
+                        lua: lua.clone(),
+                        function: callback,
+                        lock: hook_lock.clone(),
+                    },
+                );
+                Ok(())
+            },
+        )?,
+    )?;
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;
     lua.globals().set("roto", roto)?;
     let source = std::fs::read_to_string(&path).map_err(mlua::Error::external)?;
     lua.load(&source)
         .set_name(format!("@{}", path.display()))
-        .exec()
+        .exec()?;
+    Ok(hooks)
 }
 
 #[cfg(test)]
@@ -276,6 +439,105 @@ mod tests {
         std::fs::write(&path, source).unwrap();
         path
     }
+    #[test]
+    fn inline_handlers_and_interceptors_retain_closures_and_report_errors() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(roto_svc_lambda::Lambda::new(&store, Default::default()).unwrap());
+        let path = script(
+            r#"
+local count = 0
+roto.lambda.function_("inline", {timeout=1, handler=function(event, ctx)
+  count = count + 1
+  if event.fail then error("placeholder failure") end
+  if event.loop then while true do end end
+  if event.reenter then roto.call("lambda", "ListFunctions", {}) end
+  return {count=count, name=event.name, region=ctx.region}
+end})
+roto.intercept_request("sqs", "SendMessage", function(req, ctx)
+  if req.input.pass then return nil end
+  return {status=503, headers={["content-type"]="application/json"}, body='{"message":"injected"}'}
+end)
+roto.intercept_request("sqs", "BadHook", function() return {status=999, body=""} end)
+roto.intercept_request("sqs", "Loop", function() while true do end end)
+"#,
+        );
+        let hooks = run(&path, context(), sqs, lambda.clone(), Default::default()).unwrap();
+        let handler = roto_svc_lambda::LambdaHandler(lambda.clone());
+        let invoke = |body: &str| {
+            handler
+                .handle(
+                    &context(),
+                    &RawRequest {
+                        method: "POST".into(),
+                        path: "/2015-03-31/functions/inline/invocations".into(),
+                        body: body.as_bytes().to_vec(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        for count in 1..=2 {
+            let response = invoke(r#"{"name":"Ada"}"#);
+            assert_eq!(response.status, 200);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap(),
+                json!({"count":count,"name":"Ada","region":"us-east-1"})
+            );
+        }
+        for body in [
+            r#"{"fail":true}"#,
+            r#"{"reenter":true}"#,
+            r#"{"loop":true}"#,
+        ] {
+            let response = invoke(body);
+            assert!(
+                response
+                    .headers
+                    .iter()
+                    .any(|(k, _)| k == "x-amz-function-error")
+            );
+        }
+        let mut request = RawRequest {
+            body: b"{}".to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            hooks
+                .intercept("sqs", Some("SendMessage"), &context(), &request)
+                .unwrap()
+                .unwrap()
+                .status,
+            503
+        );
+        request.body = br#"{"pass":true}"#.to_vec();
+        assert!(
+            hooks
+                .intercept("sqs", Some("SendMessage"), &context(), &request)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            hooks
+                .intercept("sqs", Some("Other"), &context(), &request)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            hooks
+                .intercept("sqs", Some("BadHook"), &context(), &request)
+                .is_err()
+        );
+        assert!(
+            hooks
+                .intercept("sqs", Some("Loop"), &context(), &request)
+                .is_err()
+        );
+        // A timed-out callback must leave the VM usable.
+        assert_eq!(invoke("{}").status, 200);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn setup_reconciles_resources_bindings_and_mappings_without_duplicates() {
         let store = Store::ephemeral();

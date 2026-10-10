@@ -25,6 +25,81 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
 The [Lua setup chapter](lua.md) covers resource creation and executor bindings. The
 [Demos chapter](demos.md#invoke-a-lambda-container-image) shows the RIE image invocation.
 
+## Inline Lua placeholder functions
+
+For a quick local function, provide `handler` instead of `executor` in a setup
+script. The event is decoded JSON, so you can examine its fields and return a
+custom JSON payload directly:
+
+```lua
+roto.lambda.function_("greet", {
+  timeout = 3,
+  handler = function(event, context)
+    return {
+      message = "Hello " .. (event.name or "world"),
+      received = event,
+      requestId = context.request_id,
+    }
+  end,
+})
+```
+
+Save this as `setup.lua`, start the server, and invoke it:
+
+```sh
+roto-server --ephemeral --setup setup.lua
+aws --endpoint-url http://localhost:5070 lambda invoke \
+  --function-name greet --cli-binary-format raw-in-base64-out \
+  --payload '{"name":"Ada"}' result.json
+cat result.json
+```
+
+The result contains `message: "Hello Ada"`, the original event, and the invocation
+request ID. Context also contains `function_arn`, `region`, `environment`, and
+`timeout` in seconds. Return JSON-compatible values; `roto.array({})` represents
+an empty array and `roto.null` represents JSON null. Captured locals survive
+invocations. Lua errors fail the invocation, and results have a 6 MiB limit.
+`print` writes to the server console rather than invocation logs.
+
+Inline functions use the normal invocation and event delivery machinery. Their
+bindings are process-local: rerun setup after restarting. Already-persisted jobs
+referencing an earlier process's inline handler fail rather than invoke a new
+handler accidentally. Callbacks from one setup script execute serially. Lua
+instruction checks enforce the function timeout for Lua code, but cannot
+interrupt blocking native calls such as `os.execute` or file I/O. Resource setup
+helpers and `roto.call`/`roto.request` are unavailable inside runtime callbacks.
+
+## Intercept AWS requests from Lua
+
+Setup scripts can also inspect incoming AWS requests and supply custom responses:
+
+```lua
+roto.intercept_request("lambda", "Invoke", function(request, context)
+  if request.input and request.input.preview then
+    return {
+      status = 200,
+      headers = {["content-type"] = "application/json"},
+      body = '{"message":"Custom preview response"}',
+    }
+  end
+  return nil -- Invoke the configured function normally.
+end)
+```
+
+Here `request.input` is the decoded invocation payload and `request.body` is its
+raw text. Requests also include service, operation, method, path, raw query, and
+headers. Returning `nil` continues normal dispatch. A response requires an HTTP
+`status` and string `body`; `headers` is optional. Interception happens before
+native validation or execution, so a short-circuit response does not create a
+Lambda invocation record. It does appear in the request trace.
+
+Interceptors match an exact service/operation pair, can stub unsupported
+operations, and have a one-second Lua instruction deadline. Internal service
+calls and setup calls do not trigger them. See [runtime hooks](runtime-hooks.md)
+for the full contract and limits, or run
+`roto-server --ephemeral --setup examples/hooks/setup.lua` for an inline worker
+with SQS failure injection.
+
 ## Command executor
 
 `command` is an argv array. Shell syntax requires an explicit `["sh", "-c", "..."]`.

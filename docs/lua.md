@@ -2,7 +2,8 @@
 
 Lua declares resources and wires queues to Lambda functions. Functions can execute a local
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
-through RIE. Lua does not execute Lambda handlers.
+through RIE, or run an inline Lua placeholder handler.
+See [runtime Lua handlers and interception](runtime-hooks.md) for inline functions and request hooks.
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
 ```sh
@@ -76,6 +77,21 @@ local mapping = roto.lambda.event_source(queue, handler, {
   report_batch_item_failures = true,
 })
 ```
+
+For a quick placeholder, supply `handler` instead of `executor`:
+
+```lua
+roto.lambda.function_("greet", {
+  handler = function(event, context)
+    return {message = "Hello " .. event.name}
+  end,
+})
+```
+
+The handler receives decoded JSON and returns a JSON-compatible value. Closures
+survive startup; Lua errors fail the invocation. Runtime callbacks cannot use
+resource setup APIs or `roto.call`/`roto.request`. See [runtime hooks](runtime-hooks.md)
+for context fields, timeout limits, and interception examples.
 
 `queue` returns `{name, url, arn}`; `function_` returns `{name, arn}`; `event_source` returns
 the AWS mapping configuration, including `UUID`. `function_` avoids Lua's reserved word

@@ -91,7 +91,7 @@ standard SQS event-source mappings. EventBridge now routes custom/S3 events to L
 through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
-### Runtime Lua hooks (planned)
+### Runtime Lua hooks
 
 Unsupported-call discovery is implemented: server warnings on stderr and
 `GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
@@ -105,10 +105,12 @@ or HTTP executor to a Lambda function created through the Lambda API. Resource
 matching across logical IDs, physical names and ARNs, update behavior, duplicate
 deliveries, and callback error handling need to be defined.
 
-Hooks registered in startup Lua are intended to remain active while the server
-handles later AWS requests. Request hooks are a separate capability:
+Inline Lua Lambda handlers and exact-operation request interception are implemented.
+Setup retains closures and serializes callbacks, with instruction deadline checks.
+The primary post-create lifecycle callback and catch-all fallback remain planned.
+See [runtime hooks](docs/runtime-hooks.md) for the current API.
 
-- **`intercept_request`:** registered for an exact service operation (for
+- **`intercept_request` (implemented):** registered for an exact service operation (for
   example, `s3.PutObject`); it runs before native dispatch and may continue,
   return a simulated response/error, or implement that operation itself.
 - **`missing_support`:** a single catch-all fallback after native dispatch
@@ -118,8 +120,8 @@ handles later AWS requests. Request hooks are a separate capability:
 Normal validation and resource errors from implemented operations do not invoke
 the fallback. Setup-time helper calls do not trigger runtime hooks. A no-hook
 request should continue directly to native dispatch. The book's
-[runtime-hooks plan](docs/runtime-hooks.md) tracks lifecycle, request/response,
-concurrency, timeout, and validation decisions.
+[runtime hooks reference](docs/runtime-hooks.md) describes request/response,
+concurrency, and timeout behavior.
 
 The IoT Data Plane `Publish` operation now accepts boto3's REST-JSON request and
 fans out to matching clients on Roto's local WebSocket endpoint. This is a small

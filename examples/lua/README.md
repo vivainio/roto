@@ -1,7 +1,7 @@
 # Lua setup and SQS → Lambda
 
 Lua declares resources and wires queues to Lambda functions. Functions execute a local
-process or POST their event to an HTTP endpoint. Lua does not execute Lambda handlers.
+process or POST their event to an HTTP endpoint. Inline Lua placeholder handlers and request interception are also supported; see [runtime hooks](../../docs/runtime-hooks.md).
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
 ```sh

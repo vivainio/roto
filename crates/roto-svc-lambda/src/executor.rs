@@ -25,9 +25,30 @@ pub enum Executor {
         #[serde(default)]
         headers: BTreeMap<String, String>,
     },
+    Inline {
+        inline: String,
+    },
     Rie {
         rie: String,
     },
+}
+
+type InlineHandler = dyn Fn(Value, Value) -> Result<Value, String> + Send + Sync;
+static INLINE: std::sync::OnceLock<
+    std::sync::Mutex<BTreeMap<String, std::sync::Arc<InlineHandler>>>,
+> = std::sync::OnceLock::new();
+
+/// Registers a process-local handler. Its binding cannot be restored without setup.
+pub fn inline_executor(
+    handler: impl Fn(Value, Value) -> Result<Value, String> + Send + Sync + 'static,
+) -> Executor {
+    let id = roto_core::ids::request_id();
+    INLINE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(id.clone(), std::sync::Arc::new(handler));
+    Executor::Inline { inline: id }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -63,6 +84,7 @@ impl Executor {
                     reqwest::header::HeaderValue::from_str(v).map_err(|e| e.to_string())?;
                 }
             }
+            Self::Inline { .. } => {}
             Self::Rie { rie } => {
                 if rie.trim().is_empty() || rie.contains('\0') {
                     return Err("RIE executor requires a nonempty container image name".into());
@@ -137,6 +159,36 @@ pub(crate) async fn execute(job: &Job) -> Outcome {
 async fn execute_inner(job: &Job) -> Outcome {
     let payload = serde_json::to_vec(&job.event).unwrap();
     match &job.executor {
+        Executor::Inline { inline } => {
+            let handler = INLINE
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .get(inline)
+                .cloned();
+            let Some(handler) = handler else {
+                return Outcome::error(
+                    "Inline handler unavailable; rerun Lua setup",
+                    String::new(),
+                );
+            };
+            let event = job.event.clone();
+            let context = json!({"function_arn": job.arn, "request_id": job.request_id, "region": job.region, "environment": job.environment, "timeout": job.timeout});
+            match tokio::task::spawn_blocking(move || handler(event, context)).await {
+                Ok(Ok(payload))
+                    if serde_json::to_vec(&payload).map_or(false, |p| p.len() <= OUTPUT_LIMIT) =>
+                {
+                    Outcome {
+                        payload,
+                        logs: String::new(),
+                        failed: false,
+                    }
+                }
+                Ok(Ok(_)) => Outcome::error("executor output exceeds 6 MiB", String::new()),
+                Ok(Err(error)) => Outcome::error(error, String::new()),
+                Err(error) => Outcome::error(error.to_string(), String::new()),
+            }
+        }
         Executor::Command { command, cwd, env } => {
             let mut cmd = tokio::process::Command::new(&command[0]);
             cmd.args(&command[1..])
