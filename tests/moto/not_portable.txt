@@ -1,3 +1,4 @@
+test_awslambda/test_policy.py
 test_dynamodb/test_server.py
 test_iam/test_server.py
 test_s3/test_multiple_accounts_server.py

@@ -2,22 +2,22 @@
 
 What works today, measured against moto's own test suite (vendored unmodified, run in moto's
 server mode against roto; see `scripts/run-moto-tests.sh`). Numbers are from the last run on
-2026-10-09 against moto 5.0.11's tests. "Known failing" tests are listed per service in
+2026-10-10 against moto 5.0.11's tests with Python 3.12. "Known failing" tests are listed per service in
 `tests/moto/expected_failures/`; a normal run is green against that baseline, so any new failure
 is a regression.
 
 | Service | API coverage | moto tests passing | Notes |
 |---|---|---|---|
-| **STS** | 7 / 8 operations | 24 / 25 | Last failure needs DynamoDB. No `DecodeAuthorizationMessage`. |
+| **STS** | 7 / 8 operations | 25 / 25 | DynamoDB multi-account integration passes. No `DecodeAuthorizationMessage`. |
 | **SQS** | 19 / 23 | 132 / 139 (6 skipped upstream) | 7 failures need CloudFormation. Not done: message-move tasks, `ListDeadLetterSourceQueues`. |
 | **S3** | 66 / 116 | 235 / 368 (59 skipped) | See [S3](#s3) below. |
 | **IAM** | 26 / 180 | 17 / 349 | Users, roles, access keys, tags, account aliases. Missing: managed policies, groups, instance profiles, providers. |
 | **DynamoDB** | 47 / 57 | 411 / 529 | Tables, items, condition/update/projection expressions, query/scan, GSI/LSI (computed at query time), batch, transactions, tags, TTL, backups. Missing: PartiQL, ImportTable, streams. |
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
-| **Secrets Manager** | 20 / 23 | 104 / 136 | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
+| **Secrets Manager** | 20 / 23 | 104 / 134 (2 skipped) | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
 | **SNS** | 19 / 42 | 120 / 185 | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
-| **Lambda** | 19 / 85 | not yet baselined | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
-| **EventBridge** | 15 / 57 | not yet baselined | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
+| **Lambda** | 19 / 85 | 8 / 125 (30 skipped) | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
+| **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
 | KMS, Kinesis | not started | – | Remaining untouched services in the target set. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
@@ -86,7 +86,12 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 * `cargo test` - unit tests (codecs, key paths, blob store, chunked decoding, ACLs, store).
 * `scripts/run-moto-tests.sh <test_dir>` - moto's tests against roto; `TARGET=moto` runs them
   against real moto to separate upstream quirks from roto gaps; `UPDATE_EXPECTED=1` re-baselines.
-  The runner adapts upstream's hardcoded port 5000 URLs in a temporary copy of the tests.
+  Exclusions match exact test IDs. `AUDIT_EXPECTED=1` retries exclusions and reports newly passing
+  tests; the weekly/manual `coverage-audit.yml` workflow runs this for every service.
+  The runner adapts upstream's port 5000 URLs, Lambda's IAM fixture, and EventBridge delivery
+  polling in a temporary copy. Docker tests are skipped; local executors have SDK smoke coverage.
+* `scripts/smoke-dynamodb.py` - SDK checks for account/region isolation with identical table names
+  and item keys, persisted GSI/TTL/item state, and STS credentials across server restart.
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,

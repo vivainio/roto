@@ -31,6 +31,12 @@ jobs:
           scripts/run-moto-tests.sh test_ssm
           scripts/run-moto-tests.sh test_secretsmanager
           scripts/run-moto-tests.sh test_sns
+          scripts/run-moto-tests.sh test_awslambda
+          scripts/run-moto-tests.sh test_events
+      - name: Known-failure audit tooling tests
+        run: .venv-moto/bin/python scripts/test-audit-moto-tests.py
+      - name: DynamoDB isolation and persistence SDK smoke
+        run: .venv-moto/bin/python scripts/smoke-dynamodb.py
       - name: Lambda executor SDK smoke (command, HTTP, S3 to SQS)
         run: .venv-moto/bin/python scripts/smoke-lambda.py
 

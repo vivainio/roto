@@ -1,2 +1,1 @@
 # Known failures for test_sts (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_sts)
-tests/test_sts/test_sts_integration.py::TestStsAssumeRole::test_dynamodb_supports_multiple_accounts

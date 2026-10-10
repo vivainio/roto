@@ -92,8 +92,8 @@ tests/test_s3/test_s3_multipart.py::test_generate_presigned_url_on_multipart_upl
 tests/test_s3/test_s3_multipart.py::test_head_object_returns_part_count
 tests/test_s3/test_s3_multipart.py::test_list_multiparts
 tests/test_s3/test_s3_multipart.py::test_multipart_list_parts
-tests/test_s3/test_s3_multipart.py::test_multipart_list_parts_invalid_argument[-42-Argument
-tests/test_s3/test_s3_multipart.py::test_multipart_list_parts_invalid_argument[2147483689-Provided
+tests/test_s3/test_s3_multipart.py::test_multipart_list_parts_invalid_argument[-42-Argument max-parts must be an integer between 0 and 2147483647-Argument part-number-marker must be an integer between 0 and 2147483647]
+tests/test_s3/test_s3_multipart.py::test_multipart_list_parts_invalid_argument[2147483689-Provided max-parts not an integer or within integer range-Provided part-number-marker not an integer or within integer range]
 tests/test_s3/test_s3_multipart.py::test_multipart_part_size
 tests/test_s3/test_s3_multipart.py::test_multipart_upload_out_of_order
 tests/test_s3/test_s3_multipart.py::test_multipart_wrong_partnumber
