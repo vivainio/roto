@@ -29,6 +29,7 @@ RUST_LOG=debug roto-server --ephemeral
 | Method | Path | Result |
 | --- | --- | --- |
 | `GET` | `/roto-api/health` | Returns `ok` |
+| `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
@@ -40,6 +41,64 @@ Reset deletes the instance's service state, including persistent state:
 ```sh
 curl --fail -X POST http://localhost:5070/roto-api/reset
 ```
+
+## Finding unsupported API calls
+
+Run your app against roto, then inspect the calls that need implementation or a
+local stub:
+
+```sh
+curl --fail http://localhost:5070/roto-api/unsupported
+```
+
+The server logs each unsupported call to **stderr** at warning level. `RUST_LOG`
+can filter these warnings; the discovery endpoint records them regardless of the
+log level. Normal validation errors, missing resources, and successful requests
+do not appear in the list. Unsupported calls keep their existing AWS error
+responses; recording a call does not make it succeed.
+
+For example, a boto3 `iot-data.publish` request currently produces an entry like:
+
+```json
+{
+  "calls": [{
+    "service": "iotdata",
+    "operation": null,
+    "method": "POST",
+    "path": "/topics/devices%2F123",
+    "account_id": "123456789012",
+    "region": "us-east-1",
+    "reason": "unroutable",
+    "count": 1
+  }],
+  "dropped_calls": 0
+}
+```
+
+`service` is the SigV4 signing service or the selected handler's service name.
+For boto3's `iot-data` client, the signing name is `iotdata`. `operation` comes
+from a JSON target, a Query `Action`, or the operation named by a native
+unsupported-operation error. Unknown REST routes can have a null operation;
+use their service, method, and path to identify the call. A null service means
+the request could not be assigned a service at all.
+
+Reasons are `unroutable` (no service handler), `not_implemented` (a service reports
+unsupported behavior), and `unknown_operation` (a service rejects the operation
+or route). Counts group by all displayed fields except `count`, including the
+account and region. SDK retries count as additional requests.
+
+The list is kept in memory and cleared on restart or either reset endpoint.
+It holds up to 1,000 distinct entries; existing entries keep counting after that
+limit, while `dropped_calls` counts requests for additional distinct entries.
+The recorder stores no request bodies, query strings, or headers. Paths remain
+visible, including resource names supplied in the URL. Payload capture and Lua
+fallback handlers are not implemented yet.
+
+Future fallback handlers will also need a response contract: either raw HTTP
+status, headers, and body, or an AWS-shaped result serialized by a model-aware
+adapter. Different APIs have different responses; IoT `Publish`, for example,
+returns an empty HTTP 200 response on success. The discovery list identifies
+calls, but does not describe their input/output schemas.
 
 ## Accounts and regions
 

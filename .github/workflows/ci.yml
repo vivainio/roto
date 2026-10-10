@@ -45,3 +45,6 @@ jobs:
 
       - name: EventBridge SDK smoke (Lua, S3, Lambda, SQS)
         run: .venv-moto/bin/python scripts/smoke-eventbridge.py
+
+      - name: Unsupported-call discovery SDK smoke
+        run: .venv-moto/bin/python scripts/smoke-unsupported.py

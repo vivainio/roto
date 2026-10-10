@@ -82,7 +82,7 @@ $ROTO_DATA_DIR/s3/
 - Next step: Phase 0 remainder, then Phase 1 (IAM, SQS, S3, DynamoDB), each gated on its vendored moto tests.
 
 ## Target services (what the user's stack actually uses)
-`s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam, events` (plus STS, which clients need for identity).
+`s3, sqs, kms, kinesis, dynamodb, secretsmanager, lambda, sns, ssm, iam, events, iot, iot-data` (plus STS, which clients need for identity).
 Everything else in moto is out of scope. Order after DynamoDB: **SNS, SSM, Secrets Manager, KMS, Kinesis**, then
 **IAM completion** (managed policies, groups, instance profiles). Lambda now has a local execution
 backend: command argv or HTTP POST bindings, configured separately from AWS function metadata,
@@ -90,6 +90,46 @@ with synchronous/asynchronous Invoke and S3 notifications. Embedded Lua (`mlua`)
 standard SQS event-source mappings. EventBridge now routes custom/S3 events to Lambda and SQS
 through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
+
+### Generic local API hooks (planned; IoT publish first)
+
+Unsupported-call discovery is implemented: server warnings on stderr and
+`GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
+capturing payloads. See the book's server reference for limits and reset behavior.
+
+The immediate IoT use case is an app calling boto3 `iot-data.publish` over HTTP.
+A local MQTT broker is not required to exercise that publisher. Start with a
+shared local hook mechanism, configured by trusted Lua startup setup, that can
+forward requests to an HTTP endpoint or command executor.
+
+- **Fallback API handlers:** explicitly registered handlers for unsupported
+  service/operation pairs. Execute synchronously and supply a response or error;
+  unregistered operations continue to return explicit unsupported errors.
+  Native implemented operations retain precedence.
+- **Event hooks:** observers of successful supported operations, with an
+  explicit asynchronous delivery/retry contract. These are distinct from
+  fallback handlers, which must produce the calling SDK's response.
+- **Shared executor contract:** reuse command argv/stdin/stdout and HTTP POST
+  execution infrastructure. Requests include account, region, service,
+  operation, method, path, query, headers and a base64 body for binary payloads.
+  Responses specify status, headers and a base64 body. Omit credentials from
+  forwarded headers. Executors have bounded timeouts and output sizes.
+- **Protocol adapters:** identify operations using JSON targets, Query actions,
+  or model-generated REST routes. The generic hook transport does not remove
+  the need for service-specific HTTP bindings or AWS-compatible response
+  serialization. Unsupported services need routing before fallback dispatch.
+- **First adapter:** `iotdata` (the SigV4 signing name for boto3 `iot-data`),
+  `Publish`, using the botocore REST-JSON model. A Lua-configured HTTP or command
+  handler consumes the topic and payload and returns the expected empty 200
+  response after successful execution. This provides local app integration,
+  without claiming MQTT subscriber delivery, retained state, or rules support.
+- **Validation:** real boto3 publish to both executor types, binary payloads,
+  account/region context, executor errors/timeouts, native-handler precedence,
+  and unchanged unsupported errors when no hook is configured.
+
+IoT APIs and generic hooks are not implemented yet. Endpoint discovery, device
+shadows, MQTT transports, retained messages, and IoT rules remain follow-ups
+based on actual usage.
 
 ## Status
 - Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.

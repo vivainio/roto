@@ -1,4 +1,5 @@
 mod setup;
+mod unsupported;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -50,11 +51,13 @@ struct App {
     #[allow(dead_code)] // handed to stateful services as they are added
     store: Arc<Store>,
     account_id: String,
+    unsupported: unsupported::Unsupported,
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
@@ -151,6 +154,7 @@ async fn main() {
         services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
         store,
         account_id: args.account_id,
+        unsupported: Default::default(),
     });
 
     let endpoint = format!(
@@ -183,6 +187,7 @@ async fn main() {
     }
     let router = Router::new()
         .route("/roto-api/health", get(|| async { "ok" }))
+        .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
         // moto's server-mode test harness resets state through this path.
         .route("/moto-api/reset", post(reset))
@@ -219,9 +224,16 @@ async fn reset(State(app): State<Arc<App>>) -> Response {
             .await
             .unwrap();
     match res {
-        Ok(()) => (StatusCode::OK, r#"{"status":"ok"}"#).into_response(),
+        Ok(()) => {
+            app.unsupported.reset();
+            (StatusCode::OK, r#"{"status":"ok"}"#).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn unsupported_calls(State(app): State<Arc<App>>) -> axum::Json<serde_json::Value> {
+    axum::Json(app.unsupported.snapshot())
 }
 
 async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
@@ -285,6 +297,13 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
                 .flatten()
         });
     let Some(handler) = handler else {
+        app.unsupported.record(unsupported::Call::new(
+            service.as_deref(),
+            &raw,
+            &ctx,
+            "unroutable",
+            None,
+        ));
         let msg = format!(
             "roto cannot route this request to a service ({} {})",
             raw.method, raw.path
@@ -294,7 +313,21 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             &request_id,
         ));
     };
+    let mut call =
+        unsupported::Call::new(Some(handler.service()), &raw, &ctx, "not_implemented", None);
     let result = tokio::task::spawn_blocking(move || handler.handle(&ctx, &raw)).await;
+    let unsupported = match &result {
+        Ok(Ok(response)) => unsupported::response(response),
+        Ok(Err(error)) => unsupported::error(error),
+        Err(_) => None,
+    };
+    if let Some((reason, operation)) = unsupported {
+        call.reason = reason;
+        if operation.is_some() {
+            call.operation = operation;
+        }
+        app.unsupported.record(call);
+    }
     match result {
         Ok(Ok(resp)) => into_response(resp),
         Ok(Err(e)) => into_response(plain_error(&e, &request_id)),
@@ -362,4 +395,117 @@ fn region_from_user_agent(req: &RawRequest) -> Option<String> {
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
     (!region.is_empty()).then_some(region)
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn app() -> Arc<App> {
+        let store = Arc::new(Store::ephemeral());
+        let iam = roto_svc_iam::IamHandler::new(&store).unwrap();
+        let sts = roto_svc_sts::StsHandler::new(&store, iam.0.clone()).unwrap();
+        let sqs = roto_svc_sqs::SqsHandler::new(&store).unwrap();
+        let lambda =
+            roto_svc_lambda::LambdaHandler::unstarted(&store, Default::default(), sqs.0.clone())
+                .unwrap();
+        let handlers: Vec<Arc<dyn ServiceHandler>> =
+            vec![Arc::new(sts), Arc::new(sqs), Arc::new(lambda)];
+        Arc::new(App {
+            services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
+            store,
+            account_id: "123456789012".into(),
+            unsupported: Default::default(),
+        })
+    }
+
+    async fn request(
+        app: &Arc<App>,
+        service: &str,
+        path: &str,
+        body: &str,
+        content_type: &str,
+    ) -> Response {
+        let request = Request::builder().method("POST").uri(path)
+            .header("authorization", format!("AWS4-HMAC-SHA256 Credential=test/20261010/us-east-1/{service}/aws4_request, SignedHeaders=host, Signature=test"))
+            .header("content-type", content_type)
+            .body(Body::from(body.to_owned())).unwrap();
+        handle(State(app.clone()), request).await
+    }
+
+    #[tokio::test]
+    async fn records_unroutable_and_serialized_unsupported_calls_without_changing_responses() {
+        let app = app();
+        for _ in 0..2 {
+            let response = request(
+                &app,
+                "iotdata",
+                "/topics/devices%2F123",
+                "private-payload",
+                "application/octet-stream",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+        let response = request(
+            &app,
+            "sts",
+            "/",
+            "Action=DecodeAuthorizationMessage&EncodedMessage=secret",
+            "application/x-www-form-urlencoded",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = axum::body::to_bytes(response.into_body(), 10000)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("<Code>NotImplemented</Code>"));
+
+        let request = Request::builder().uri("/2015-03-31/functions/demo/aliases/live")
+            .header("authorization", "AWS4-HMAC-SHA256 Credential=test/20261010/us-east-1/lambda/aws4_request, SignedHeaders=host, Signature=test")
+            .body(Body::empty()).unwrap();
+        assert_eq!(
+            handle(State(app.clone()), request).await.status(),
+            StatusCode::NOT_IMPLEMENTED
+        );
+        let snapshot = unsupported_calls(State(app.clone())).await.0;
+        assert_eq!(snapshot["calls"].as_array().unwrap().len(), 3);
+        let calls = snapshot["calls"].as_array().unwrap();
+        let iot = calls.iter().find(|c| c["service"] == "iotdata").unwrap();
+        assert_eq!(iot["count"], 2);
+        assert_eq!(iot["operation"], serde_json::Value::Null);
+        let lambda = calls.iter().find(|c| c["service"] == "lambda").unwrap();
+        assert_eq!(lambda["operation"], "GetAlias");
+        let sts = calls.iter().find(|c| c["service"] == "sts").unwrap();
+        assert_eq!(sts["operation"], "DecodeAuthorizationMessage");
+        assert!(!snapshot.to_string().contains("private-payload"));
+        assert!(!snapshot.to_string().contains("secret"));
+        assert_eq!(reset(State(app.clone())).await.status(), StatusCode::OK);
+        assert_eq!(
+            unsupported_calls(State(app)).await.0,
+            json!({"calls": [], "dropped_calls": 0})
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_service_errors_and_successes_are_not_discovery_entries() {
+        let app = app();
+        let response = request(
+            &app,
+            "sts",
+            "/",
+            "Action=GetCallerIdentity",
+            "application/x-www-form-urlencoded",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let req = Request::builder()
+            .uri("/2015-03-31/functions/missing")
+            .header("authorization", "AWS4-HMAC-SHA256 Credential=test/20261010/us-east-1/lambda/aws4_request, SignedHeaders=host, Signature=test")
+            .body(Body::empty()).unwrap();
+        let response = handle(State(app.clone()), req).await;
+        assert!(response.status().is_client_error());
+        assert_eq!(app.unsupported.snapshot()["calls"], json!([]));
+    }
 }
