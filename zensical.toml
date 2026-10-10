@@ -24,6 +24,7 @@ nav = [
   { "Server reference" = "server.md" },
   { "Services" = [
     { "Coverage overview" = "services.md" },
+    { "CloudWatch Logs" = "cloudwatch-logs.md" },
     { "KMS" = "kms.md" },
     { "Local Lambda execution" = "lambda.md" },
     { "EventBridge" = "eventbridge.md" },

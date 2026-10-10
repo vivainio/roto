@@ -19,6 +19,7 @@ Lambda container image through RIE. Configure bindings in Lua with `--setup`; se
 [executor example and contracts](examples/lambda/README.md) and the
 [container demo](demos/lambda-container/README.md).
 S3 notifications and SQS event-source mappings invoke those same executors.
+Captured Lambda output is available through a small [CloudWatch Logs subset](docs/cloudwatch-logs.md).
 Use `--setup setup.lua` to declare queues, functions, and wiring with embedded Lua; see the
 [Lua setup example](examples/lua/README.md). EventBridge rules can route custom and S3 events
 to Lambda or SQS; see the [EventBridge example](examples/eventbridge/README.md).

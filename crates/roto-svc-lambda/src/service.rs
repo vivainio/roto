@@ -17,6 +17,7 @@ pub struct Lambda {
     pub(crate) db: Arc<Db>,
     executors: RwLock<Executors>,
     pub(crate) sqs: Option<Arc<roto_svc_sqs::Sqs>>,
+    logs: RwLock<Option<Arc<roto_svc_logs::CloudWatchLogs>>>,
 }
 
 pub(crate) fn now() -> i64 {
@@ -133,6 +134,7 @@ impl Lambda {
             db,
             executors: RwLock::new(executors),
             sqs: None,
+            logs: RwLock::new(None),
         })
     }
     pub fn bind_executor(
@@ -153,6 +155,9 @@ impl Lambda {
     pub fn with_sqs(mut self, sqs: Arc<roto_svc_sqs::Sqs>) -> Self {
         self.sqs = Some(sqs);
         self
+    }
+    pub fn set_logs(&self, logs: Arc<roto_svc_logs::CloudWatchLogs>) {
+        *self.logs.write().unwrap() = Some(logs);
     }
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
@@ -271,7 +276,15 @@ impl Lambda {
                 ))
                 .execute(tx)?;
             Ok(())
-        })
+        })?;
+        if let Some(logs) = self.logs.read().unwrap().as_ref() {
+            if let Err(error) =
+                logs.record_lambda_invocation(&job.arn, &job.request_id, &outcome.logs)
+            {
+                eprintln!("Lambda log delivery failed: {error}");
+            }
+        }
+        Ok(())
     }
     /// Used by service event sources after their transaction commits.
     pub fn enqueue(

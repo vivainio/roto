@@ -32,6 +32,7 @@ inspection defaults to `us-east-1`.
 | DynamoDB | Six orders with nested maps/lists, sets, booleans, and nulls; an empty table and a stack-managed inventory table |
 | SQS | Orders and dead-letter messages kept for inspection; an event delivery queue |
 | Lambda | Echo and intentional failure executors, results and logs, a disabled queue mapping |
+| CloudWatch Logs | Log groups and events populated by the demo Lambda invocations |
 | EventBridge | Custom bus, rule, two targets, four deliveries |
 | SSM | String, StringList, and SecureString parameters; multiple versions |
 | Secrets Manager | Fake database credentials with two versions |

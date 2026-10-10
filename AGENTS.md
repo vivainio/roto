@@ -2,7 +2,7 @@
 
 Use the reusable Lua seed at `examples/demo/setup.lua` when you need populated
 service state for API development, integration tests, manual exploration, or the
-inspection UI. It uses normal service APIs and seeds ten stateful services;
+inspection UI. It uses normal service APIs and seeds eleven stateful services;
 no moto installation or Python packages are needed.
 
 ```sh
@@ -23,7 +23,8 @@ notification retries continue afterward.
 
 Fixtures include two CloudFormation stacks with resources and outputs, multi-page bucket contents, object versions and delete markers,
 nested DynamoDB items, queue messages, disabled event-source mappings, successful
-and intentionally failed Lambda executions with logs, EventBridge deliveries,
+and intentionally failed Lambda executions with logs, CloudWatch Logs groups and
+events from those invocations, EventBridge deliveries,
 parameters and secret versions, IAM resources, and an SNS subscription. The
 missing `demo-missing` Lambda destination intentionally demonstrates failed S3
 handoffs. Executors use `sh`; credentials and tokens are fake demo values.

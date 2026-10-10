@@ -111,8 +111,10 @@ Unsigned inspection uses the default account/us-east-1; signed requests use call
 Reset clears function metadata, queues and invocation history; local executor bindings remain.
 
 Code packages are stored as metadata, not unpacked or executed. Only `$LATEST` is supported;
-versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch logging, and automatic
-Kinesis event-source polling is not implemented. Policies are stored but not enforced.
+versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch Logs streams and Insights,
+and automatic Kinesis event-source polling are not implemented. Captured executor output is
+available through the [limited CloudWatch Logs API](cloudwatch-logs.md). Policies are stored
+but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
 [EventBridge rules](eventbridge.md) can also enqueue invocations from custom or S3 events.
 Use `--setup setup.lua` for Lua resource setup and executor bindings; see

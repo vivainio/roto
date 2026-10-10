@@ -102,7 +102,7 @@ def smoke():
             assert resources('sqs', 'messages', field='queue_id', value=queues['demo-events'])['total'] == 2
             handoffs = get('/roto-api/s3/notifications')['notifications']
             assert len(handoffs) == 1 and handoffs[0]['target'].endswith(':demo-missing')
-            print(f'Lua demo smoke passed: seeded in {startup:.2f}s; 10 services, two stacks, paginated objects, versions, nested items, retained messages, invocation logs, and delivery history')
+            print(f'Lua demo smoke passed: seeded in {startup:.2f}s; 11 services, two stacks, paginated objects, versions, nested items, retained messages, invocation logs, and delivery history')
         except BaseException:
             log.seek(0)
             print(log.read())
