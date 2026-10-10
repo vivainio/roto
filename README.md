@@ -14,8 +14,10 @@ aws --endpoint-url http://localhost:5070 sts get-caller-identity
 scripts/run-moto-tests.sh test_sts              # moto's own tests, run against roto
 ```
 
-Lambda functions can execute local commands or POST events to an HTTP API. Configure bindings
-with `--lambda-executors`; see the [runnable example and contracts](examples/lambda/README.md).
+Lambda functions can execute local commands, POST events to an HTTP API, or invoke an existing
+Lambda container image through RIE. Configure bindings in Lua with `--setup`; see the
+[executor example and contracts](examples/lambda/README.md) and the
+[container demo](demos/lambda-container/README.md).
 S3 notifications and SQS event-source mappings invoke those same executors.
 Use `--setup setup.lua` to declare queues, functions, and wiring with embedded Lua; see the
 [Lua setup example](examples/lua/README.md). EventBridge rules can route custom and S3 events

@@ -292,10 +292,8 @@ fn metadata_scope_and_executor_configuration_validation() {
         .unwrap();
     assert_eq!(response.status, 404);
     assert!(
-        serde_json::from_str::<Executors>(
-            r#"{"functions":{"bad":{"command":["echo"],"url":"http://localhost"}}}"#
-        )
-        .is_err()
+        serde_json::from_str::<Executor>(r#"{"command":["echo"],"url":"http://localhost"}"#)
+            .is_err()
     );
     assert!(command(&[]).validate().is_err());
     assert!(

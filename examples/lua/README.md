@@ -60,9 +60,8 @@ scope. `roto.account_id`, `roto.region`, and `roto.endpoint` expose that scope t
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
 Setup errors include a source location and stop startup. Changes from earlier successful
-operations remain persisted. Setup scripts are trusted local code; executor bindings are
-local configuration and cannot be submitted through AWS APIs. Lua bindings for full function
-ARNs override the corresponding JSON binding; untouched JSON bindings remain available.
+operations remain persisted. Setup scripts are trusted local code; executor bindings are local
+configuration and cannot be submitted through AWS APIs.
 
 ## Other service operations
 
