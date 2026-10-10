@@ -253,3 +253,10 @@ Queues, messages and receipt history use typed queries. FIFO blocking uses a
 correlated alias; inserted messages return their sequence directly. Dead-letter
 moves and receipt tombstones retain their behavior. All 139 Moto tests (6 skipped),
 eight native tests and service Clippy pass.
+
+## Lambda Diesel port (2026-10-10)
+
+Functions, invocation jobs/results and event-source mappings now use typed CRUD.
+Restart recovery, async claim order and mapping filters preserve their behavior.
+Thirteen native tests and service Clippy pass; Moto retains 8 passing, 30 skipped
+and 117 excluded tests.
