@@ -105,7 +105,7 @@ update the coverage baseline and book when observable behavior changes.
 
 ## Typed SQLite access
 
-IAM, SSM, KMS and STS use Diesel's SQLite backend. Each service's `schema.rs` declares database tables and
+IAM, SSM, KMS, STS and Secrets Manager use Diesel's SQLite backend. Each service's `schema.rs` declares database tables and
 `models.rs` contains stored records derived with `Queryable`, `Selectable` and
 `Insertable`; generated AWS API models remain separate. Handlers use typed
 queries inside `DieselDb::transaction`, retaining one transaction per API call.

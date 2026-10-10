@@ -1420,6 +1420,7 @@ name = "roto-svc-cloudformation"
 version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
+ "diesel",
  "flate2",
  "reqwest",
  "roto-core",

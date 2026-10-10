@@ -221,3 +221,9 @@ Lambda need more care around storage and delivery behavior.
 Key metadata, aliases and role sessions now use typed Diesel queries. Scoped alias
 joins and credential account routing retain their existing behavior. Native tests
 and service Clippy pass; Moto remains 152 passing for KMS and 25 for STS.
+
+## Secrets Manager Diesel port (2026-10-10)
+
+Secret metadata and version records now use named Diesel row models. All CRUD,
+version-stage updates, deletion, filters and batch reads use typed queries.
+Moto remains 104 passing, 2 skipped and 30 excluded; service Clippy passes.
