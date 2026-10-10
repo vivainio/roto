@@ -30,6 +30,7 @@ impl Iam {
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             for t in [
+                "policy_versions",
                 "users",
                 "groups",
                 "group_members",
@@ -91,6 +92,114 @@ impl Iam {
 }
 
 impl Service for Iam {
+    fn list_entities_for_policy(
+        &self,
+        ctx: &RequestContext,
+        i: ListEntitiesForPolicyRequest,
+    ) -> Result<ListEntitiesForPolicyResponse, AwsError> {
+        policies::list_entities_for_policy(&self.db, ctx, i)
+    }
+    fn create_policy(
+        &self,
+        ctx: &RequestContext,
+        i: CreatePolicyRequest,
+    ) -> Result<CreatePolicyResponse, AwsError> {
+        policies::create_policy(&self.db, ctx, i)
+    }
+    fn get_policy(
+        &self,
+        ctx: &RequestContext,
+        i: GetPolicyRequest,
+    ) -> Result<GetPolicyResponse, AwsError> {
+        policies::get_policy(&self.db, ctx, i)
+    }
+    fn delete_policy(&self, ctx: &RequestContext, i: DeletePolicyRequest) -> Result<(), AwsError> {
+        policies::delete_policy(&self.db, ctx, i)
+    }
+    fn list_policies(
+        &self,
+        ctx: &RequestContext,
+        i: ListPoliciesRequest,
+    ) -> Result<ListPoliciesResponse, AwsError> {
+        policies::list_policies(&self.db, ctx, i)
+    }
+    fn create_policy_version(
+        &self,
+        ctx: &RequestContext,
+        i: CreatePolicyVersionRequest,
+    ) -> Result<CreatePolicyVersionResponse, AwsError> {
+        policies::create_policy_version(&self.db, ctx, i)
+    }
+    fn get_policy_version(
+        &self,
+        ctx: &RequestContext,
+        i: GetPolicyVersionRequest,
+    ) -> Result<GetPolicyVersionResponse, AwsError> {
+        policies::get_policy_version(&self.db, ctx, i)
+    }
+    fn delete_policy_version(
+        &self,
+        ctx: &RequestContext,
+        i: DeletePolicyVersionRequest,
+    ) -> Result<(), AwsError> {
+        policies::delete_policy_version(&self.db, ctx, i)
+    }
+    fn list_policy_versions(
+        &self,
+        ctx: &RequestContext,
+        i: ListPolicyVersionsRequest,
+    ) -> Result<ListPolicyVersionsResponse, AwsError> {
+        policies::list_policy_versions(&self.db, ctx, i)
+    }
+    fn set_default_policy_version(
+        &self,
+        ctx: &RequestContext,
+        i: SetDefaultPolicyVersionRequest,
+    ) -> Result<(), AwsError> {
+        policies::set_default_policy_version(&self.db, ctx, i)
+    }
+    fn tag_policy(&self, ctx: &RequestContext, i: TagPolicyRequest) -> Result<(), AwsError> {
+        policies::tag_policy(&self.db, ctx, i)
+    }
+    fn untag_policy(&self, ctx: &RequestContext, i: UntagPolicyRequest) -> Result<(), AwsError> {
+        policies::untag_policy(&self.db, ctx, i)
+    }
+    fn list_policy_tags(
+        &self,
+        ctx: &RequestContext,
+        i: ListPolicyTagsRequest,
+    ) -> Result<ListPolicyTagsResponse, AwsError> {
+        policies::list_policy_tags(&self.db, ctx, i)
+    }
+    fn attach_user_policy(
+        &self,
+        ctx: &RequestContext,
+        i: AttachUserPolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::attach_user_policy(&self.db, ctx, i)
+    }
+    fn detach_user_policy(
+        &self,
+        ctx: &RequestContext,
+        i: DetachUserPolicyRequest,
+    ) -> Result<(), AwsError> {
+        policies::detach_user_policy(&self.db, ctx, i)
+    }
+    fn list_attached_user_policies(
+        &self,
+        ctx: &RequestContext,
+        i: ListAttachedUserPoliciesRequest,
+    ) -> Result<ListAttachedUserPoliciesResponse, AwsError> {
+        policies::list_attached_user_policies(&self.db, ctx, i)
+    }
+    fn list_attached_role_policies(
+        &self,
+        ctx: &RequestContext,
+        i: ListAttachedRolePoliciesRequest,
+    ) -> Result<ListAttachedRolePoliciesResponse, AwsError> {
+        policies::list_attached_role_policies(&self.db, ctx, i)
+    }
+
     fn put_role_policy(
         &self,
         ctx: &RequestContext,
@@ -110,14 +219,14 @@ impl Service for Iam {
         ctx: &RequestContext,
         i: AttachRolePolicyRequest,
     ) -> Result<(), AwsError> {
-        roles::attach_role_policy(&self.db, ctx, i)
+        policies::attach_role_policy(&self.db, ctx, i)
     }
     fn detach_role_policy(
         &self,
         ctx: &RequestContext,
         i: DetachRolePolicyRequest,
     ) -> Result<(), AwsError> {
-        roles::detach_role_policy(&self.db, ctx, i)
+        policies::detach_role_policy(&self.db, ctx, i)
     }
     fn create_user(
         &self,

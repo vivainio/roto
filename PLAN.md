@@ -159,3 +159,16 @@ Encrypt/Decrypt/ReEncrypt, GenerateDataKey and GenerateDataKeyWithoutPlaintext.
 Keys and aliases persist; native tests cover context/state/key checks, isolation,
 binary payloads, data-key lengths, restart and reset. Metadata listing, policies,
 grants, rotation and deletion remain future work.
+
+
+## IAM customer-managed policies (2026-10-10)
+
+IAM now implements 47/180 operations and passes 107/349 portable Moto tests
+(13 additional tests skipped). Customer-managed policies support CRUD, up to five
+versions, default-version selection, tags, user/role attachments, attachment counts,
+and paginated policy, version, attachment and entity listings. Policies and versions
+persist across restart and are scoped by account; attached policies and non-default
+versions block policy deletion. Native checks cover persistence, pagination, version
+limits and IDs, attachment idempotency, account isolation, deletion conflicts and reset.
+The AWS-managed policy catalog, full policy-document validation, groups and instance
+profiles remain follow-ups. Policy documents are stored without evaluating permissions.
