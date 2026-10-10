@@ -1,3 +1,4 @@
+mod inspection;
 mod setup;
 
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use clap::Parser;
 use roto_core::sigv4::CredentialScope;
@@ -190,6 +191,14 @@ async fn main() {
         });
     }
     let router = Router::new()
+        .route("/roto-api", get(inspection_ui))
+        .route("/roto-api/", get(inspection_ui))
+        .route("/roto-api/resources", get(inspection::catalog))
+        .route(
+            "/roto-api/resources/{service}/{table}",
+            get(inspection::records),
+        )
+        .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(|| async { "ok" }))
         .route("/roto-api/reset", post(reset))
         // moto's server-mode test harness resets state through this path.
@@ -218,6 +227,10 @@ async fn main() {
         }
     );
     axum::serve(listener, router).await.unwrap();
+}
+
+async fn inspection_ui() -> Html<&'static str> {
+    Html(include_str!("inspection.html"))
 }
 
 async fn reset(State(app): State<Arc<App>>) -> Response {

@@ -83,6 +83,11 @@ impl Store {
         self.dir.as_deref()
     }
 
+    /// Returns an already initialized service database without opening or migrating it.
+    pub fn existing_db(&self, service: &str) -> Option<Arc<Db>> {
+        self.dbs.lock().unwrap().get(service).cloned()
+    }
+
     /// Opens (once) the database for `service`, applying any pending migrations.
     pub fn db(&self, service: &str, migrations: &[Migration]) -> Result<Arc<Db>, AwsError> {
         let mut dbs = self.dbs.lock().unwrap();

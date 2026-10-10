@@ -30,6 +30,25 @@ roto.lambda.event_source(queue, handler)
 Start `roto-server --setup setup.lua`, then send a message with the command above.
 The handler returns the incoming event as its JSON result.
 
+## Quick test data
+
+Use the reusable [demo seed](https://github.com/vivainio/roto/blob/main/examples/demo/setup.lua)
+for API development, integration tests, or the inspection UI:
+
+```sh
+scripts/demo.sh                 # seeded ephemeral server on port 5071
+# Or manage the server directly:
+roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
+```
+
+It creates useful data across ten stateful services, including multi-page
+bucket contents, versions, nested DynamoDB items, retained queue messages,
+Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
+No moto or Python dependencies are needed. Verify it with
+`python3 scripts/smoke-demo.py` after building the server. See the
+[demo README](https://github.com/vivainio/roto/blob/main/examples/demo/README.md)
+for the fixture inventory and intentional failure cases.
+
 ## Setup helpers
 
 ```lua
