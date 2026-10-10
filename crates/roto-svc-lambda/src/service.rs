@@ -16,6 +16,7 @@ use crate::generated::*;
 pub struct Lambda {
     pub(crate) db: Arc<Db>,
     executors: RwLock<Executors>,
+    pub(crate) rie_pool: crate::executor::RiePool,
     pub(crate) sqs: Option<Arc<roto_svc_sqs::Sqs>>,
     logs: RwLock<Option<Arc<roto_svc_logs::CloudWatchLogs>>>,
 }
@@ -133,6 +134,7 @@ impl Lambda {
         Ok(Self {
             db,
             executors: RwLock::new(executors),
+            rie_pool: Default::default(),
             sqs: None,
             logs: RwLock::new(None),
         })
@@ -145,6 +147,7 @@ impl Lambda {
     ) -> Result<(), AwsError> {
         executor.validate().map_err(invalid)?;
         let arn = arn(ctx, name)?;
+        self.rie_pool.clear(Some(&arn));
         self.executors
             .write()
             .unwrap()
@@ -159,7 +162,12 @@ impl Lambda {
     pub fn set_logs(&self, logs: Arc<roto_svc_logs::CloudWatchLogs>) {
         *self.logs.write().unwrap() = Some(logs);
     }
+    /// Release idle containers and prevent running invocations from refilling the pool.
+    pub fn shutdown_executors(&self) {
+        self.rie_pool.close();
+    }
     pub fn reset(&self) -> Result<(), AwsError> {
+        self.rie_pool.clear(None);
         self.db.transaction(|tx| {
             diesel::delete(event_source_mappings::table).execute(tx)?;
             diesel::delete(functions::table).execute(tx)?;
@@ -189,7 +197,9 @@ impl Lambda {
                 return Err(missing(arn));
             }
             Ok(())
-        })
+        })?;
+        self.rie_pool.clear(Some(arn));
+        Ok(())
     }
     pub(crate) fn job(
         &self,
@@ -227,6 +237,7 @@ impl Lambda {
             executor,
             arn,
             request_id: ids::request_id(),
+            revision: value["RevisionId"].as_str().unwrap_or_default().into(),
             region: ctx.region.clone(),
             endpoint: ctx.base_url.clone(),
             environment,
@@ -319,6 +330,7 @@ impl Lambda {
                     .build()
                     .expect("Lambda runtime");
                 while let Some(lambda) = weak.upgrade() {
+                    lambda.rie_pool.expire();
                     let next = lambda.db.transaction(|tx| {
                         let row: Option<(String, String, i32)> = invocations::table
                             .filter(invocations::state.eq("queued"))
@@ -339,7 +351,7 @@ impl Lambda {
                         Ok(Some((_, source, attempts))) => {
                             match serde_json::from_str::<Job>(&source) {
                                 Ok(job) => {
-                                    let outcome = runtime.block_on(execute(&job));
+                                    let outcome = runtime.block_on(execute(&job, &lambda.rie_pool));
                                     if let Err(e) =
                                         lambda.finish(&job, &outcome, attempts + 1, true)
                                     {
@@ -607,6 +619,7 @@ impl Service for Lambda {
             }
             Ok(())
         })?;
+        self.rie_pool.clear(Some(&arn));
         Ok(DeleteFunctionResponse {
             status_code: Some(204),
         })
@@ -675,7 +688,7 @@ impl Service for Lambda {
             .enable_all()
             .build()
             .map_err(|e| AwsError::internal(e.to_string()))?;
-        let outcome = runtime.block_on(execute(&job));
+        let outcome = runtime.block_on(execute(&job, &self.rie_pool));
         self.finish(&job, &outcome, 1, false)?;
         let bytes = outcome.logs.as_bytes();
         Ok(InvocationResponse {

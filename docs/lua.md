@@ -69,7 +69,7 @@ local handler = roto.lambda.function_("process-job", {
   executor = { command = { "sh", "./process_jobs.sh" }, env = { DEBUG = "1" } },
 })
 -- Alternatively: executor = { url = "http://localhost:8080/jobs", headers = {} }
--- Or invoke an existing Lambda image: executor = { rie = "my-worker:latest" }
+-- Or invoke an existing Lambda image: executor = { container = "my-worker:latest" }
 
 local mapping = roto.lambda.event_source(queue, handler, {
   batch_size = 10,

@@ -59,16 +59,21 @@ logs. Stdout, stderr, and HTTP response bodies each have a 6 MiB limit.
 
 ## Lambda container images
 
-For an image built with the AWS Lambda Runtime Interface Emulator (RIE), bind its image name:
+`container` names a local Podman or Docker image; Roto launches it and sends events
+to its Runtime Interface Emulator (RIE). AWS Lambda runtime base images, such as
+`public.ecr.aws/lambda/python:3.12`, already include RIE and the runtime client.
+Custom images must supply RIE and an entrypoint that starts it on port 8080;
+Roto does not install it. Bind a compatible image by name:
 
 ```lua
-roto.lambda.bind("image-worker", {rie = "my-worker:latest"})
+roto.lambda.bind("image-worker", {container = "my-worker:latest", warm = true})
 ```
 
 Roto starts the image with Podman when available, or Docker otherwise, publishes container port
 8080 to an ephemeral loopback port, discovers that port, and POSTs the event to RIE's
-`/2015-03-31/functions/function/invocations` endpoint. The container is removed after each
-invocation. The image must already exist locally and include a Lambda Runtime Interface Client
+`/2015-03-31/functions/function/invocations` endpoint. `warm = true` reuses idle
+containers and preserves handler state; omitting it or using `warm = false` removes
+the container after each invocation. The image must already exist locally and include a Lambda Runtime Interface Client
 and RIE-compatible entrypoint; roto does not build or pull images. Function timeout includes
 container startup time, so set a longer timeout for image-based functions. Container stdout and
 stderr are returned as invocation logs.
