@@ -118,7 +118,7 @@ Use `--setup setup.lua` for Lua resource setup and executor bindings; see
 
 ```sh
 cargo build -p roto-server
-.venv-moto/bin/python scripts/smoke-lambda.py
+.venv-moto/bin/python tests/smoke-lambda.py
 ```
 
 This starts a disposable roto and HTTP handler, exercises command and HTTP invocations plus

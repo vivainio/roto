@@ -92,15 +92,15 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
   tests; the weekly/manual `coverage-audit.yml` workflow runs this for every service.
   The runner adapts upstream's port 5000 URLs, Lambda's IAM fixture, DynamoDB's CloudFormation fixtures, and EventBridge delivery
   polling in a temporary copy. Docker tests are skipped; local executors have SDK smoke coverage.
-* `scripts/smoke-cloudformation.py` - SDK checks for stack wiring, updates, DynamoDB index queries,
+* `tests/smoke-cloudformation.py` - SDK checks for stack wiring, updates, DynamoDB index queries,
   restart, account/region isolation, validation, failed-resource cleanup, and reset.
-* `scripts/smoke-kinesis.py` - SDK checks for account/region isolation, scoped cursors and paging, stream/record/tag persistence across restart, split-shard routing, closed-shard draining, and reset.
-* `scripts/smoke-dynamodb.py` - SDK checks for account/region isolation with identical table names
+* `tests/smoke-kinesis.py` - SDK checks for account/region isolation, scoped cursors and paging, stream/record/tag persistence across restart, split-shard routing, closed-shard draining, and reset.
+* `tests/smoke-dynamodb.py` - SDK checks for account/region isolation with identical table names
   and item keys, persisted GSI/TTL/item state, and STS credentials across server restart.
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,
-  vendored moto suites, Lua/EventBridge SDK smokes, and `scripts/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
+  vendored moto suites, Lua/EventBridge SDK smokes, and `tests/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
 
 ## Local Lambda execution
 

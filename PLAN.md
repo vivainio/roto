@@ -91,7 +91,7 @@ standard SQS event-source mappings. EventBridge now routes custom/S3 events to L
 through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
-### Runtime Lua hooks (planned; IoT publish first)
+### Runtime Lua hooks (planned)
 
 Unsupported-call discovery is implemented: server warnings on stderr and
 `GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
@@ -121,13 +121,13 @@ request should continue directly to native dispatch. The book's
 [runtime-hooks plan](docs/runtime-hooks.md) tracks lifecycle, request/response,
 concurrency, timeout, and validation decisions.
 
-The first fallback use case is boto3 `iot-data.publish`. It should accept the
-botocore REST-JSON request and return the empty HTTP 200 response expected on
-success, without claiming MQTT subscriber delivery, retained state, or rules
-support. Command/HTTP forwarding may implement this use case after the Lua hook
-contract is established. IoT endpoint discovery, device shadows, MQTT
-transports, retained messages, and IoT rules remain follow-ups based on actual
-usage.
+The IoT Data Plane `Publish` operation now accepts boto3's REST-JSON request and
+fans out to matching clients on Roto's local WebSocket endpoint. This is a small
+topic broker, not MQTT transport: it does not implement retained messages,
+durable delivery, device shadows, IoT rules, or device endpoint discovery. The
+same WebSocket connection registry supports API Gateway Management API
+`PostToConnection`. MQTT transports, fuller API Gateway WebSocket API behavior,
+and the remaining IoT features can follow based on actual usage.
 
 ## Status
 - Phase 0 done: workspace, `roto-core` (store/migrations/SigV4 scope), `roto-protocol` (query+XML), `roto-codegen` (botocore model -> typed code), `roto-svc-sts` (GetCallerIdentity, GetAccessKeyInfo), `roto-server`, vendored moto STS tests, CI.

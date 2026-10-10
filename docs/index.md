@@ -61,7 +61,8 @@ or read [Architecture](architecture.md) to work on the implementation.
 The book also covers [Lua setup](lua.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),
-[Kinesis](kinesis.md), [KMS](kms.md), and [local Lambda execution](lambda.md).
+[Kinesis](kinesis.md), [KMS](kms.md), [IoT topics and WebSockets](iot.md), and
+[local Lambda execution](lambda.md).
 The planned [runtime Lua hook system](runtime-hooks.md) describes future request
 interception and missing-operation fallbacks.
 

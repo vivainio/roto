@@ -124,7 +124,7 @@ automatically rerun after reset.
 
 ```sh
 cargo build -p roto-server
-.venv-moto/bin/python scripts/smoke-lua.py
+.venv-moto/bin/python tests/smoke-lua.py
 ```
 
 The smoke test starts disposable servers, exercises shell and HTTP deliveries and disabled

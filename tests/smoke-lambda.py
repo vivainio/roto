@@ -2,7 +2,7 @@
 """SDK smoke: command + HTTP Invoke, and filtered S3 -> command -> SQS.
 
 Run after cargo build -p roto-server:
-    .venv-moto/bin/python scripts/smoke-lambda.py
+    .venv-moto/bin/python tests/smoke-lambda.py
 Uses only disposable server state. --handler is the command executor entry point.
 """
 import json

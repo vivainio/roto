@@ -32,7 +32,7 @@ Verify the fixture contract after changing it:
 
 ```sh
 cargo build -p roto-server --locked
-python3 scripts/smoke-demo.py    # starts and stops its own disposable server
+python3 tests/smoke-demo.py      # starts and stops its own disposable server
 ```
 
 # API coverage from Moto tests

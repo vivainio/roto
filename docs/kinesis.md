@@ -60,7 +60,7 @@ per-record and 5 MiB/500-record batch limits.
 
 ```sh
 scripts/run-moto-tests.sh test_kinesis
-.venv-moto/bin/python scripts/smoke-kinesis.py
+.venv-moto/bin/python tests/smoke-kinesis.py
 ```
 
 The SDK smoke additionally verifies persisted cursors, records and tags across

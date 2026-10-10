@@ -46,7 +46,7 @@ It creates useful data across ten stateful services, including multi-page
 bucket contents, versions, nested DynamoDB items, retained queue messages,
 Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
 No moto or Python dependencies are needed. Verify it with
-`python3 scripts/smoke-demo.py` after building the server. See the
+`python3 tests/smoke-demo.py` after building the server. See the
 [demo README](https://github.com/vivainio/roto/blob/main/examples/demo/README.md)
 for the fixture inventory and intentional failure cases.
 
@@ -168,7 +168,7 @@ automatically rerun after reset.
 
 ```sh
 cargo build -p roto-server
-.venv-moto/bin/python scripts/smoke-lua.py
+.venv-moto/bin/python tests/smoke-lua.py
 ```
 
 The smoke test starts disposable servers, exercises shell and HTTP deliveries and disabled

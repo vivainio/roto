@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).with_name("audit-moto-tests.py")
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/audit-moto-tests.py"
 
 
 class AuditTests(unittest.TestCase):

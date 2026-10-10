@@ -41,6 +41,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
 | `GET` | `/roto-api/s3/object` | Download an object or read a bounded preview |
 | `GET` | `/roto-api/health` | Returns `ok` |
+| `GET` | `/roto-api/ws` | Local WebSocket connection endpoint; also available at `/roto-api/iot/ws` |
 | `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
@@ -82,6 +83,10 @@ accepts `bucket`, `key`, an optional `version`, and `preview=true` for the first
 64 KiB. Downloads are served as attachments. These inspection endpoints only
 read resources; they do not modify service state.
 
+The local WebSocket endpoint accepts topic subscriptions for IoT publishes and
+also exposes connection IDs for API Gateway Management API `PostToConnection`.
+See [IoT topics and WebSockets](iot.md) for the browser protocol and SDK examples.
+
 Reset deletes the instance's service state, including persistent state:
 
 ```sh
@@ -103,15 +108,15 @@ log level. Normal validation errors, missing resources, and successful requests
 do not appear in the list. Unsupported calls keep their existing AWS error
 responses; recording a call does not make it succeed.
 
-For example, a boto3 `iot-data.publish` request currently produces an entry like:
+For example, an unsupported `iotdata` request can produce an entry like:
 
 ```json
 {
   "calls": [{
     "service": "iotdata",
     "operation": null,
-    "method": "POST",
-    "path": "/topics/devices%2F123",
+    "method": "GET",
+    "path": "/things/devices%2F123/shadow",
     "account_id": "123456789012",
     "region": "us-east-1",
     "reason": "unroutable",
@@ -206,9 +211,9 @@ fallback handlers are not implemented yet.
 
 Future fallback handlers will also need a response contract: either raw HTTP
 status, headers, and body, or an AWS-shaped result serialized by a model-aware
-adapter. Different APIs have different responses; IoT `Publish`, for example,
-returns an empty HTTP 200 response on success. The discovery list identifies
-calls, but does not describe their input/output schemas.
+adapter. The implemented IoT `Publish` route returns the empty HTTP 200
+response expected on success. The discovery list identifies unsupported calls,
+but does not describe their input/output schemas.
 
 ## Accounts and regions
 

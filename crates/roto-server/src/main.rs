@@ -3,6 +3,7 @@ mod inspection;
 mod setup;
 mod trace;
 mod unsupported;
+mod websocket;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -60,6 +61,7 @@ struct App {
     unsupported: unsupported::Unsupported,
     trace: trace::Trace,
     gateway: gateway::Gateway,
+    websockets: websocket::Hub,
 }
 
 #[tokio::main]
@@ -189,6 +191,7 @@ async fn main() {
         unsupported: Default::default(),
         trace,
         gateway,
+        websockets: websocket::Hub::default(),
     });
 
     let endpoint = format!(
@@ -230,6 +233,8 @@ async fn main() {
         .route("/roto-api/dynamodb/query", post(inspection::dynamodb_query))
         .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(|| async { "ok" }))
+        .route("/roto-api/ws", get(websocket::websocket))
+        .route("/roto-api/iot/ws", get(websocket::websocket))
         .route("/roto-api/trace", get(request_trace))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
@@ -372,6 +377,72 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
                 &response_request,
             ),
         };
+    }
+
+    if service.as_deref() == Some("iotdata")
+        && raw.method == "POST"
+        && raw.path.starts_with("/topics/")
+    {
+        let started = std::time::Instant::now();
+        let result = app.websockets.publish_iot(&raw);
+        let response = match result {
+            Ok(()) => RawResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            Err(error) => plain_error(&error, &request_id),
+        };
+        let outcome = if response.status < 400 {
+            "success"
+        } else {
+            "error"
+        };
+        let error_code = trace::response_error_code(&response);
+        app.trace.record(trace::entry(
+            &raw,
+            &ctx,
+            Some("iotdata"),
+            Some("Publish".into()),
+            response.status,
+            outcome,
+            error_code.as_deref(),
+            started.elapsed().as_millis(),
+        ));
+        return finish_request_response(into_response(response), &raw);
+    }
+
+    if service.as_deref() == Some("execute-api")
+        && raw.method == "POST"
+        && raw.path.contains("/@connections/")
+    {
+        let started = std::time::Instant::now();
+        let result = websocket::handle_management_post(&app.websockets, &raw);
+        let response = match result {
+            Ok(()) => RawResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: Vec::new(),
+            },
+            Err(error) => plain_error(&error, &request_id),
+        };
+        let outcome = if response.status < 400 {
+            "success"
+        } else {
+            "error"
+        };
+        let error_code = trace::response_error_code(&response);
+        app.trace.record(trace::entry(
+            &raw,
+            &ctx,
+            Some("execute-api"),
+            Some("PostToConnection".into()),
+            response.status,
+            outcome,
+            error_code.as_deref(),
+            started.elapsed().as_millis(),
+        ));
+        return finish_request_response(into_response(response), &raw);
     }
 
     let handler = service
@@ -592,6 +663,7 @@ mod discovery_tests {
             unsupported: Default::default(),
             trace: trace::Trace::create(None).unwrap(),
             gateway: Default::default(),
+            websockets: Default::default(),
         })
     }
 
