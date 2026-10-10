@@ -1,6 +1,40 @@
 # CloudFormation
 
-roto supports synchronous CloudFormation stacks for nine resource types:
+CloudFormation turns a template into service resources and gives clients one
+place to create, inspect, update, and delete them. Roto implements this as a
+useful subset: stack operations are synchronous, and templates call the same
+service handlers used by direct SQS, SNS, S3, DynamoDB, Kinesis, IAM, and Lambda
+requests.
+
+## Run the end-to-end demo
+
+Start a seeded local server in one terminal, then run the AWS CLI demo in
+another. The CLI uses fake credentials and targets Roto on port 5071.
+
+```sh
+scripts/demo.sh
+```
+
+```sh
+cd demos/cloudformation
+./deploy-local.sh
+```
+
+The demo creates an SQS queue and an SNS topic subscribed to it, plus a nested
+stack that creates a second queue. It then creates a consumer stack that imports
+an export from the first stack. The templates show parameters, references,
+outputs, and `Fn::Sub`. Set `ROTO_ENDPOINT` if the server uses another port.
+
+The script uploads the nested template into a local S3 bucket because
+`AWS::CloudFormation::Stack` loads its template through `TemplateURL`. It prints
+both stacks' outputs and the nested stack's parent/root IDs. Delete the consumer
+stack first so it releases its import, then delete the main stack; that removes
+the nested stack and its queue. The shared template bucket remains until the
+ephemeral server is restarted.
+
+## Supported resources
+
+Roto supports synchronous CloudFormation stacks for nine resource types:
 
 | Resource | Supported properties |
 | --- | --- |
@@ -36,6 +70,21 @@ include logical IDs, physical IDs, types, status, and timestamps. Stack name and
 stack ARN can be used for lookups. A deleted stack can be described by ARN until
 its name is reused; name lookup and listing omit deleted stacks.
 
+Known IAM access keys and STS session keys select their owning account. For local
+multi-account work without provisioning IAM credentials, an otherwise unknown
+12-digit `AWS_ACCESS_KEY_ID` selects that account directly. For example, these
+commands list separate CloudFormation namespaces:
+
+```sh
+AWS_ACCESS_KEY_ID=111122223333 AWS_SECRET_ACCESS_KEY=demo \
+  aws --endpoint-url http://localhost:5071 cloudformation list-stacks
+AWS_ACCESS_KEY_ID=444455556666 AWS_SECRET_ACCESS_KEY=demo \
+  aws --endpoint-url http://localhost:5071 cloudformation list-stacks
+```
+
+Non-numeric or other unknown credentials use `--account-id` / `ROTO_ACCOUNT_ID`
+(default `123456789012`). Region still comes from the SigV4 credential scope.
+
 Templates use inline `TemplateBody`. JSON and ordinary YAML mappings are accepted;
 YAML short tags `!Ref`, `!GetAtt`, `!Sub`, and `!ImportValue` are accepted. Available template features are:
 
@@ -53,7 +102,53 @@ YAML short tags `!Ref`, `!GetAtt`, `!Sub`, and `!ImportValue` are accepted. Avai
 Export names are returned in stack descriptions and `ListExports`. `Fn::ImportValue`
 resolves exports from another stack in the same account and region. Export names
 must be unique there, and an export cannot be changed or removed while another
-stack imports it.
+stack imports it. The exporter also cannot be deleted while an import is active;
+delete the importing stack first. `ListExports` returns pages of up to 100
+exports.
+
+For example, an exporting stack can publish a resource attribute:
+
+```yaml
+Outputs:
+  QueueArn:
+    Value:
+      Fn::GetAtt: [Queue, Arn]
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-QueueArn"
+```
+
+A separate stack can accept the export name as a parameter and import it:
+
+```yaml
+Parameters:
+  QueueArnExportName:
+    Type: String
+
+Outputs:
+  SharedQueueArn:
+    Value:
+      Fn::ImportValue:
+        Ref: QueueArnExportName
+```
+
+The export name is resolved when the first stack is created. The importing
+stack's output then contains the exported value; inspect available names with
+`aws --endpoint-url http://localhost:5071 cloudformation list-exports`.
+
+## Nested stacks
+
+An `AWS::CloudFormation::Stack` resource creates a child stack from a template
+object in Roto's S3 service. Its `Parameters` and `Tags` are passed to the child.
+The parent can read child outputs through `Fn::GetAtt`, using attributes such as
+`Outputs.QueueUrl`. `Ref` on the nested resource returns the child stack ID.
+Child records expose `ParentId` and `RootId`, and nested stacks can contain more
+nested stacks up to a maximum depth of 16.
+
+Creating or updating the parent creates or updates the child in the same
+account and region. Deleting the parent recursively deletes the child. A child
+deletion failure leaves the failed child and remaining resources visible so the
+delete can be retried. Nested change sets are not supported.
 
 ## Change sets and protection
 
@@ -70,10 +165,10 @@ The current evaluator enforces matching `Deny` statements for `Update:Modify`,
 semantics. `StackPolicyDuringUpdateBody` can override the policy for an update.
 Termination protection blocks `DeleteStack` until disabled.
 
-`DescribeStackEvents` returns persisted events newest first in pages of 100.
-Other stack/resource/change-set listing APIs do not paginate. `GetTemplate`
-returns the stored stack template as JSON; fetching a change-set template is
-unsupported.
+`DescribeStackEvents` returns persisted events newest first in pages of 100;
+`ListExports` returns pages of up to 100. Other stack/resource/change-set listing
+APIs do not paginate. `GetTemplate` returns the stored stack template as JSON;
+fetching a change-set template is unsupported.
 
 ## Template specification checks
 

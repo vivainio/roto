@@ -21,6 +21,12 @@ roto-server --ephemeral --trace moto-trace.jsonl
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
 
+Signed AWS service requests with known IAM access keys or STS session keys use
+the account that owns the credential. For local multi-account use, an otherwise
+unknown `AWS_ACCESS_KEY_ID` made of exactly 12 digits is treated as the account
+ID. Other unknown credentials use the configured default account. The region
+comes from the request's SigV4 credential scope.
+
 Use `--help` for the executable's current options. `RUST_LOG` controls tracing output:
 
 ```sh
