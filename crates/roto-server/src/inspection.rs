@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use roto_core::rusqlite::{Connection, types::ValueRef};
+use roto_core::rusqlite::{Connection, OptionalExtension, types::ValueRef};
 use roto_core::{AwsError, RawRequest, RequestContext, ids};
 use serde_json::{Map, Value, json};
 
@@ -86,6 +86,148 @@ pub async fn records(
         ),
         Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Inspection task failed"),
     }
+}
+
+pub async fn dynamodb_query(State(app): State<Arc<App>>, Json(input): Json<Value>) -> Response {
+    let Some(table_id) = input
+        .get("table_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return error(StatusCode::BAD_REQUEST, "table_id is required");
+    };
+    let partition_value = input
+        .get("partition_value")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let Some(db) = app.store.existing_db("dynamodb") else {
+        return error(StatusCode::NOT_FOUND, "DynamoDB is not initialized");
+    };
+    match tokio::task::spawn_blocking(move || {
+        db.read(|c| query_dynamodb_items(c, &table_id, &partition_value))
+    })
+    .await
+    {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => error(
+            StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            e.message,
+        ),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "DynamoDB query failed"),
+    }
+}
+
+fn query_dynamodb_items(
+    c: &Connection,
+    table_id: &str,
+    partition_value: &str,
+) -> Result<Value, AwsError> {
+    let table = c
+        .query_row(
+            "SELECT name, key_schema, attr_defs FROM tables WHERE table_id = ?1",
+            [table_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AwsError::sender(404, "ResourceNotFoundException", "Table not found"))?;
+    let (partition_key, key_type) = if partition_value.is_empty() {
+        (None, None)
+    } else {
+        let key_schema: Value = serde_json::from_str(&table.1)
+            .map_err(|_| AwsError::internal("Invalid DynamoDB table key schema"))?;
+        let key = key_schema
+            .as_array()
+            .and_then(|keys| {
+                keys.iter()
+                    .find(|key| key.get("KeyType").and_then(Value::as_str) == Some("HASH"))
+            })
+            .and_then(|key| key.get("AttributeName").and_then(Value::as_str))
+            .ok_or_else(|| AwsError::internal("DynamoDB table has no partition key"))?;
+        let attr_defs: Value = serde_json::from_str(&table.2)
+            .map_err(|_| AwsError::internal("Invalid DynamoDB table attribute definitions"))?;
+        let key_type = attr_defs
+            .as_array()
+            .and_then(|defs| {
+                defs.iter()
+                    .find(|def| def.get("AttributeName").and_then(Value::as_str) == Some(key))
+            })
+            .and_then(|def| def.get("AttributeType").and_then(Value::as_str))
+            .ok_or_else(|| AwsError::internal("DynamoDB partition key type is missing"))?;
+        if !matches!(key_type, "S" | "N" | "B") {
+            return Err(AwsError::internal(
+                "Unsupported DynamoDB partition key type",
+            ));
+        }
+        match key_type {
+            "S" => {}
+            "N" if !partition_value.parse::<f64>().is_ok_and(f64::is_finite) => {
+                return Err(AwsError::sender(
+                    400,
+                    "ValidationException",
+                    "Partition key value must be a number",
+                ));
+            }
+            "B" if roto_protocol::base64::decode(partition_value)
+                .is_none_or(|value| value.is_empty()) =>
+            {
+                return Err(AwsError::sender(
+                    400,
+                    "ValidationException",
+                    "Partition key value must be non-empty base64",
+                ));
+            }
+            _ => {}
+        }
+        (Some(key.to_owned()), Some(key_type.to_owned()))
+    };
+    let found = if let (Some(key), Some(key_type)) = (partition_key.as_deref(), key_type.as_deref())
+    {
+        let key_json = serde_json::to_string(key)
+            .map_err(|_| AwsError::internal("Unable to encode DynamoDB partition key"))?;
+        let path = format!("$.{key_json}.{key_type}");
+        let value_clause = if key_type == "N" {
+            "CAST(json_extract(item, ?2) AS NUMERIC) = CAST(?3 AS NUMERIC)"
+        } else {
+            "json_extract(item, ?2) = ?3"
+        };
+        let mut statement = c.prepare(&format!(
+            "SELECT item FROM items WHERE table_id = ?1 AND {value_clause} ORDER BY hk, rk LIMIT 101"
+        ))?;
+        statement
+            .query_map([table_id, &path, partition_value], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut statement =
+            c.prepare("SELECT item FROM items WHERE table_id = ?1 ORDER BY hk, rk LIMIT 101")?;
+        statement
+            .query_map([table_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let has_more = found.len() > 100;
+    let items = found
+        .iter()
+        .take(100)
+        .map(|item| {
+            serde_json::from_str::<Value>(item)
+                .map_err(|_| AwsError::internal("Invalid stored DynamoDB item"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({
+        "tableName": table.0,
+        "partitionKey": partition_key,
+        "count": items.len(),
+        "hasMore": has_more,
+        "items": items,
+    }))
 }
 
 fn quote(identifier: &str) -> String {
