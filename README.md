@@ -18,7 +18,8 @@ Lambda functions can execute local commands or POST events to an HTTP API. Confi
 with `--lambda-executors`; see the [runnable example and contracts](examples/lambda/README.md).
 S3 notifications and SQS event-source mappings invoke those same executors.
 Use `--setup setup.lua` to declare queues, functions, and wiring with embedded Lua; see the
-[Lua setup example](examples/lua/README.md).
+[Lua setup example](examples/lua/README.md). EventBridge rules can route custom and S3 events
+to Lambda or SQS; see the [EventBridge example](examples/eventbridge/README.md).
 
 ## Documentation
 
