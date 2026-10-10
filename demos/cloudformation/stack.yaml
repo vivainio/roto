@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation demo with direct and nested resources.
+
+Parameters:
+  Environment:
+    Type: String
+
+Resources:
+  NotificationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: "${Environment}-notifications"
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName:
+        Fn::Sub: "${Environment}-alerts"
+      Subscription:
+        - Protocol: sqs
+          Endpoint:
+            Fn::GetAtt: [NotificationsQueue, Arn]
+  Messaging:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: "@@TEMPLATE_URL@@"
+      Parameters:
+        Environment:
+          Ref: Environment
+      Tags:
+        - Key: demo-layer
+          Value: nested-child
+
+Outputs:
+  NotificationsQueueUrl:
+    Description: URL of the directly created SQS queue.
+    Value:
+      Ref: NotificationsQueue
+  AlertsTopicArn:
+    Description: ARN of the directly created SNS topic.
+    Value:
+      Ref: AlertsTopic
+  QueueUrl:
+    Description: Queue URL returned by the nested stack.
+    Value:
+      Fn::GetAtt: [Messaging, Outputs.QueueUrl]
+  QueueArn:
+    Description: Queue ARN returned by the nested stack.
+    Value:
+      Fn::GetAtt: [Messaging, Outputs.QueueArn]
+  ChildStackId:
+    Description: Physical stack ID of the nested stack.
+    Value:
+      Ref: Messaging
+  NotificationsQueueArn:
+    Description: Export consumed by the second demo stack.
+    Value:
+      Fn::GetAtt: [NotificationsQueue, Arn]
+    Export:
+      Name:
+        Fn::Sub: "${AWS::StackName}-NotificationsQueueArn"

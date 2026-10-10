@@ -1,0 +1,13 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Imports the queue ARN exported by the main demo stack.
+
+Parameters:
+  QueueArnExportName:
+    Type: String
+
+Outputs:
+  ImportedQueueArn:
+    Description: Queue ARN resolved from the other stack's export.
+    Value:
+      Fn::ImportValue:
+        Ref: QueueArnExportName

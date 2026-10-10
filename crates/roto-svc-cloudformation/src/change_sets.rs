@@ -38,6 +38,7 @@ pub fn plan(
     ctx: &RequestContext,
     current: &StackState,
     target: &StackState,
+    exports: &BTreeMap<String, String>,
 ) -> Result<Vec<PlannedChange>, AwsError> {
     let order = template::order(&target.template)?;
     let mut changes = Vec::new();
@@ -55,7 +56,7 @@ pub fn plan(
             Some(old) => {
                 // Properties that reference resources created by this update cannot
                 // be resolved during planning; those are reported as unknown changes.
-                let replaced = match desired_properties(target, ctx, definition) {
+                let replaced = match desired_properties(target, ctx, definition, exports) {
                     Ok(props) if ty == old.resource_type && props == old.properties => continue,
                     Ok(props) => Some(replacement(old, &ty, &props)),
                     Err(_) => None,

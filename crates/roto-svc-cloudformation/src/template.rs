@@ -16,6 +16,7 @@ fn yaml_functions(value: serde_yaml::Value) -> Result<serde_yaml::Value, serde_y
                 "!Ref" => "Ref",
                 "!GetAtt" => "Fn::GetAtt",
                 "!Sub" => "Fn::Sub",
+                "!ImportValue" => "Fn::ImportValue",
                 _ => {
                     return Err(serde::de::Error::custom(format!(
                         "Unsupported YAML tag: {tag}"
@@ -238,6 +239,7 @@ fn validate_functions(value: &Value) -> Result<(), AwsError> {
                         "Fn::GetAtt"
                             | "Fn::Sub"
                             | "Fn::Join"
+                            | "Fn::ImportValue"
                             | "Fn::If"
                             | "Fn::Equals"
                             | "Fn::And"
@@ -409,6 +411,8 @@ pub struct Resolver<'a> {
     pub resources: &'a [Resource],
     /// The template's `Conditions` object, or `Value::Null` when absent.
     pub conditions: &'a Value,
+    /// Values exported by other stacks in this account and region.
+    pub exports: BTreeMap<String, String>,
 }
 
 impl Resolver<'_> {
@@ -609,6 +613,23 @@ impl Resolver<'_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(json!(values.join(&delimiter)))
             }
+            Value::Object(o) if o.contains_key("Fn::ImportValue") => {
+                let name = text(&self.resolve(&o["Fn::ImportValue"])?)?;
+                if name.is_empty() {
+                    return Err(validation(
+                        "Fn::ImportValue requires a non-empty export name",
+                    ));
+                }
+                self.exports
+                    .get(&name)
+                    .cloned()
+                    .map(Value::String)
+                    .ok_or_else(|| {
+                        validation(format!(
+                            "No export named {name} found in this account and region"
+                        ))
+                    })
+            }
             Value::Object(o) => {
                 let mut object = Map::new();
                 for (k, v) in o {
@@ -729,6 +750,7 @@ mod tests {
             parameters: &params,
             resources: &[],
             conditions: &Value::Null,
+            exports: BTreeMap::new(),
         };
         assert_eq!(resolver.resolve(&json!({"Fn::Sub":["${AWS::Region}:${Label}:${custom}:${!literal}",{"custom":12}]})).unwrap(), "us-east-1:hello<&:12:${literal}");
         assert!(
@@ -788,6 +810,7 @@ mod tests {
             parameters: &BTreeMap::new(),
             resources: &[],
             conditions: &conditions,
+            exports: BTreeMap::new(),
         };
         assert_eq!(
             resolver
@@ -840,6 +863,7 @@ mod tests {
             parameters: &BTreeMap::new(),
             resources: &[],
             conditions: &Value::Null,
+            exports: BTreeMap::new(),
         };
         assert_eq!(
             resolver

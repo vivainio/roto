@@ -1,6 +1,6 @@
 # CloudFormation
 
-roto supports synchronous CloudFormation stacks for eight resource types:
+roto supports synchronous CloudFormation stacks for nine resource types:
 
 | Resource | Supported properties |
 | --- | --- |
@@ -12,6 +12,7 @@ roto supports synchronous CloudFormation stacks for eight resource types:
 | `AWS::IAM::Role` | Name, path, trust policy, description, session duration, tags, managed policy ARN attachments |
 | `AWS::IAM::Policy` | Inline policy document attached to one or more roles |
 | `AWS::Lambda::Function` | Creation/deletion with name, inline or S3 code, role, runtime, handler, description, timeout, memory, environment, architectures, ephemeral storage, tracing, and tags; configuration updates are unsupported |
+| `AWS::CloudFormation::Stack` | Nested stacks loaded from an S3 `TemplateURL`, with parameter and tag propagation, recursive create/update/delete, and child outputs |
 
 Resources use the existing service handlers and storage. IAM role policy documents
 and managed-policy attachments are stored as configuration; they do not grant or
@@ -19,7 +20,8 @@ deny requests because IAM policy evaluation is not implemented.
 
 ## Stack APIs
 
-`CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`,
+`CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `ListStacks`,
+`ListExports`,
 `ListStackResources`, `DescribeStackResources`, `DescribeStackEvents`, and
 `GetTemplate` are implemented. Change-set APIs include `CreateChangeSet`,
 `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet`, and `ListChangeSets`.
@@ -35,20 +37,23 @@ stack ARN can be used for lookups. A deleted stack can be described by ARN until
 its name is reused; name lookup and listing omit deleted stacks.
 
 Templates use inline `TemplateBody`. JSON and ordinary YAML mappings are accepted;
-YAML short tags `!Ref`, `!GetAtt`, and `!Sub` are accepted. Available template features are:
+YAML short tags `!Ref`, `!GetAtt`, `!Sub`, and `!ImportValue` are accepted. Available template features are:
 
 - `Resources`, `Outputs`, `Description`, `Metadata`, and `Conditions`.
 - String `Parameters`, defaults, explicit values, and `UsePreviousValue` on updates.
-- `Ref`, `Fn::GetAtt` (list or dotted-string form), `Fn::Sub`, including variable maps and literal escapes, and `Fn::Join`.
+- `Ref`, `Fn::GetAtt` (list or dotted-string form), `Fn::Sub`, including variable maps and literal escapes, `Fn::Join`, and `Fn::ImportValue`.
 - `Fn::If` with named conditions using `Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`, and condition references. Cyclic condition references are rejected. Resource/output `Condition` fields are unsupported.
 - `AWS::NoValue` omits a property or list item, including when selected by `Fn::If`.
 - `DeletionPolicy` and `UpdateReplacePolicy` with `Delete` or `Retain`.
 - `AWS::AccountId`, `AWS::Region`, `AWS::StackName`, `AWS::StackId`, `AWS::Partition`, and `AWS::URLSuffix` references.
 - Explicit `DependsOn` and implicit dependencies from references. Forward references are ordered before resource creation; missing dependencies and cycles are rejected.
 - Stack tags merged into resource tags; a resource tag takes precedence when both use the same key.
+- Nested `AWS::CloudFormation::Stack` resources load `TemplateURL` objects from Roto's S3 service. Nested parameters, tags, outputs, and parent/root stack IDs are tracked, and nested stacks can themselves contain nested stacks.
 
-Output export names are returned in stack descriptions. Cross-stack export lookup
-and `Fn::ImportValue` are not implemented.
+Export names are returned in stack descriptions and `ListExports`. `Fn::ImportValue`
+resolves exports from another stack in the same account and region. Export names
+must be unique there, and an export cannot be changed or removed while another
+stack imports it.
 
 ## Change sets and protection
 
@@ -138,8 +143,8 @@ Changing an SNS inline subscription reconciles subscriptions owned by the stack.
 
 Unsupported resource types, properties, template sections, and intrinsic
 functions fail explicitly. IAM users, groups, and managed policy resources,
-EventBridge and SSM resources, transforms, nested stacks, resource imports,
-template URLs, snapshot retention policies, and rollback triggers remain
+EventBridge and SSM resources, transforms, nested change sets, imports of existing
+resources, top-level template URLs, snapshot retention policies, and rollback triggers remain
 unsupported. Some property removals also fail when the underlying service needs
 an update that this subset does not support. Lambda configuration updates are
 unsupported; creating a function does not attach a local executor automatically.
