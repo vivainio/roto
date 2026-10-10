@@ -5,7 +5,7 @@ use roto_core::store::{Db, Store};
 use roto_core::{AwsError, RequestContext};
 
 use crate::generated::*;
-use crate::{MIGRATIONS, groups, misc, policies, roles, users};
+use crate::{MIGRATIONS, groups, instance_profiles, misc, policies, roles, users};
 
 pub struct Iam {
     pub(crate) db: Arc<Db>,
@@ -92,6 +92,77 @@ impl Iam {
 }
 
 impl Service for Iam {
+    fn create_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: CreateInstanceProfileRequest,
+    ) -> Result<CreateInstanceProfileResponse, AwsError> {
+        instance_profiles::create_instance_profile(&self.db, ctx, i)
+    }
+    fn get_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: GetInstanceProfileRequest,
+    ) -> Result<GetInstanceProfileResponse, AwsError> {
+        instance_profiles::get_instance_profile(&self.db, ctx, i)
+    }
+    fn delete_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: DeleteInstanceProfileRequest,
+    ) -> Result<(), AwsError> {
+        instance_profiles::delete_instance_profile(&self.db, ctx, i)
+    }
+    fn add_role_to_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: AddRoleToInstanceProfileRequest,
+    ) -> Result<(), AwsError> {
+        instance_profiles::add_role_to_instance_profile(&self.db, ctx, i)
+    }
+    fn remove_role_from_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: RemoveRoleFromInstanceProfileRequest,
+    ) -> Result<(), AwsError> {
+        instance_profiles::remove_role_from_instance_profile(&self.db, ctx, i)
+    }
+    fn list_instance_profiles(
+        &self,
+        ctx: &RequestContext,
+        i: ListInstanceProfilesRequest,
+    ) -> Result<ListInstanceProfilesResponse, AwsError> {
+        instance_profiles::list_instance_profiles(&self.db, ctx, i)
+    }
+    fn list_instance_profiles_for_role(
+        &self,
+        ctx: &RequestContext,
+        i: ListInstanceProfilesForRoleRequest,
+    ) -> Result<ListInstanceProfilesForRoleResponse, AwsError> {
+        instance_profiles::list_instance_profiles_for_role(&self.db, ctx, i)
+    }
+    fn tag_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: TagInstanceProfileRequest,
+    ) -> Result<(), AwsError> {
+        instance_profiles::tag_instance_profile(&self.db, ctx, i)
+    }
+    fn untag_instance_profile(
+        &self,
+        ctx: &RequestContext,
+        i: UntagInstanceProfileRequest,
+    ) -> Result<(), AwsError> {
+        instance_profiles::untag_instance_profile(&self.db, ctx, i)
+    }
+    fn list_instance_profile_tags(
+        &self,
+        ctx: &RequestContext,
+        i: ListInstanceProfileTagsRequest,
+    ) -> Result<ListInstanceProfileTagsResponse, AwsError> {
+        instance_profiles::list_instance_profile_tags(&self.db, ctx, i)
+    }
+
     fn create_group(
         &self,
         ctx: &RequestContext,

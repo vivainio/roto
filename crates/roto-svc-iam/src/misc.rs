@@ -67,10 +67,10 @@ pub fn set_tags(
     let existing = load_tags(tx, account, kind, entity)?;
     let new_keys = tags
         .iter()
-        .filter(|t| !existing.iter().any(|e| e.key.eq_ignore_ascii_case(&t.key)))
+        .filter(|t| !existing.iter().any(|e| e.key == t.key))
         .count();
-    check_tags(existing.len(), tags)?;
-    let _ = new_keys;
+    check_tags(0, tags)?;
+    check_tags(existing.len() + new_keys, &[])?;
     for t in tags {
         tx.execute(
             "INSERT INTO tags (account_id, kind, entity, key, value) VALUES (?1, ?2, ?3, ?4, ?5)

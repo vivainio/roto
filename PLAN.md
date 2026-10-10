@@ -181,3 +181,16 @@ are implemented, bringing coverage to 62/180 operations and 127/349 portable Mot
 tests passing. Group renames preserve memberships and both kinds of policies;
 deletion requires removing users and policies first. Native checks cover account
 isolation, idempotent membership, pagination and renamed relationships across restart.
+
+
+## IAM instance profiles (2026-10-10)
+
+Instance profiles now support create/get/list/delete, add/remove a role, listing by
+role, and tags, bringing IAM to 72/180 operations and 133/349 portable Moto tests
+passing (13 skipped). Profiles enforce a one-role limit, block deletion while a role
+is attached, and prevent deleting an attached role. Native checks cover account
+isolation, case-insensitive names, role/tag persistence, scoped and paginated listings,
+cleanup/reset, tag replacement at capacity and rollback of invalid creation. The shared
+tag updater now counts new keys rather than replacements toward the 50-tag limit.
+Some remaining Moto profile tests use invalid paths or non-JSON trust policies that
+Roto deliberately rejects. CloudFormation instance-profile resources remain unsupported.
