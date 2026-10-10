@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [test_sts, test_sqs, test_s3, test_iam, test_dynamodb, test_ssm, test_secretsmanager, test_sns, test_awslambda, test_events]
+        service: [test_sts, test_sqs, test_s3, test_iam, test_dynamodb, test_ssm, test_secretsmanager, test_sns, test_awslambda, test_events, test_kinesis]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

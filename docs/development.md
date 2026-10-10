@@ -14,7 +14,7 @@ git diff --exit-code
 
 The final command catches generated-code drift and any other uncommitted changes;
 inspect the diff when working in a modified tree. Generation covers STS, SQS,
-IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, and CloudFormation.
+IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, CloudFormation, and Kinesis.
 
 ## Moto compatibility tests
 
@@ -27,6 +27,7 @@ scripts/run-moto-tests.sh test_s3
 scripts/run-moto-tests.sh test_dynamodb
 scripts/run-moto-tests.sh test_awslambda
 scripts/run-moto-tests.sh test_events
+scripts/run-moto-tests.sh test_kinesis
 ```
 
 The runner creates `.venv-moto`, installs the test requirements, builds roto, and

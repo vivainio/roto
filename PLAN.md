@@ -139,3 +139,19 @@ based on actual usage.
 - `TARGET=moto scripts/run-moto-tests.sh <dir>` runs the same suite against real moto, to separate upstream quirks from roto gaps (moto itself is the oracle for ambiguous behaviour).
 - Planned: a second codegen input, AWS's Smithy models (`aws/api-models-aws`), for typed errors (`awsQueryError`, `httpError`) and protocol test cases.
 - Not yet: rest-json/rest-xml/ec2 codecs, state-backed services using the store, reset of persisted state, coverage-matrix report.
+
+## Kinesis implementation (2026-10-10)
+
+Kinesis now implements 28/39 model operations and passes all 76 portable Moto 5.0.11 tests.
+Streams, shard lineage, records and cursors persist in SQLite. CloudFormation supports
+Kinesis streams, including shard-count/retention/tag updates and YAML intrinsic short tags.
+Native checks cover expiry, sequence continuity, batch validation, cursor isolation and
+closed-shard draining; the SDK smoke covers restart and account/region isolation.
+Enhanced fan-out streaming, Lambda Kinesis polling, throughput enforcement and resource
+policies remain future work. Encryption and monitoring APIs store settings only.
+
+KMS design agreed: persist key metadata and encode a versioned JSON envelope as base64
+for simulated ciphertext (key ID, encryption context, base64 plaintext). No per-message
+plaintext/ciphertext store or real encryption. Decode checks key state and context;
+data-key generation still returns random bytes of the requested length. Asymmetric
+cryptographic operations remain unsupported until separately implemented.

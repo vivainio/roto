@@ -58,7 +58,7 @@ footer { margin-top: 20px; font-size: 13px; color: var(--muted); } a { color: li
 'use strict';
 const views = { invocations: '/roto-api/lambda/invocations', notifications: '/roto-api/s3/notifications', deliveries: '/roto-api/events/deliveries' };
 const $ = id => document.getElementById(id);
-const labels = { cloudformation: 'CloudFormation', s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM' };
+const labels = { cloudformation: 'CloudFormation', s3: 'S3', dynamodb: 'DynamoDB', sqs: 'SQS', lambda: 'Lambda', events: 'EventBridge', sns: 'SNS', ssm: 'Parameters', secretsmanager: 'Secrets Manager', iam: 'IAM', kinesis: 'Kinesis' };
 let view = 'resources', rows = [], controller, updated = '', catalog = [], service = 's3', collection = 'buckets', offset = 0, total = 0, filter = null, trail = [];
 function element(tag, text, className) {
   const node = document.createElement(tag);

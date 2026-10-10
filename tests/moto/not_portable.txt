@@ -1,6 +1,7 @@
 test_awslambda/test_policy.py
 test_dynamodb/test_server.py
 test_iam/test_server.py
+test_kinesis/test_server.py
 test_s3/test_multiple_accounts_server.py
 test_s3/test_s3_bucket_policy.py
 test_s3/test_s3_lambda_integration.py

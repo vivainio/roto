@@ -18,8 +18,9 @@ is a regression.
 | **SNS** | 19 / 42 | 126 / 184 (1 skipped) | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
 | **Lambda** | 19 / 85 | 8 / 125 (30 skipped) | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
 | **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
-| **CloudFormation** | 6 / 90 | 21 resource integration tests | Synchronous create/update/delete, stack/resource descriptions, SQS/SNS/S3/DynamoDB resources, refs/attributes/substitution, tags, outputs, dependency ordering, persistence. No automatic rollback, change sets, nested stacks, IAM/Lambda/EventBridge/SSM resources. |
-| KMS, Kinesis | not started | – | Remaining untouched services in the target set. |
+| **CloudFormation** | 6 / 90 | 25 resource integration tests | Synchronous create/update/delete, stack/resource descriptions, SQS/SNS/S3/DynamoDB/Kinesis resources, refs/attributes/substitution, tags, outputs, dependency ordering, persistence. No automatic rollback, change sets, nested stacks, IAM/Lambda/EventBridge/SSM resources. |
+| **Kinesis** | 28 / 39 | 76 / 76 | Persisted streams/shards/records, hash routing, iterators, split/merge/scaling, retention, tags, consumer registration, stored encryption/monitoring settings, CloudFormation streams. No enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies or actual encryption. |
+| KMS | not started | – | Planned lightweight simulation: key metadata plus a base64 JSON ciphertext envelope; no per-message storage. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -93,6 +94,7 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
   polling in a temporary copy. Docker tests are skipped; local executors have SDK smoke coverage.
 * `scripts/smoke-cloudformation.py` - SDK checks for stack wiring, updates, DynamoDB index queries,
   restart, account/region isolation, validation, failed-resource cleanup, and reset.
+* `scripts/smoke-kinesis.py` - SDK checks for account/region isolation, scoped cursors and paging, stream/record/tag persistence across restart, split-shard routing, closed-shard draining, and reset.
 * `scripts/smoke-dynamodb.py` - SDK checks for account/region isolation with identical table names
   and item keys, persisted GSI/TTL/item state, and STS credentials across server restart.
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
@@ -114,4 +116,4 @@ Delivery is at least once. Commands run with roto's OS permissions, without cont
 
 ## Next
 
-KMS, Kinesis, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.
+KMS, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.

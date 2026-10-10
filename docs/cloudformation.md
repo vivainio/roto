@@ -1,6 +1,6 @@
 # CloudFormation
 
-roto supports synchronous CloudFormation stacks for four resource types:
+roto supports synchronous CloudFormation stacks for five resource types:
 
 | Resource | Supported properties |
 | --- | --- |
@@ -8,6 +8,7 @@ roto supports synchronous CloudFormation stacks for four resource types:
 | `AWS::SNS::Topic` | Name, tags, display name, FIFO/deduplication, KMS key attribute, inline subscriptions |
 | `AWS::S3::Bucket` | Name, tags, encryption, versioning, public access block configuration |
 | `AWS::DynamoDB::Table` | Name, tags, keys/attribute definitions, billing/throughput, GSI/LSI, stream/SSE metadata, table class, deletion protection, TTL, point-in-time recovery configuration |
+| `AWS::Kinesis::Stream` | Name, shard count, retention, tags, stream mode, stored encryption settings |
 
 Resources use the existing service handlers and storage, so their behavior and
 limitations match resources created directly with the AWS SDK.
@@ -26,7 +27,7 @@ stack ARN can be used for lookups. A deleted stack can be described by ARN until
 its name is reused; name lookup and listing omit deleted stacks.
 
 Templates use inline `TemplateBody`. JSON and ordinary YAML mappings are accepted;
-YAML short tags such as `!Ref` are not supported. Available template features are:
+YAML short tags `!Ref`, `!GetAtt`, and `!Sub` are accepted. Available template features are:
 
 - `Resources`, `Outputs`, `Description`, and `Metadata`.
 - String `Parameters`, defaults, explicit values, and `UsePreviousValue` on updates.
@@ -106,8 +107,8 @@ A process interruption leaves its last saved progress visible, and the stack can
 be deleted before recreating it. Delete failures retain the remaining resources
 and can be retried after fixing the cause, such as emptying a nonempty S3 bucket.
 
-The implementation is checked against 21 existing Moto integration tests across
-SQS, SNS, S3, and DynamoDB. The runner corrects invalid schemas and overly strict
+The implementation is checked against 25 existing Moto integration tests across
+SQS, SNS, S3, DynamoDB, and Kinesis. The runner corrects invalid schemas and overly strict
 optional-field assertions in Moto's old DynamoDB CloudFormation fixtures in a
 temporary copy; vendored tests remain unchanged and DynamoDB validation stays
 strict. Additional SDK checks cover wiring, index queries, updates, restart,

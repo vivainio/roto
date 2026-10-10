@@ -175,7 +175,8 @@ pub fn run(
                 let result = match service.as_str() {
                     "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
-                    "dynamodb" | "ssm" | "secretsmanager" | "events" | "eventbridge" => {
+                    "dynamodb" | "ssm" | "secretsmanager" | "events" | "eventbridge"
+                    | "kinesis" => {
                         let service = if service == "eventbridge" {
                             "events"
                         } else {

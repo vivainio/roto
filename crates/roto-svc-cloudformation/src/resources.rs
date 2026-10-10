@@ -52,6 +52,14 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             "KmsMasterKeyId",
             "Subscription",
         ],
+        "AWS::Kinesis::Stream" => &[
+            "Name",
+            "ShardCount",
+            "RetentionPeriodHours",
+            "Tags",
+            "StreamModeDetails",
+            "StreamEncryption",
+        ],
         "AWS::S3::Bucket" => &[
             "BucketName",
             "Tags",
@@ -93,6 +101,7 @@ fn name_key(ty: &str) -> &'static str {
         "AWS::SQS::Queue" => "QueueName",
         "AWS::SNS::Topic" => "TopicName",
         "AWS::S3::Bucket" => "BucketName",
+        "AWS::Kinesis::Stream" => "Name",
         _ => "TableName",
     }
 }
@@ -102,7 +111,9 @@ pub fn replacement(old: &Resource, ty: &str, props: &Value) -> bool {
         return true;
     }
     let key = name_key(ty);
-    if old.properties.get(key) != props.get(key) {
+    if old.properties.get(key) != props.get(key)
+        && !(ty == "AWS::Kinesis::Stream" && props.get(key).is_none())
+    {
         return true;
     }
     let immutable: &[&str] = match ty {
@@ -368,6 +379,25 @@ impl Resources {
                 );
                 name.clone()
             }
+            "AWS::Kinesis::Stream" => {
+                let mut input = json!({"StreamName":name});
+                input["StreamModeDetails"] = props
+                    .get("StreamModeDetails")
+                    .cloned()
+                    .unwrap_or_else(|| json!({"StreamMode":"PROVISIONED"}));
+                if input["StreamModeDetails"]["StreamMode"] != "ON_DEMAND" {
+                    input["ShardCount"] = props.get("ShardCount").cloned().unwrap_or(json!(1));
+                }
+                self.json(ctx, "kinesis", "CreateStream", input)?;
+                attrs.insert(
+                    "Arn".into(),
+                    json!(format!(
+                        "arn:{part}:kinesis:{}:{}:stream/{name}",
+                        ctx.region, ctx.account_id
+                    )),
+                );
+                name.clone()
+            }
             "AWS::DynamoDB::Table" => {
                 let mut input = props.clone();
                 let o = input.as_object_mut().unwrap();
@@ -580,6 +610,75 @@ impl Resources {
                     self.s3(ctx, "DELETE", &resource.name, "tagging", String::new())?;
                 }
             }
+            "AWS::Kinesis::Stream" => {
+                let stream = &resource.name;
+                let desc = self.json(
+                    ctx,
+                    "kinesis",
+                    "DescribeStreamSummary",
+                    json!({"StreamName":stream}),
+                )?["StreamDescriptionSummary"]
+                    .clone();
+                if let Some(mode) = props.get("StreamModeDetails")
+                    && mode != &desc["StreamModeDetails"]
+                {
+                    self.json(
+                        ctx,
+                        "kinesis",
+                        "UpdateStreamMode",
+                        json!({"StreamARN":resource.attributes["Arn"],"StreamModeDetails":mode}),
+                    )?;
+                }
+                if updating
+                    && let Some(count) = props.get("ShardCount")
+                    && count != &desc["OpenShardCount"]
+                {
+                    self.json(ctx,"kinesis","UpdateShardCount",json!({"StreamName":stream,"TargetShardCount":count,"ScalingType":"UNIFORM_SCALING"}))?;
+                }
+                let retention = props
+                    .get("RetentionPeriodHours")
+                    .cloned()
+                    .unwrap_or(json!(24));
+                if retention != desc["RetentionPeriodHours"] {
+                    let op = if retention.as_u64().unwrap_or(0)
+                        > desc["RetentionPeriodHours"].as_u64().unwrap_or(24)
+                    {
+                        "IncreaseStreamRetentionPeriod"
+                    } else {
+                        "DecreaseStreamRetentionPeriod"
+                    };
+                    self.json(
+                        ctx,
+                        "kinesis",
+                        op,
+                        json!({"StreamName":stream,"RetentionPeriodHours":retention}),
+                    )?;
+                }
+                let old = tag_map(&resource.properties)?;
+                let tags = tag_map(props)?;
+                let removed: Vec<_> = old.keys().filter(|key| !tags.contains_key(*key)).collect();
+                if !removed.is_empty() {
+                    self.json(
+                        ctx,
+                        "kinesis",
+                        "RemoveTagsFromStream",
+                        json!({"StreamName":stream,"TagKeys":removed}),
+                    )?;
+                }
+                if !tags.is_empty() {
+                    self.json(
+                        ctx,
+                        "kinesis",
+                        "AddTagsToStream",
+                        json!({"StreamName":stream,"Tags":tags}),
+                    )?;
+                }
+                if let Some(encryption) = props.get("StreamEncryption") {
+                    self.json(ctx,"kinesis","StartStreamEncryption",json!({"StreamName":stream,"EncryptionType":encryption["EncryptionType"],"KeyId":encryption["KeyId"]}))?;
+                } else if updating && resource.properties.get("StreamEncryption").is_some() {
+                    self.json(ctx,"kinesis","StopStreamEncryption",json!({"StreamName":stream,"EncryptionType":"KMS","KeyId":resource.properties["StreamEncryption"]["KeyId"]}))?;
+                }
+            }
             "AWS::DynamoDB::Table" => {
                 if updating {
                     let mut input = json!({"TableName":resource.name});
@@ -670,6 +769,14 @@ impl Resources {
                 .sns(ctx, "DeleteTopic", json!({"TopicArn":resource.physical_id}))
                 .map(|_| ()),
             "AWS::S3::Bucket" => self.s3(ctx, "DELETE", &resource.name, "", String::new()),
+            "AWS::Kinesis::Stream" => self
+                .json(
+                    ctx,
+                    "kinesis",
+                    "DeleteStream",
+                    json!({"StreamName":resource.name}),
+                )
+                .map(|_| ()),
             "AWS::DynamoDB::Table" => self
                 .json(
                     ctx,

@@ -7,9 +7,50 @@ use serde_json::{Map, Value, json};
 use crate::resources::{Resource, validate_properties};
 use crate::validation;
 
+fn yaml_functions(value: serde_yaml::Value) -> Result<serde_yaml::Value, serde_yaml::Error> {
+    use serde_yaml::Value as Y;
+    Ok(match value {
+        Y::Tagged(tagged) => {
+            let tag = tagged.tag.to_string();
+            let key = match tag.as_str() {
+                "!Ref" => "Ref",
+                "!GetAtt" => "Fn::GetAtt",
+                "!Sub" => "Fn::Sub",
+                _ => {
+                    return Err(serde::de::Error::custom(format!(
+                        "Unsupported YAML tag: {tag}"
+                    )));
+                }
+            };
+            Y::Mapping(
+                [(Y::String(key.into()), yaml_functions(tagged.value)?)]
+                    .into_iter()
+                    .collect(),
+            )
+        }
+        Y::Sequence(values) => Y::Sequence(
+            values
+                .into_iter()
+                .map(yaml_functions)
+                .collect::<Result<_, _>>()?,
+        ),
+        Y::Mapping(values) => Y::Mapping(
+            values
+                .into_iter()
+                .map(|(k, v)| Ok((k, yaml_functions(v)?)))
+                .collect::<Result<_, serde_yaml::Error>>()?,
+        ),
+        other => other,
+    })
+}
+
 pub fn parse(body: &str) -> Result<Value, AwsError> {
     let template: Value = serde_json::from_str(body)
-        .or_else(|_| serde_yaml::from_str(body))
+        .or_else(|_| {
+            serde_yaml::from_str::<serde_yaml::Value>(body).and_then(|v| {
+                serde_json::to_value(yaml_functions(v)?).map_err(serde::de::Error::custom)
+            })
+        })
         .map_err(|e| validation(format!("Template format error: {e}")))?;
     let object = template
         .as_object()
@@ -387,6 +428,22 @@ pub fn text(v: &Value) -> Result<String, AwsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yaml_intrinsic_short_tags_match_json_and_unknown_tags_fail() {
+        let body = "Resources:\n  Stream:\n    Type: AWS::Kinesis::Stream\nOutputs:\n  Name:\n    Value: !Ref Stream\n  Arn:\n    Value: !GetAtt Stream.Arn\n  Label:\n    Value: !Sub '${AWS::Region}'\n";
+        let parsed = parse(body).unwrap();
+        assert_eq!(parsed["Outputs"]["Name"]["Value"], json!({"Ref":"Stream"}));
+        assert_eq!(
+            parsed["Outputs"]["Arn"]["Value"],
+            json!({"Fn::GetAtt":"Stream.Arn"})
+        );
+        assert_eq!(
+            parsed["Outputs"]["Label"]["Value"],
+            json!({"Fn::Sub":"${AWS::Region}"})
+        );
+        assert!(parse(&body.replace("!Ref", "!Unsupported")).is_err());
+    }
 
     #[test]
     fn sub_overrides_do_not_create_false_dependencies() {

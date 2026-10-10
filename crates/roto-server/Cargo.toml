@@ -27,3 +27,5 @@ serde_json = "1.0.151"
 roto-protocol = { version = "0.0.1", path = "../roto-protocol" }
 
 roto-svc-eventbridge = { version = "0.0.1", path = "../roto-svc-eventbridge" }
+
+roto-svc-kinesis = { version = "0.0.1", path = "../roto-svc-kinesis" }

@@ -17,9 +17,10 @@ full AWS compatibility.
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
 | Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
-| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB, refs, outputs, tags, updates, persistence | Rollback, change sets, nested stacks, additional resource types |
+| Kinesis | Streams, shards, records, polling, expiring iterators, resharding, retention, tags, consumer registration, encryption/monitoring metadata | Enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies, actual encryption |
+| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis, refs, outputs, tags, updates, persistence | Rollback, change sets, nested stacks, additional resource types |
 
-KMS and Kinesis have not been started.
+KMS has not been started.
 
 ## S3 details
 
@@ -38,7 +39,7 @@ ACLs and policies are stored without enforcement.
 SNS can deliver to SQS in-process, including raw delivery and filters on message
 attributes or bodies. STS and IAM share account credential information.
 The [CloudFormation subset](cloudformation.md) creates and updates SQS queues, SNS
-topics, S3 buckets, and DynamoDB tables through those same handlers. IAM, Lambda,
+topics, S3 buckets, DynamoDB tables, and Kinesis streams through those same handlers. IAM, Lambda,
 EventBridge, and SSM CloudFormation resources remain unsupported.
 
 Lua startup setup and execution contracts are covered in [Lua setup](lua.md),

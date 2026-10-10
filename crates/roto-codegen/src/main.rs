@@ -54,6 +54,23 @@ const RAW_SHAPES: &[(&str, &str)] = &[("DynamoDB", "AttributeValue")];
 /// `(serviceId, shape, member)`: collections that are always present in JSON responses, even when
 /// empty (DynamoDB lists `Items: []`; most services omit empty lists).
 const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
+    ("Kinesis", "GetRecordsOutput", "Records"),
+    ("Kinesis", "ListStreamsOutput", "StreamNames"),
+    ("Kinesis", "ListStreamsOutput", "StreamSummaries"),
+    ("Kinesis", "ListShardsOutput", "Shards"),
+    ("Kinesis", "ListStreamConsumersOutput", "Consumers"),
+    ("Kinesis", "ListTagsForStreamOutput", "Tags"),
+    ("Kinesis", "EnhancedMetrics", "ShardLevelMetrics"),
+    (
+        "Kinesis",
+        "EnhancedMonitoringOutput",
+        "CurrentShardLevelMetrics",
+    ),
+    (
+        "Kinesis",
+        "EnhancedMonitoringOutput",
+        "DesiredShardLevelMetrics",
+    ),
     ("Lambda", "ListFunctionsResponse", "Functions"),
     ("Lambda", "ListTagsResponse", "Tags"),
     ("DynamoDB", "ListTablesOutput", "TableNames"),
@@ -138,6 +155,8 @@ impl<'a> Generator<'a> {
             "long" => Kind::Long,
             "boolean" => Kind::Bool,
             "double" | "float" => Kind::Double,
+            // Kinesis record arrival times and AT_TIMESTAMP cursors need subsecond precision.
+            "timestamp" if service_id == "Kinesis" => Kind::Double,
             "timestamp" => Kind::Time,
             "structure" => Kind::Struct(shape_name.to_string()),
             "blob" => Kind::Blob,

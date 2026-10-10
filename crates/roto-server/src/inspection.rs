@@ -21,6 +21,7 @@ const COLLECTIONS: &[(&str, &[&str])] = &[
     ),
     ("dynamodb", &["tables", "items", "backups", "backup_items"]),
     ("sqs", &["queues", "messages"]),
+    ("kinesis", &["streams", "records"]),
     ("lambda", &["functions", "event_source_mappings"]),
     ("events", &["buses", "rules", "targets"]),
     ("sns", &["topics", "subscriptions"]),

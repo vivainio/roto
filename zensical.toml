@@ -23,6 +23,7 @@ nav = [
   { "Local Lambda execution" = "lambda.md" },
   { "EventBridge" = "eventbridge.md" },
   { "CloudFormation" = "cloudformation.md" },
+  { "Kinesis" = "kinesis.md" },
   { "Storage" = "storage.md" },
   { "Architecture" = "architecture.md" },
   { "Development" = "development.md" },
