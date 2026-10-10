@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "service": "widgets",
+      "target_prefix": "Widgets_20261010.",
+      "json_version": "1.1",
+      "script": "widgets/service.lua"
+    }
+  ]
+}

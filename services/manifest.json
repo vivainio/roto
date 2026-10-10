@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "service": "acm",
+      "target_prefix": "CertificateManager.",
+      "json_version": "1.1",
+      "script": "acm/service.lua"
+    },
+    {
+      "service": "budgets",
+      "target_prefix": "AWSBudgetServiceGateway.",
+      "json_version": "1.1",
+      "script": "budgets/service.lua"
+    },
+    {
+      "service": "config",
+      "target_prefix": "StarlingDoveService.",
+      "json_version": "1.1",
+      "script": "config/service.lua"
+    },
+    {
+      "service": "cur",
+      "target_prefix": "AWSOrigamiServiceGatewayService.",
+      "json_version": "1.1",
+      "script": "cur/service.lua"
+    },
+    {
+      "service": "organizations",
+      "target_prefix": "AWSOrganizationsV20161128.",
+      "json_version": "1.1",
+      "script": "organizations/service.lua"
+    },
+    {
+      "service": "servicediscovery",
+      "target_prefix": "Route53AutoNaming_v20170314.",
+      "json_version": "1.1",
+      "script": "servicediscovery/service.lua"
+    },
+    {
+      "service": "es",
+      "protocol": "rest-json",
+      "script": "opensearch/service.lua",
+      "model": "opensearch/model.json"
+    },
+    {
+      "service": "rds",
+      "protocol": "query",
+      "script": "rds/service.lua",
+      "model": "rds/model.json"
+    },
+    {
+      "service": "ecr",
+      "target_prefix": "AmazonEC2ContainerRegistry_V20150921.",
+      "json_version": "1.1",
+      "script": "ecr/service.lua"
+    },
+    {
+      "service": "ecs",
+      "target_prefix": "AmazonEC2ContainerServiceV20141113.",
+      "json_version": "1.1",
+      "script": "ecs/service.lua"
+    },
+    {
+      "service": "glue",
+      "target_prefix": "AWSGlue.",
+      "json_version": "1.1",
+      "script": "glue/service.lua"
+    }
+  ],
+  "common": "common.lua"
+}

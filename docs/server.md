@@ -16,6 +16,7 @@ roto-server --ephemeral --trace moto-trace.jsonl
 | `--ephemeral` | Off | In-memory databases and temporary S3 files |
 | `--durable` | Off | SQLite `synchronous=FULL`, syncing each commit |
 | `--setup` | None | Lua resource setup and local Lambda executor bindings before listening or processing events |
+| `--lua-services <path>` | None | Optional Lua service directory or ZIP; also `ROTO_LUA_SERVICES` |
 | `--setup-region` | `us-east-1` | Region used by Lua setup |
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
@@ -272,3 +273,20 @@ event-source mappings. See [Lua setup](lua.md), [Lambda executors](lambda.md), a
 ```sh
 roto-server --ephemeral --setup examples/lua/setup.lua
 ```
+
+## Optional Lua service bundle
+
+The server binary does not embed Lua service scripts. Install the optional
+`roto-lua-services-<tag>.zip` asset from the matching GitHub release and pass it
+without extracting:
+
+```sh
+roto-server --ephemeral --lua-services ./roto-lua-services-vX.Y.Z.zip
+```
+
+A directory such as the checkout's `services/` works with the same flag.
+`ROTO_LUA_SERVICES` sets the default bundle path; the CLI option overrides it.
+Without either setting no Lua services are registered. The root `manifest.json`
+describes services and their script paths, and scripts are loaded lazily. See
+[the bundle README](https://github.com/vivainio/roto/blob/main/services/README.md)
+for the manifest format, packaging and service limitations.

@@ -148,8 +148,13 @@ pub async fn apigateway_default_websocket(
     Path(api_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Response {
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(_) => return crate::handle(State(app), req).await,
+    };
     apigateway_upgrade(app, api_id, "$default".into(), query, headers, ws).await
 }
 
@@ -158,8 +163,13 @@ pub async fn apigateway_websocket(
     Path((api_id, stage_name)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    req: axum::http::Request<axum::body::Body>,
 ) -> Response {
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(_) => return crate::handle(State(app), req).await,
+    };
     apigateway_upgrade(app, api_id, stage_name, query, headers, ws).await
 }
 
