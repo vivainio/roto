@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use diesel::Connection as DieselConnection;
+use diesel::SqliteConnection;
+use diesel::connection::SimpleConnection;
 use rusqlite::Connection;
 
 use crate::error::AwsError;
@@ -30,6 +33,8 @@ pub struct Store {
     scratch: Mutex<Option<PathBuf>>,
     options: StoreOptions,
     dbs: Mutex<HashMap<String, Arc<Db>>>,
+    diesel_dbs: Mutex<HashMap<String, Arc<DieselDb>>>,
+    memory_id: String,
 }
 
 impl Store {
@@ -43,6 +48,8 @@ impl Store {
             dir: Some(dir),
             options,
             dbs: Mutex::default(),
+            diesel_dbs: Mutex::default(),
+            memory_id: crate::ids::request_id(),
         })
     }
 
@@ -52,6 +59,8 @@ impl Store {
             dir: None,
             options: StoreOptions::default(),
             dbs: Mutex::default(),
+            diesel_dbs: Mutex::default(),
+            memory_id: crate::ids::request_id(),
         }
     }
 
@@ -83,6 +92,42 @@ impl Store {
         self.dir.as_deref()
     }
 
+    fn database_url(&self, service: &str) -> String {
+        match &self.dir {
+            Some(dir) => dir
+                .join(format!("{service}.db"))
+                .to_string_lossy()
+                .into_owned(),
+            None => format!(
+                "file:roto-{}-{service}?mode=memory&cache=shared",
+                self.memory_id
+            ),
+        }
+    }
+
+    /// Opens a typed Diesel connection to a service database. The legacy connection
+    /// initializes migrations and remains available to the inspection UI. Both paths
+    /// take the same service lock, so SQLite transactions and inspection are serialized.
+    pub fn diesel_db(
+        &self,
+        service: &str,
+        migrations: &[Migration],
+    ) -> Result<Arc<DieselDb>, AwsError> {
+        let mut dbs = self.diesel_dbs.lock().unwrap();
+        if let Some(db) = dbs.get(service) {
+            return Ok(db.clone());
+        }
+        let legacy = self.db(service, migrations)?;
+        let mut conn = SqliteConnection::establish(&self.database_url(service))?;
+        conn.batch_execute(&format!("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous={}; PRAGMA foreign_keys=ON;", if self.options.durable {"FULL"} else {"NORMAL"}))?;
+        let db = Arc::new(DieselDb {
+            conn: Mutex::new(conn),
+            legacy,
+        });
+        dbs.insert(service.to_string(), db.clone());
+        Ok(db)
+    }
+
     /// Returns an already initialized service database without opening or migrating it.
     pub fn existing_db(&self, service: &str) -> Option<Arc<Db>> {
         self.dbs.lock().unwrap().get(service).cloned()
@@ -96,7 +141,7 @@ impl Store {
         }
         let mut conn = match &self.dir {
             Some(dir) => Connection::open(dir.join(format!("{service}.db")))?,
-            None => Connection::open_in_memory()?,
+            None => Connection::open(self.database_url(service))?,
         };
         configure(&conn, self.options)?;
         migrate(&mut conn, migrations)?;
@@ -171,6 +216,28 @@ impl Db {
     }
 }
 
+/// Typed SQLite access for services converted to Diesel. The legacy connection
+/// is only a migration/inspection bridge; handlers use this connection exclusively.
+pub struct DieselDb {
+    conn: Mutex<SqliteConnection>,
+    legacy: Arc<Db>,
+}
+impl DieselDb {
+    pub fn transaction<T>(
+        &self,
+        f: impl FnOnce(&mut SqliteConnection) -> Result<T, AwsError>,
+    ) -> Result<T, AwsError> {
+        self.legacy
+            .read(|_| self.conn.lock().unwrap().transaction(f))
+    }
+    pub fn read<T>(
+        &self,
+        f: impl FnOnce(&mut SqliteConnection) -> Result<T, AwsError>,
+    ) -> Result<T, AwsError> {
+        self.legacy.read(|_| f(&mut self.conn.lock().unwrap()))
+    }
+}
+
 impl Drop for Store {
     fn drop(&mut self) {
         if let Some(dir) = self.scratch.lock().unwrap().take() {
@@ -220,6 +287,93 @@ mod tests {
             .unwrap();
         assert_eq!(v, "1");
         assert_eq!(versions, 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn diesel_shares_inspection_state_and_rolls_back() {
+        use diesel::{
+            RunQueryDsl, sql_query,
+            sql_types::{BigInt, Text},
+        };
+        #[derive(diesel::QueryableByName)]
+        struct Count {
+            #[diesel(sql_type = BigInt)]
+            n: i64,
+        }
+        let store = Store::ephemeral();
+        let typed = store.diesel_db("svc", M).unwrap();
+        typed
+            .transaction(|c| {
+                sql_query("INSERT INTO t(k,v) VALUES (?1,?2)")
+                    .bind::<Text, _>("a")
+                    .bind::<Text, _>("typed")
+                    .execute(c)?;
+                Ok(())
+            })
+            .unwrap();
+        let legacy = store.existing_db("svc").unwrap();
+        let value: String = legacy
+            .read(|c| Ok(c.query_row("SELECT v FROM t WHERE k='a'", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(value, "typed");
+        let result: Result<(), AwsError> = typed.transaction(|c| {
+            sql_query("INSERT INTO t(k,v) VALUES ('b','rollback')").execute(c)?;
+            Err(AwsError::internal("rollback"))
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            typed
+                .read(|c| Ok(sql_query("SELECT COUNT(*) AS n FROM t")
+                    .get_result::<Count>(c)?
+                    .n))
+                .unwrap(),
+            1
+        );
+        let other = Store::ephemeral();
+        assert_eq!(
+            other
+                .diesel_db("svc", M)
+                .unwrap()
+                .read(|c| Ok(sql_query("SELECT COUNT(*) AS n FROM t")
+                    .get_result::<Count>(c)?
+                    .n))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn diesel_persists_and_uses_existing_migrations() {
+        use diesel::{RunQueryDsl, sql_query, sql_types::Text};
+        #[derive(diesel::QueryableByName)]
+        struct Value {
+            #[diesel(sql_type = Text)]
+            v: String,
+        }
+        let dir = tmp("diesel-persist");
+        {
+            let store = Store::open(&dir, StoreOptions { durable: true }).unwrap();
+            store
+                .diesel_db("svc", M)
+                .unwrap()
+                .transaction(|c| {
+                    sql_query("INSERT INTO t(k,v) VALUES ('a','persisted')").execute(c)?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        {
+            let store = Store::open(&dir, StoreOptions::default()).unwrap();
+            let db = store.diesel_db("svc", M).unwrap();
+            assert_eq!(
+                db.read(|c| Ok(sql_query("SELECT v FROM t WHERE k='a'")
+                    .get_result::<Value>(c)?
+                    .v))
+                    .unwrap(),
+                "persisted"
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

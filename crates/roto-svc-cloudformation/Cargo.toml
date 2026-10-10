@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+diesel = { version = "2.3.14", default-features = false, features = ["sqlite", "32-column-tables", "returning_clauses_for_sqlite_3_35"] }
 base64 = "0.22"
 flate2 = "1"
 roto-core = { version = "0.0.1", path = "../roto-core" }

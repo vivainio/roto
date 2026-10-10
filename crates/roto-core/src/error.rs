@@ -85,3 +85,14 @@ impl From<rusqlite::Error> for AwsError {
         Self::internal(format!("storage error: {e}"))
     }
 }
+
+impl From<diesel::result::Error> for AwsError {
+    fn from(e: diesel::result::Error) -> Self {
+        Self::internal(format!("storage error: {e}"))
+    }
+}
+impl From<diesel::ConnectionError> for AwsError {
+    fn from(e: diesel::ConnectionError) -> Self {
+        Self::internal(format!("storage connection error: {e}"))
+    }
+}

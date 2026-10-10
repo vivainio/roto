@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
-use roto_core::rusqlite::{OptionalExtension, Row, Transaction, params};
-use roto_core::store::{Db, Store};
+use crate::models::{SecretRow, VersionRow};
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{Blob, Timestamp};
 
@@ -15,14 +18,14 @@ pub struct SecretsManager {
 impl SecretsManager {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("secretsmanager", MIGRATIONS)?,
+            db: store.diesel_db("secretsmanager", MIGRATIONS)?,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM secret_versions", [])?;
-            tx.execute("DELETE FROM secrets", [])?;
+            diesel::delete(secret_versions::table).execute(tx)?;
+            diesel::delete(secrets::table).execute(tx)?;
             Ok(())
         })
     }
@@ -67,40 +70,38 @@ struct Secret {
     last_rotated_at: Option<i64>,
 }
 
-const SECRET_COLS: &str = "name, arn, description, kms_key_id, created_at, changed_at, accessed_at, deleted_at, tags, policy,
-                           rotation_enabled, rotation_lambda_arn, rotation_rules, last_rotated_at";
-
-fn secret_from_row(r: &Row) -> roto_core::rusqlite::Result<Secret> {
-    use roto_protocol::FromJson;
-    let tags: String = r.get(8)?;
-    let tags = serde_json::from_str::<serde_json::Value>(&tags)
-        .ok()
-        .and_then(|v| v.as_array().cloned())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| Tag::from_json(x, "").ok())
-                .collect()
-        })
-        .unwrap_or_default();
-    let rules: Option<String> = r.get(12)?;
-    Ok(Secret {
-        name: r.get(0)?,
-        arn: r.get(1)?,
-        description: r.get(2)?,
-        kms_key_id: r.get(3)?,
-        created_at: r.get(4)?,
-        changed_at: r.get(5)?,
-        accessed_at: r.get(6)?,
-        deleted_at: r.get(7)?,
-        tags,
-        policy: r.get(9)?,
-        rotation_enabled: r.get::<_, i64>(10)? != 0,
-        rotation_lambda_arn: r.get(11)?,
-        rotation_rules: rules
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| RotationRulesType::from_json(&v, "").ok()),
-        last_rotated_at: r.get(13)?,
-    })
+impl From<SecretRow> for Secret {
+    fn from(r: SecretRow) -> Self {
+        use roto_protocol::FromJson;
+        let tags = serde_json::from_str::<serde_json::Value>(&r.tags)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| Tag::from_json(x, "").ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            name: r.name,
+            arn: r.arn,
+            description: r.description,
+            kms_key_id: r.kms_key_id,
+            created_at: r.created_at,
+            changed_at: r.changed_at,
+            accessed_at: r.accessed_at,
+            deleted_at: r.deleted_at,
+            policy: r.policy,
+            rotation_lambda_arn: r.rotation_lambda_arn,
+            last_rotated_at: r.last_rotated_at,
+            tags,
+            rotation_enabled: r.rotation_enabled != 0,
+            rotation_rules: r
+                .rotation_rules
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| RotationRulesType::from_json(&v, "").ok()),
+        }
+    }
 }
 
 fn tags_json(tags: &[Tag]) -> String {
@@ -109,7 +110,11 @@ fn tags_json(tags: &[Tag]) -> String {
 }
 
 /// Looks a secret up by name, full ARN, or ARN without the random suffix.
-fn find(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Option<Secret>, AwsError> {
+fn find(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    id: &str,
+) -> Result<Option<Secret>, AwsError> {
     let (account, region, name_part) = match id.strip_prefix("arn:") {
         Some(rest) => {
             let parts: Vec<&str> = rest.splitn(6, ':').collect();
@@ -125,45 +130,41 @@ fn find(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Option<Secre
         }
         None => (ctx.account_id.clone(), ctx.region.clone(), None),
     };
-    let sql =
-        format!("SELECT {SECRET_COLS} FROM secrets WHERE account_id = ?1 AND region = ?2 AND ");
+    let query = secrets::table
+        .filter(secrets::account_id.eq(&account))
+        .filter(secrets::region.eq(&region));
     match name_part {
-        None => Ok(tx
-            .query_row(
-                &format!("{sql}name = ?3"),
-                params![account, region, id],
-                secret_from_row,
-            )
-            .optional()?),
+        None => Ok(query
+            .filter(secrets::name.eq(id))
+            .select(SecretRow::as_select())
+            .first(tx)
+            .optional()?
+            .map(Into::into)),
         Some(n) => {
-            // `name-AbCdEf` (full ARN) or just `name` (partial ARN).
-            let exact = tx
-                .query_row(
-                    &format!("{sql}arn = ?3"),
-                    params![account, region, id],
-                    secret_from_row,
-                )
+            let exact = query
+                .filter(secrets::arn.eq(id))
+                .select(SecretRow::as_select())
+                .first(tx)
                 .optional()?;
             if exact.is_some() {
-                return Ok(exact);
+                return Ok(exact.map(Into::into));
             }
-            Ok(tx
-                .query_row(
-                    &format!("{sql}name = ?3"),
-                    params![account, region, n],
-                    secret_from_row,
-                )
-                .optional()?)
+            Ok(query
+                .filter(secrets::name.eq(n))
+                .select(SecretRow::as_select())
+                .first(tx)
+                .optional()?
+                .map(Into::into))
         }
     }
 }
 
-fn require(tx: &Transaction, ctx: &RequestContext, id: &str) -> Result<Secret, AwsError> {
+fn require(tx: &mut SqliteConnection, ctx: &RequestContext, id: &str) -> Result<Secret, AwsError> {
     find(tx, ctx, id)?.ok_or_else(not_found)
 }
 
 fn require_live(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     id: &str,
     _op: &str,
@@ -186,42 +187,51 @@ struct Version {
     created_at: i64,
 }
 
-fn versions(tx: &Transaction, ctx: &RequestContext, name: &str) -> Result<Vec<Version>, AwsError> {
-    let mut stmt = tx.prepare(
-        "SELECT version_id, secret_string, secret_binary, stages, created_at FROM secret_versions
-         WHERE account_id = ?1 AND region = ?2 AND secret_name = ?3 ORDER BY seq",
-    )?;
-    Ok(stmt
-        .query_map(params![ctx.account_id, ctx.region, name], |r| {
-            let stages: String = r.get(3)?;
-            Ok(Version {
-                version_id: r.get(0)?,
-                secret_string: r.get(1)?,
-                secret_binary: r.get(2)?,
-                stages: serde_json::from_str(&stages).unwrap_or_default(),
-                created_at: r.get(4)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
+fn versions(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    name: &str,
+) -> Result<Vec<Version>, AwsError> {
+    Ok(secret_versions::table
+        .filter(secret_versions::account_id.eq(&ctx.account_id))
+        .filter(secret_versions::region.eq(&ctx.region))
+        .filter(secret_versions::secret_name.eq(name))
+        .order(secret_versions::seq)
+        .select(VersionRow::as_select())
+        .load(tx)?
+        .into_iter()
+        .map(|r| Version {
+            version_id: r.version_id,
+            secret_string: r.secret_string,
+            secret_binary: r.secret_binary,
+            stages: serde_json::from_str(&r.stages).unwrap_or_default(),
+            created_at: r.created_at,
+        })
+        .collect())
 }
 
 fn save_stages(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &str,
     version_id: &str,
     stages: &[String],
 ) -> Result<(), AwsError> {
-    tx.execute(
-        "UPDATE secret_versions SET stages = ?1 WHERE account_id = ?2 AND region = ?3 AND secret_name = ?4 AND version_id = ?5",
-        params![serde_json::to_string(stages).unwrap_or_default(), ctx.account_id, ctx.region, name, version_id],
-    )?;
+    diesel::update(
+        secret_versions::table
+            .filter(secret_versions::account_id.eq(&ctx.account_id))
+            .filter(secret_versions::region.eq(&ctx.region))
+            .filter(secret_versions::secret_name.eq(&name))
+            .filter(secret_versions::version_id.eq(&version_id)),
+    )
+    .set(secret_versions::stages.eq(&serde_json::to_string(stages).unwrap_or_default()))
+    .execute(tx)?;
     Ok(())
 }
 
 /// Moves `stage` to `target` (removing it from every other version).
 fn move_stage(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &str,
     stage: &str,
@@ -247,7 +257,7 @@ fn new_token() -> String {
 }
 
 fn insert_version(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     name: &str,
     version_id: &str,
@@ -255,20 +265,18 @@ fn insert_version(
     binary: &Option<Blob>,
     stages: &[String],
 ) -> Result<(), AwsError> {
-    tx.execute(
-        "INSERT INTO secret_versions (account_id, region, secret_name, version_id, secret_string, secret_binary, stages, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            ctx.account_id,
-            ctx.region,
-            name,
-            version_id,
-            string,
-            binary.as_ref().map(|b| b.0.clone()),
-            serde_json::to_string(stages).unwrap_or_default(),
-            now()
-        ],
-    )?;
+    diesel::insert_into(secret_versions::table)
+        .values((
+            secret_versions::account_id.eq(&ctx.account_id),
+            secret_versions::region.eq(&ctx.region),
+            secret_versions::secret_name.eq(&name),
+            secret_versions::version_id.eq(&version_id),
+            secret_versions::secret_string.eq(string),
+            secret_versions::secret_binary.eq(&binary.as_ref().map(|b| b.0.clone())),
+            secret_versions::stages.eq(&serde_json::to_string(stages).unwrap_or_default()),
+            secret_versions::created_at.eq(&now()),
+        ))
+        .execute(tx)?;
     // The new current version demotes the old one; a label can sit on one version only.
     for stage in stages {
         if stage == "AWSCURRENT" {
@@ -284,10 +292,14 @@ fn insert_version(
             move_stage(tx, ctx, name, stage, version_id)?;
         }
     }
-    tx.execute(
-        "UPDATE secrets SET changed_at = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-        params![now(), ctx.account_id, ctx.region, name],
-    )?;
+    diesel::update(
+        secrets::table
+            .filter(secrets::account_id.eq(&ctx.account_id))
+            .filter(secrets::region.eq(&ctx.region))
+            .filter(secrets::name.eq(&name)),
+    )
+    .set(secrets::changed_at.eq(&now()))
+    .execute(tx)?;
     Ok(())
 }
 
@@ -492,7 +504,9 @@ impl Service for SecretsManager {
                 let vs = versions(tx, ctx, &existing.name)?;
                 if let Some(token) = &i.client_request_token {
                     if let Some(v) = vs.iter().find(|v| &v.version_id == token) {
-                        if v.secret_string == i.secret_string && v.secret_binary == i.secret_binary.as_ref().map(|b| b.0.clone()) {
+                        if v.secret_string == i.secret_string
+                            && v.secret_binary == i.secret_binary.as_ref().map(|b| b.0.clone())
+                        {
                             return Ok(CreateSecretResponse {
                                 arn: Some(existing.arn),
                                 name: Some(existing.name),
@@ -502,20 +516,51 @@ impl Service for SecretsManager {
                         }
                     }
                 }
-                return Err(err("ResourceExistsException", "A resource with the ID you requested already exists."));
+                return Err(err(
+                    "ResourceExistsException",
+                    "A resource with the ID you requested already exists.",
+                ));
             }
-            let arn = format!("arn:{}:secretsmanager:{}:{}:secret:{}-{}", partition(&ctx.region), ctx.region, ctx.account_id, i.name, random_suffix());
-            tx.execute(
-                "INSERT INTO secrets (account_id, region, name, arn, description, kms_key_id, created_at, changed_at, tags)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
-                params![ctx.account_id, ctx.region, i.name, arn, i.description, i.kms_key_id, now(), tags_json(&i.tags)],
-            )?;
+            let arn = format!(
+                "arn:{}:secretsmanager:{}:{}:secret:{}-{}",
+                partition(&ctx.region),
+                ctx.region,
+                ctx.account_id,
+                i.name,
+                random_suffix()
+            );
+            diesel::insert_into(secrets::table)
+                .values((
+                    secrets::account_id.eq(&ctx.account_id),
+                    secrets::region.eq(&ctx.region),
+                    secrets::name.eq(&i.name),
+                    secrets::arn.eq(&arn),
+                    secrets::description.eq(&i.description),
+                    secrets::kms_key_id.eq(&i.kms_key_id),
+                    secrets::created_at.eq(&now()),
+                    secrets::changed_at.eq(&now()),
+                    secrets::tags.eq(&tags_json(&i.tags)),
+                ))
+                .execute(tx)?;
             let has_value = i.secret_string.is_some() || i.secret_binary.is_some();
             let version_id = i.client_request_token.clone().unwrap_or_else(new_token);
             if has_value {
-                insert_version(tx, ctx, &i.name, &version_id, &i.secret_string, &i.secret_binary, &["AWSCURRENT".to_string()])?;
+                insert_version(
+                    tx,
+                    ctx,
+                    &i.name,
+                    &version_id,
+                    &i.secret_string,
+                    &i.secret_binary,
+                    &["AWSCURRENT".to_string()],
+                )?;
             }
-            Ok(CreateSecretResponse { arn: Some(arn), name: Some(i.name.clone()), version_id: has_value.then_some(version_id), ..Default::default() })
+            Ok(CreateSecretResponse {
+                arn: Some(arn),
+                name: Some(i.name.clone()),
+                version_id: has_value.then_some(version_id),
+                ..Default::default()
+            })
         })
     }
 
@@ -549,10 +594,7 @@ impl Service for SecretsManager {
                     },
                 ));
             };
-            tx.execute(
-                "UPDATE secrets SET accessed_at = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-                params![now(), ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(secrets::table.filter(secrets::account_id.eq(&ctx.account_id)).filter(secrets::region.eq(&ctx.region)).filter(secrets::name.eq(&s.name))).set(secrets::accessed_at.eq(&now())).execute(tx)?;
             Ok(value_response(&s, v))
         })
     }
@@ -629,17 +671,36 @@ impl Service for SecretsManager {
     ) -> Result<UpdateSecretResponse, AwsError> {
         self.db.transaction(|tx| {
             let s = require_live(tx, ctx, &i.secret_id, "UpdateSecret")?;
-            tx.execute(
-                "UPDATE secrets SET description = COALESCE(?1, description), kms_key_id = COALESCE(?2, kms_key_id), changed_at = ?3
-                 WHERE account_id = ?4 AND region = ?5 AND name = ?6",
-                params![i.description, i.kms_key_id, now(), ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set((
+                secrets::description.eq(&i.description.clone().or_else(|| s.description.clone())),
+                secrets::kms_key_id.eq(&i.kms_key_id.clone().or_else(|| s.kms_key_id.clone())),
+                secrets::changed_at.eq(&now()),
+            ))
+            .execute(tx)?;
             let has_value = i.secret_string.is_some() || i.secret_binary.is_some();
             let version_id = i.client_request_token.clone().unwrap_or_else(new_token);
             if has_value {
-                insert_version(tx, ctx, &s.name, &version_id, &i.secret_string, &i.secret_binary, &["AWSCURRENT".to_string()])?;
+                insert_version(
+                    tx,
+                    ctx,
+                    &s.name,
+                    &version_id,
+                    &i.secret_string,
+                    &i.secret_binary,
+                    &["AWSCURRENT".to_string()],
+                )?;
             }
-            Ok(UpdateSecretResponse { arn: Some(s.arn), name: Some(s.name), version_id: has_value.then_some(version_id) })
+            Ok(UpdateSecretResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+                version_id: has_value.then_some(version_id),
+            })
         })
     }
 
@@ -685,10 +746,21 @@ impl Service for SecretsManager {
             }
         }
         self.db.transaction(|tx| {
-            let mut stmt = tx.prepare(&format!("SELECT {SECRET_COLS} FROM secrets WHERE account_id = ?1 AND region = ?2 ORDER BY created_at, name"))?;
-            let mut all: Vec<Secret> = stmt.query_map(params![ctx.account_id, ctx.region], secret_from_row)?.collect::<Result<_, _>>()?;
+            let mut all: Vec<Secret> = secrets::table
+                .filter(secrets::account_id.eq(&ctx.account_id))
+                .filter(secrets::region.eq(&ctx.region))
+                .order((secrets::created_at, secrets::name))
+                .select(SecretRow::as_select())
+                .load(tx)?
+                .into_iter()
+                .map(Into::into)
+                .collect();
             all.retain(|s| i.include_planned_deletion.unwrap_or(false) || s.deleted_at.is_none());
-            all.retain(|s| i.filters.iter().all(|f| matches_filter(s, f.key.as_deref().unwrap_or(""), &f.values)));
+            all.retain(|s| {
+                i.filters
+                    .iter()
+                    .all(|f| matches_filter(s, f.key.as_deref().unwrap_or(""), &f.values))
+            });
             match i.sort_by.as_deref() {
                 Some("name") => all.sort_by(|a, b| a.name.cmp(&b.name)),
                 Some("created-date") => all.sort_by_key(|s| s.created_at),
@@ -722,7 +794,10 @@ impl Service for SecretsManager {
                     ..Default::default()
                 });
             }
-            Ok(ListSecretsResponse { secret_list: out, next_token })
+            Ok(ListSecretsResponse {
+                secret_list: out,
+                next_token,
+            })
         })
     }
 
@@ -759,14 +834,11 @@ impl Service for SecretsManager {
             }
             let when = now() + i.recovery_window_in_days.unwrap_or(30) * 86_400;
             if force {
-                tx.execute("DELETE FROM secret_versions WHERE account_id = ?1 AND region = ?2 AND secret_name = ?3", params![ctx.account_id, ctx.region, s.name])?;
-                tx.execute("DELETE FROM secrets WHERE account_id = ?1 AND region = ?2 AND name = ?3", params![ctx.account_id, ctx.region, s.name])?;
+                diesel::delete(secret_versions::table.filter(secret_versions::account_id.eq(&ctx.account_id)).filter(secret_versions::region.eq(&ctx.region)).filter(secret_versions::secret_name.eq(&s.name))).execute(tx)?;
+                diesel::delete(secrets::table.filter(secrets::account_id.eq(&ctx.account_id)).filter(secrets::region.eq(&ctx.region)).filter(secrets::name.eq(&s.name))).execute(tx)?;
                 return Ok(DeleteSecretResponse { arn: Some(s.arn), name: Some(s.name), deletion_date: Some(Timestamp(now())) });
             }
-            tx.execute(
-                "UPDATE secrets SET deleted_at = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-                params![when, ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(secrets::table.filter(secrets::account_id.eq(&ctx.account_id)).filter(secrets::region.eq(&ctx.region)).filter(secrets::name.eq(&s.name))).set(secrets::deleted_at.eq(&when)).execute(tx)?;
             Ok(DeleteSecretResponse { arn: Some(s.arn), name: Some(s.name), deletion_date: Some(Timestamp(when)) })
         })
     }
@@ -778,11 +850,18 @@ impl Service for SecretsManager {
     ) -> Result<RestoreSecretResponse, AwsError> {
         self.db.transaction(|tx| {
             let s = require(tx, ctx, &i.secret_id)?;
-            tx.execute(
-                "UPDATE secrets SET deleted_at = NULL WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                params![ctx.account_id, ctx.region, s.name],
-            )?;
-            Ok(RestoreSecretResponse { arn: Some(s.arn), name: Some(s.name) })
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::deleted_at.eq(None::<i64>))
+            .execute(tx)?;
+            Ok(RestoreSecretResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+            })
         })
     }
 
@@ -888,10 +967,14 @@ impl Service for SecretsManager {
                     None => s.tags.push(t.clone()),
                 }
             }
-            tx.execute(
-                "UPDATE secrets SET tags = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-                params![tags_json(&s.tags), ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::tags.eq(&tags_json(&s.tags)))
+            .execute(tx)?;
             Ok(())
         })
     }
@@ -905,10 +988,14 @@ impl Service for SecretsManager {
             let mut s = require(tx, ctx, &i.secret_id)?;
             s.tags
                 .retain(|t| !t.key.as_ref().is_some_and(|k| i.tag_keys.contains(k)));
-            tx.execute(
-                "UPDATE secrets SET tags = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-                params![tags_json(&s.tags), ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::tags.eq(&tags_json(&s.tags)))
+            .execute(tx)?;
             Ok(())
         })
     }
@@ -936,11 +1023,18 @@ impl Service for SecretsManager {
                     "This resource policy contains invalid JSON text.",
                 ));
             }
-            tx.execute(
-                "UPDATE secrets SET policy = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4",
-                params![i.resource_policy, ctx.account_id, ctx.region, s.name],
-            )?;
-            Ok(PutResourcePolicyResponse { arn: Some(s.arn), name: Some(s.name) })
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::policy.eq(&i.resource_policy))
+            .execute(tx)?;
+            Ok(PutResourcePolicyResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+            })
         })
     }
 
@@ -966,11 +1060,18 @@ impl Service for SecretsManager {
     ) -> Result<DeleteResourcePolicyResponse, AwsError> {
         self.db.transaction(|tx| {
             let s = require(tx, ctx, &i.secret_id)?;
-            tx.execute(
-                "UPDATE secrets SET policy = NULL WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                params![ctx.account_id, ctx.region, s.name],
-            )?;
-            Ok(DeleteResourcePolicyResponse { arn: Some(s.arn), name: Some(s.name) })
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::policy.eq(None::<String>))
+            .execute(tx)?;
+            Ok(DeleteResourcePolicyResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+            })
         })
     }
 
@@ -999,28 +1100,57 @@ impl Service for SecretsManager {
         use roto_protocol::ToJson;
         self.db.transaction(|tx| {
             let s = require_live(tx, ctx, &i.secret_id, "RotateSecret")?;
-            let lambda = i.rotation_lambda_arn.clone().or(s.rotation_lambda_arn.clone());
+            let lambda = i
+                .rotation_lambda_arn
+                .clone()
+                .or(s.rotation_lambda_arn.clone());
             let rules = i.rotation_rules.clone().or(s.rotation_rules.clone());
             if let Some(r) = &rules {
                 if let Some(d) = r.automatically_after_days {
                     if !(1..=1000).contains(&d) {
-                        return Err(err("InvalidParameterException", "RotationRules.AutomaticallyAfterDays must be within 1-1000."));
+                        return Err(err(
+                            "InvalidParameterException",
+                            "RotationRules.AutomaticallyAfterDays must be within 1-1000.",
+                        ));
                     }
                 }
             }
-            tx.execute(
-                "UPDATE secrets SET rotation_enabled = 1, rotation_lambda_arn = ?1, rotation_rules = ?2, last_rotated_at = ?3
-                 WHERE account_id = ?4 AND region = ?5 AND name = ?6",
-                params![lambda, rules.as_ref().map(|r| r.to_json().to_string()), now(), ctx.account_id, ctx.region, s.name],
-            )?;
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set((
+                secrets::rotation_enabled.eq(1_i64),
+                secrets::rotation_lambda_arn.eq(&lambda),
+                secrets::rotation_rules.eq(&rules.as_ref().map(|r| r.to_json().to_string())),
+                secrets::last_rotated_at.eq(&now()),
+            ))
+            .execute(tx)?;
             // Without a rotation function to run, rotation promotes a fresh copy of the current value.
             let vs = versions(tx, ctx, &s.name)?;
             let version_id = i.client_request_token.clone().unwrap_or_else(new_token);
-            if let Some(cur) = vs.iter().find(|v| v.stages.iter().any(|x| x == "AWSCURRENT")) {
+            if let Some(cur) = vs
+                .iter()
+                .find(|v| v.stages.iter().any(|x| x == "AWSCURRENT"))
+            {
                 let secret_binary = cur.secret_binary.clone().map(Blob);
-                insert_version(tx, ctx, &s.name, &version_id, &cur.secret_string, &secret_binary, &["AWSCURRENT".to_string()])?;
+                insert_version(
+                    tx,
+                    ctx,
+                    &s.name,
+                    &version_id,
+                    &cur.secret_string,
+                    &secret_binary,
+                    &["AWSCURRENT".to_string()],
+                )?;
             }
-            Ok(RotateSecretResponse { arn: Some(s.arn), name: Some(s.name), version_id: Some(version_id) })
+            Ok(RotateSecretResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+                version_id: Some(version_id),
+            })
         })
     }
 
@@ -1032,13 +1162,23 @@ impl Service for SecretsManager {
         self.db.transaction(|tx| {
             let s = require_live(tx, ctx, &i.secret_id, "CancelRotateSecret")?;
             if !s.rotation_enabled {
-                return Err(invalid_request("You tried to cancel the rotation of a secret that is not rotating."));
+                return Err(invalid_request(
+                    "You tried to cancel the rotation of a secret that is not rotating.",
+                ));
             }
-            tx.execute(
-                "UPDATE secrets SET rotation_enabled = 0 WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                params![ctx.account_id, ctx.region, s.name],
-            )?;
-            Ok(CancelRotateSecretResponse { arn: Some(s.arn), name: Some(s.name), version_id: None })
+            diesel::update(
+                secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::name.eq(&s.name)),
+            )
+            .set(secrets::rotation_enabled.eq(0_i64))
+            .execute(tx)?;
+            Ok(CancelRotateSecretResponse {
+                arn: Some(s.arn),
+                name: Some(s.name),
+                version_id: None,
+            })
         })
     }
 
@@ -1062,9 +1202,12 @@ impl Service for SecretsManager {
         self.db.transaction(|tx| {
             let mut entries = Vec::new();
             let mut errors = Vec::new();
-            let mut collect = |s: &Secret| -> Result<(), AwsError> {
+            let mut collect = |tx: &mut SqliteConnection, s: &Secret| -> Result<(), AwsError> {
                 let vs = versions(tx, ctx, &s.name)?;
-                if let Some(v) = vs.iter().find(|v| v.stages.iter().any(|x| x == "AWSCURRENT")) {
+                if let Some(v) = vs
+                    .iter()
+                    .find(|v| v.stages.iter().any(|x| x == "AWSCURRENT"))
+                {
                     let r = value_response(s, v);
                     entries.push(SecretValueEntry {
                         arn: r.arn,
@@ -1080,7 +1223,7 @@ impl Service for SecretsManager {
             };
             for id in &i.secret_id_list {
                 match find(tx, ctx, id)? {
-                    Some(s) if s.deleted_at.is_none() => collect(&s)?,
+                    Some(s) if s.deleted_at.is_none() => collect(tx, &s)?,
                     _ => errors.push(APIErrorType {
                         secret_id: Some(id.clone()),
                         error_code: Some("ResourceNotFoundException".into()),
@@ -1089,14 +1232,34 @@ impl Service for SecretsManager {
                 }
             }
             if !i.filters.is_empty() {
-                let mut stmt = tx.prepare(&format!("SELECT {SECRET_COLS} FROM secrets WHERE account_id = ?1 AND region = ?2 AND deleted_at IS NULL ORDER BY name"))?;
-                let all: Vec<Secret> = stmt.query_map(params![ctx.account_id, ctx.region], secret_from_row)?.collect::<Result<_, _>>()?;
-                for s in all.iter().filter(|s| i.filters.iter().all(|f| matches_filter(s, f.key.as_deref().unwrap_or(""), &f.values))) {
-                    collect(s)?;
+                let all: Vec<Secret> = secrets::table
+                    .filter(secrets::account_id.eq(&ctx.account_id))
+                    .filter(secrets::region.eq(&ctx.region))
+                    .filter(secrets::deleted_at.is_null())
+                    .order(secrets::name)
+                    .select(SecretRow::as_select())
+                    .load(tx)?
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+                for s in all.iter().filter(|s| {
+                    i.filters
+                        .iter()
+                        .all(|f| matches_filter(s, f.key.as_deref().unwrap_or(""), &f.values))
+                }) {
+                    collect(tx, s)?;
                 }
             }
-            let (page_items, next_token) = page(entries, &i.next_token, i.max_results.unwrap_or(20).clamp(1, 20) as usize)?;
-            Ok(BatchGetSecretValueResponse { secret_values: page_items, errors, next_token })
+            let (page_items, next_token) = page(
+                entries,
+                &i.next_token,
+                i.max_results.unwrap_or(20).clamp(1, 20) as usize,
+            )?;
+            Ok(BatchGetSecretValueResponse {
+                secret_values: page_items,
+                errors,
+                next_token,
+            })
         })
     }
 }

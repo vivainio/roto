@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use roto_core::rusqlite::{OptionalExtension, Row, Transaction, params};
-use roto_core::store::{Db, Store};
+use crate::models::{SubRow, TopicRow};
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::Timestamp;
 use roto_svc_sqs::{ExternalAttribute, Sqs};
@@ -20,15 +23,15 @@ pub struct Sns {
 impl Sns {
     pub fn new(store: &Store, sqs: Arc<Sqs>) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("sns", MIGRATIONS)?,
+            db: store.diesel_db("sns", MIGRATIONS)?,
             sqs,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM subscriptions", [])?;
-            tx.execute("DELETE FROM topics", [])?;
+            diesel::delete(subscriptions::table).execute(tx)?;
+            diesel::delete(topics::table).execute(tx)?;
             Ok(())
         })
     }
@@ -84,8 +87,6 @@ impl Topic {
     }
 }
 
-const TOPIC_COLS: &str = "arn, account_id, region, name, attributes, tags";
-
 fn tags_from_json(text: &str) -> Vec<Tag> {
     serde_json::from_str::<Value>(text)
         .ok()
@@ -112,28 +113,28 @@ fn tags_json(tags: &[Tag]) -> String {
     .to_string()
 }
 
-fn topic_from_row(r: &Row) -> roto_core::rusqlite::Result<Topic> {
-    Ok(Topic {
-        arn: r.get(0)?,
-        account_id: r.get(1)?,
-        region: r.get(2)?,
-        name: r.get(3)?,
-        attributes: attrs_of(r.get(4)?),
-        tags: tags_from_json(&r.get::<_, String>(5)?),
-    })
+impl From<TopicRow> for Topic {
+    fn from(r: TopicRow) -> Self {
+        Self {
+            arn: r.arn,
+            account_id: r.account_id,
+            region: r.region,
+            name: r.name,
+            attributes: attrs_of(r.attributes),
+            tags: tags_from_json(&r.tags),
+        }
+    }
+}
+fn find_topic(tx: &mut SqliteConnection, arn: &str) -> Result<Option<Topic>, AwsError> {
+    Ok(topics::table
+        .filter(topics::arn.eq(arn))
+        .select(TopicRow::as_select())
+        .first(tx)
+        .optional()?
+        .map(Into::into))
 }
 
-fn find_topic(tx: &Transaction, arn: &str) -> Result<Option<Topic>, AwsError> {
-    Ok(tx
-        .query_row(
-            &format!("SELECT {TOPIC_COLS} FROM topics WHERE arn = ?1"),
-            params![arn],
-            topic_from_row,
-        )
-        .optional()?)
-}
-
-fn require_topic(tx: &Transaction, arn: &str) -> Result<Topic, AwsError> {
+fn require_topic(tx: &mut SqliteConnection, arn: &str) -> Result<Topic, AwsError> {
     find_topic(tx, arn)?.ok_or_else(|| not_found("Topic"))
 }
 
@@ -148,44 +149,39 @@ struct Sub {
     token: Option<String>,
 }
 
-const SUB_COLS: &str =
-    "arn, topic_arn, account_id, protocol, endpoint, attributes, confirmed, token";
-
-fn sub_from_row(r: &Row) -> roto_core::rusqlite::Result<Sub> {
-    Ok(Sub {
-        arn: r.get(0)?,
-        topic_arn: r.get(1)?,
-        account_id: r.get(2)?,
-        protocol: r.get(3)?,
-        endpoint: r.get(4)?,
-        attributes: attrs_of(r.get(5)?),
-        confirmed: r.get::<_, i64>(6)? != 0,
-        token: r.get(7)?,
-    })
+impl From<SubRow> for Sub {
+    fn from(r: SubRow) -> Self {
+        Self {
+            arn: r.arn,
+            topic_arn: r.topic_arn,
+            account_id: r.account_id,
+            protocol: r.protocol,
+            endpoint: r.endpoint,
+            attributes: attrs_of(r.attributes),
+            confirmed: r.confirmed != 0,
+            token: r.token,
+        }
+    }
 }
-
-fn find_sub(tx: &Transaction, arn: &str) -> Result<Option<Sub>, AwsError> {
-    Ok(tx
-        .query_row(
-            &format!("SELECT {SUB_COLS} FROM subscriptions WHERE arn = ?1"),
-            params![arn],
-            sub_from_row,
-        )
-        .optional()?)
+fn find_sub(tx: &mut SqliteConnection, arn: &str) -> Result<Option<Sub>, AwsError> {
+    Ok(subscriptions::table
+        .filter(subscriptions::arn.eq(arn))
+        .select(SubRow::as_select())
+        .first(tx)
+        .optional()?
+        .map(Into::into))
 }
-
-fn subs_of(tx: &Transaction, topic_arn: Option<&str>) -> Result<Vec<Sub>, AwsError> {
-    let mut stmt = match topic_arn {
-        Some(_) => tx.prepare(&format!(
-            "SELECT {SUB_COLS} FROM subscriptions WHERE topic_arn = ?1 ORDER BY seq"
-        ))?,
-        None => tx.prepare(&format!(
-            "SELECT {SUB_COLS} FROM subscriptions WHERE ?1 IS NULL ORDER BY seq"
-        ))?,
-    };
-    Ok(stmt
-        .query_map(params![topic_arn], sub_from_row)?
-        .collect::<Result<_, _>>()?)
+fn subs_of(tx: &mut SqliteConnection, topic_arn: Option<&str>) -> Result<Vec<Sub>, AwsError> {
+    let mut q = subscriptions::table.into_boxed();
+    if let Some(arn) = topic_arn {
+        q = q.filter(subscriptions::topic_arn.eq(arn));
+    }
+    Ok(q.order(subscriptions::seq)
+        .select(SubRow::as_select())
+        .load(tx)?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 fn page<T>(
@@ -222,7 +218,7 @@ fn default_policy(topic: &Topic) -> String {
     .to_string()
 }
 
-fn topic_attributes(tx: &Transaction, t: &Topic) -> Result<Attrs, AwsError> {
+fn topic_attributes(tx: &mut SqliteConnection, t: &Topic) -> Result<Attrs, AwsError> {
     let subs = subs_of(tx, Some(&t.arn))?;
     let confirmed = subs.iter().filter(|s| s.confirmed).count();
     let mut a: Attrs = BTreeMap::new();
@@ -339,7 +335,7 @@ fn message_for(d: &Delivery, protocol: &str) -> Result<String, AwsError> {
 }
 
 impl Sns {
-    fn fan_out(&self, tx: &Transaction, d: &Delivery) -> Result<(), AwsError> {
+    fn fan_out(&self, tx: &mut SqliteConnection, d: &Delivery) -> Result<(), AwsError> {
         for s in subs_of(tx, Some(&d.topic.arn))? {
             if !s.confirmed {
                 continue;
@@ -432,7 +428,7 @@ impl Sns {
     /// `TopicArn` or `TargetArn` -> topic, with FIFO checks.
     fn publish_one(
         &self,
-        tx: &Transaction,
+        tx: &mut SqliteConnection,
         topic: &Topic,
         message: &str,
         subject: &Option<String>,
@@ -534,11 +530,8 @@ impl Service for Sns {
                 }
                 return Ok(CreateTopicResponse { topic_arn: Some(existing.arn) });
             }
-            let seq: i64 = tx.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM topics", [], |r| r.get(0))?;
-            tx.execute(
-                "INSERT INTO topics (arn, account_id, region, name, attributes, tags, created_at, seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![arn, ctx.account_id, ctx.region, i.name, attrs_json(&i.attributes), tags_json(&i.tags), now(), seq],
-            )?;
+            let seq: i64 = topics::table.select(diesel::dsl::max(topics::seq)).first::<Option<i64>>(tx)?.unwrap_or(0)+1;
+            diesel::insert_into(topics::table).values((topics::arn.eq(&(arn)),topics::account_id.eq(&(ctx.account_id)),topics::region.eq(&(ctx.region)),topics::name.eq(&(i.name)),topics::attributes.eq(&(attrs_json(&i.attributes))),topics::tags.eq(&(tags_json(&i.tags))),topics::created_at.eq(&(now())),topics::seq.eq(&(seq)))).execute(tx)?;
             Ok(CreateTopicResponse { topic_arn: Some(arn.clone()) })
         })
     }
@@ -546,7 +539,7 @@ impl Service for Sns {
     fn delete_topic(&self, _ctx: &RequestContext, i: DeleteTopicInput) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             // Deleting a topic that does not exist succeeds.
-            tx.execute("DELETE FROM topics WHERE arn = ?1", params![i.topic_arn])?;
+            diesel::delete(topics::table.filter(topics::arn.eq(&(i.topic_arn)))).execute(tx)?;
             Ok(())
         })
     }
@@ -557,12 +550,12 @@ impl Service for Sns {
         i: ListTopicsInput,
     ) -> Result<ListTopicsResponse, AwsError> {
         self.db.transaction(|tx| {
-            let mut stmt = tx.prepare(
-                "SELECT arn FROM topics WHERE account_id = ?1 AND region = ?2 ORDER BY seq",
-            )?;
-            let arns: Vec<String> = stmt
-                .query_map(params![ctx.account_id, ctx.region], |r| r.get(0))?
-                .collect::<Result<_, _>>()?;
+            let arns = topics::table
+                .filter(topics::account_id.eq(&ctx.account_id))
+                .filter(topics::region.eq(&ctx.region))
+                .order(topics::seq)
+                .select(topics::arn)
+                .load::<String>(tx)?;
             let (items, next_token) = page(arns, &i.next_token, 100)?;
             Ok(ListTopicsResponse {
                 topics: items
@@ -626,10 +619,9 @@ impl Service for Sns {
                 i.attribute_name.clone(),
                 i.attribute_value.clone().unwrap_or_default(),
             );
-            tx.execute(
-                "UPDATE topics SET attributes = ?1 WHERE arn = ?2",
-                params![attrs_json(&t.attributes), t.arn],
-            )?;
+            diesel::update(topics::table.filter(topics::arn.eq(&(t.arn))))
+                .set(topics::attributes.eq(&(attrs_json(&t.attributes))))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -664,20 +656,40 @@ impl Service for Sns {
         }
         self.db.transaction(|tx| {
             let topic = require_topic(tx, &i.topic_arn)?;
-            if let Some(existing) = subs_of(tx, Some(&topic.arn))?.into_iter().find(|s| s.protocol == i.protocol && s.endpoint == endpoint) {
-                return Ok(SubscribeResponse { subscription_arn: Some(existing.arn) });
+            if let Some(existing) = subs_of(tx, Some(&topic.arn))?
+                .into_iter()
+                .find(|s| s.protocol == i.protocol && s.endpoint == endpoint)
+            {
+                return Ok(SubscribeResponse {
+                    subscription_arn: Some(existing.arn),
+                });
             }
             let arn = format!("{}:{}", topic.arn, uuid::Uuid::new_v4());
             // HTTP(S) and email subscriptions wait for a confirmation token.
-            let confirmed = !matches!(i.protocol.as_str(), "http" | "https" | "email" | "email-json");
+            let confirmed = !matches!(
+                i.protocol.as_str(),
+                "http" | "https" | "email" | "email-json"
+            );
             let token = (!confirmed).then(|| uuid::Uuid::new_v4().simple().to_string());
-            tx.execute(
-                "INSERT INTO subscriptions (arn, topic_arn, account_id, region, protocol, endpoint, attributes, confirmed, token)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![arn, topic.arn, ctx.account_id, ctx.region, i.protocol, endpoint, attrs_json(&i.attributes), i64::from(confirmed), token],
-            )?;
+            diesel::insert_into(subscriptions::table)
+                .values((
+                    subscriptions::arn.eq(&(arn)),
+                    subscriptions::topic_arn.eq(&(topic.arn)),
+                    subscriptions::account_id.eq(&(ctx.account_id)),
+                    subscriptions::region.eq(&(ctx.region)),
+                    subscriptions::protocol.eq(&(i.protocol)),
+                    subscriptions::endpoint.eq(&(endpoint)),
+                    subscriptions::attributes.eq(&(attrs_json(&i.attributes))),
+                    subscriptions::confirmed.eq(&(i64::from(confirmed))),
+                    subscriptions::token.eq(&(token)),
+                ))
+                .execute(tx)?;
             Ok(SubscribeResponse {
-                subscription_arn: Some(if confirmed || i.return_subscription_arn == Some(true) { arn } else { "pending confirmation".into() }),
+                subscription_arn: Some(if confirmed || i.return_subscription_arn == Some(true) {
+                    arn
+                } else {
+                    "pending confirmation".into()
+                }),
             })
         })
     }
@@ -693,10 +705,9 @@ impl Service for Sns {
                 .into_iter()
                 .find(|s| s.token.as_deref() == Some(i.token.as_str()))
                 .ok_or_else(|| invalid("Invalid parameter: Token"))?;
-            tx.execute(
-                "UPDATE subscriptions SET confirmed = 1 WHERE arn = ?1",
-                params![sub.arn],
-            )?;
+            diesel::update(subscriptions::table.filter(subscriptions::arn.eq(&(sub.arn))))
+                .set(subscriptions::confirmed.eq(1_i64))
+                .execute(tx)?;
             Ok(ConfirmSubscriptionResponse {
                 subscription_arn: Some(sub.arn),
             })
@@ -705,10 +716,10 @@ impl Service for Sns {
 
     fn unsubscribe(&self, _ctx: &RequestContext, i: UnsubscribeInput) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute(
-                "DELETE FROM subscriptions WHERE arn = ?1",
-                params![i.subscription_arn],
-            )?;
+            diesel::delete(
+                subscriptions::table.filter(subscriptions::arn.eq(&(i.subscription_arn))),
+            )
+            .execute(tx)?;
             Ok(())
         })
     }
@@ -796,10 +807,9 @@ impl Service for Sns {
             let mut s =
                 find_sub(tx, &i.subscription_arn)?.ok_or_else(|| not_found("Subscription"))?;
             s.attributes.insert(i.attribute_name.clone(), value);
-            tx.execute(
-                "UPDATE subscriptions SET attributes = ?1 WHERE arn = ?2",
-                params![attrs_json(&s.attributes), s.arn],
-            )?;
+            diesel::update(subscriptions::table.filter(subscriptions::arn.eq(&(s.arn))))
+                .set(subscriptions::attributes.eq(&(attrs_json(&s.attributes))))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -918,10 +928,9 @@ impl Service for Sns {
                     "Could not complete request: tag quota of per resource exceeded",
                 ));
             }
-            tx.execute(
-                "UPDATE topics SET tags = ?1 WHERE arn = ?2",
-                params![tags_json(&t.tags), t.arn],
-            )?;
+            diesel::update(topics::table.filter(topics::arn.eq(&(t.arn))))
+                .set(topics::tags.eq(&(tags_json(&t.tags))))
+                .execute(tx)?;
             Ok(TagResourceResponse::default())
         })
     }
@@ -936,10 +945,9 @@ impl Service for Sns {
                 AwsError::sender(404, "ResourceNotFound", "Resource does not exist")
             })?;
             t.tags.retain(|x| !i.tag_keys.contains(&x.key));
-            tx.execute(
-                "UPDATE topics SET tags = ?1 WHERE arn = ?2",
-                params![tags_json(&t.tags), t.arn],
-            )?;
+            diesel::update(topics::table.filter(topics::arn.eq(&(t.arn))))
+                .set(topics::tags.eq(&(tags_json(&t.tags))))
+                .execute(tx)?;
             Ok(UntagResourceResponse::default())
         })
     }
@@ -973,7 +981,7 @@ impl Service for Sns {
                 "Resource": t.arn,
             }));
             t.attributes.insert("Policy".into(), policy.to_string());
-            tx.execute("UPDATE topics SET attributes = ?1 WHERE arn = ?2", params![attrs_json(&t.attributes), t.arn])?;
+            diesel::update(topics::table.filter(topics::arn.eq(&(t.arn)))).set(topics::attributes.eq(&(attrs_json(&t.attributes)))).execute(tx)?;
             Ok(())
         })
     }
@@ -996,10 +1004,9 @@ impl Service for Sns {
                 st.retain(|s| s["Sid"] != i.label);
             }
             t.attributes.insert("Policy".into(), policy.to_string());
-            tx.execute(
-                "UPDATE topics SET attributes = ?1 WHERE arn = ?2",
-                params![attrs_json(&t.attributes), t.arn],
-            )?;
+            diesel::update(topics::table.filter(topics::arn.eq(&(t.arn))))
+                .set(topics::attributes.eq(&(attrs_json(&t.attributes))))
+                .execute(tx)?;
             Ok(())
         })
     }

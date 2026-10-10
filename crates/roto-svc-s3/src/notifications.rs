@@ -1,7 +1,9 @@
 //! Persist events alongside S3 mutations, then hand them to Lambda after commit.
 use crate::generated::NotificationConfiguration;
+use crate::schema::*;
 use crate::service::{BucketRow, Obj, S3};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use roto_core::{AwsError, RawResponse, RequestContext, ids};
 use roto_protocol::{Timestamp, restxml::XmlRead};
 use serde_json::{Value, json};
@@ -30,19 +32,18 @@ fn form_encode(key: &str) -> String {
 }
 
 pub(crate) fn record(
-    tx: &Transaction<'_>,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     bucket: &BucketRow,
     key: &str,
     event: &str,
     object: Option<&Obj>,
 ) -> Result<(), AwsError> {
-    let source: Option<String> = tx
-        .query_row(
-            "SELECT body FROM bucket_configs WHERE bucket=?1 AND kind='notification'",
-            [&bucket.name],
-            |r| r.get(0),
-        )
+    let source: Option<String> = bucket_configs::table
+        .filter(bucket_configs::bucket.eq(&(&bucket.name)))
+        .filter(bucket_configs::kind.eq("notification"))
+        .select(bucket_configs::body)
+        .first::<String>(tx)
         .optional()?;
     let Some(source) = source else {
         return Ok(());
@@ -74,11 +75,15 @@ pub(crate) fn record(
         }
         let id = ids::request_id();
         let context = json!({"account_id":bucket.account_id,"region":bucket.region,"request_id":ctx.request_id,"base_url":ctx.base_url});
-        tx.execute(
-            "INSERT INTO notification_outbox (id,target,context,event) VALUES (?1,?2,?3,'{}')",
-            params![id, destination.lambda_function_arn, context.to_string()],
-        )?;
-        let sequence = tx.last_insert_rowid();
+        let sequence: i64 = diesel::insert_into(notification_outbox::table)
+            .values((
+                notification_outbox::id.eq(&(id)),
+                notification_outbox::target.eq(&(destination.lambda_function_arn)),
+                notification_outbox::context.eq(&(context.to_string())),
+                notification_outbox::event.eq("{}"),
+            ))
+            .returning(notification_outbox::seq)
+            .get_result(tx)?;
         let mut obj = json!({"key":form_encode(key),"sequencer":format!("{sequence:016X}")});
         if let Some(o) = object {
             if event.starts_with("ObjectCreated:") {
@@ -97,10 +102,9 @@ pub(crate) fn record(
             "s3":{"s3SchemaVersion":"1.0","configurationId":destination.id.unwrap_or_default(),
                 "bucket":{"name":bucket.name,"arn":format!("arn:aws:s3:::{}",bucket.name),"ownerIdentity":{"principalId":bucket.account_id}},"object":obj}
         }]});
-        tx.execute(
-            "UPDATE notification_outbox SET event=?2 WHERE id=?1",
-            params![id, payload.to_string()],
-        )?;
+        diesel::update(notification_outbox::table.filter(notification_outbox::id.eq(&(id))))
+            .set(notification_outbox::event.eq(&(payload.to_string())))
+            .execute(tx)?;
     }
     if config.event_bridge_configuration.is_some() {
         let id = ids::request_id();
@@ -109,11 +113,15 @@ pub(crate) fn record(
             bucket.region, bucket.account_id
         );
         let context = json!({"account_id":bucket.account_id,"region":bucket.region,"request_id":ctx.request_id,"base_url":ctx.base_url});
-        tx.execute(
-            "INSERT INTO notification_outbox (id,target,context,event) VALUES (?1,?2,?3,'{}')",
-            params![id, target, context.to_string()],
-        )?;
-        let sequence = tx.last_insert_rowid();
+        let sequence: i64 = diesel::insert_into(notification_outbox::table)
+            .values((
+                notification_outbox::id.eq(&(id)),
+                notification_outbox::target.eq(&(target)),
+                notification_outbox::context.eq(&(context.to_string())),
+                notification_outbox::event.eq("{}"),
+            ))
+            .returning(notification_outbox::seq)
+            .get_result(tx)?;
         let created = event.starts_with("ObjectCreated:");
         let mut obj = json!({"key":key,"sequencer":format!("{sequence:016X}")});
         if let Some(o) = object {
@@ -140,10 +148,9 @@ pub(crate) fn record(
             });
         }
         let payload = json!({"version":"0","id":id,"source":"aws.s3","detail-type":if created {"Object Created"} else {"Object Deleted"},"account":bucket.account_id,"region":bucket.region,"time":Timestamp::now().to_iso8601_millis(),"resources":[format!("arn:aws:s3:::{}",bucket.name)],"detail":detail});
-        tx.execute(
-            "UPDATE notification_outbox SET event=?2 WHERE id=?1",
-            params![id, payload.to_string()],
-        )?;
+        diesel::update(notification_outbox::table.filter(notification_outbox::id.eq(&(id))))
+            .set(notification_outbox::event.eq(&(payload.to_string())))
+            .execute(tx)?;
     }
     Ok(())
 }
@@ -158,40 +165,100 @@ pub(crate) fn start_worker_with_events(
     events: Option<Arc<roto_svc_eventbridge::EventBridge>>,
 ) {
     let weak = Arc::downgrade(s3);
-    std::thread::Builder::new().name("roto-s3-events".into()).spawn(move || {
-        while let Some(s3)=weak.upgrade() {
-            let next=s3.db.read(|c| {
-                Ok(c.query_row("SELECT id,target,context,event,attempts FROM notification_outbox WHERE due<=?1 AND attempts<3 ORDER BY rowid LIMIT 1",[now()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i32>(4)?))).optional()?)
-            });
-            match next {
-                Ok(Some((id,target,context,event,attempts)))=> {
-                    let context:Value=serde_json::from_str(&context).unwrap();
-                    let ctx=RequestContext {account_id:context["account_id"].as_str().unwrap().into(),region:context["region"].as_str().unwrap().into(),request_id:context["request_id"].as_str().unwrap().into(),base_url:context["base_url"].as_str().unwrap().into(),access_key:None};
-                    let payload = serde_json::from_str(&event).unwrap();
-                    let result = if target.starts_with("arn:aws:events:") {
-                        events.as_ref().ok_or_else(|| AwsError::sender(400,"ServiceUnavailable","EventBridge delivery is unavailable")).and_then(|events| events.enqueue_event(&ctx,"default",payload))
-                    } else { lambda.enqueue(&ctx,&target,payload).map(|_| ()) };
-                    let result=s3.db.transaction(|tx| {
-                        match result {
-                            Ok(_)=>{tx.execute("DELETE FROM notification_outbox WHERE id=?1",[id])?;},
-                            Err(e)=>{eprintln!("S3 notification {id} to {target}: {e}");tx.execute("UPDATE notification_outbox SET attempts=?2,due=?3,error=?4 WHERE id=?1",params![id,attempts+1,now()+1000*i64::from(attempts+1),e.to_string()])?;},
-                        } Ok(())
-                    });
-                    if let Err(e)=result {eprintln!("S3 notification persistence: {e}");}
+    std::thread::Builder::new()
+        .name("roto-s3-events".into())
+        .spawn(move || {
+            while let Some(s3) = weak.upgrade() {
+                let next = s3.db.read(|c| {
+                    Ok(notification_outbox::table
+                        .filter(notification_outbox::due.le(now()))
+                        .filter(notification_outbox::attempts.lt(3))
+                        .order(notification_outbox::seq)
+                        .select((
+                            notification_outbox::id,
+                            notification_outbox::target,
+                            notification_outbox::context,
+                            notification_outbox::event,
+                            notification_outbox::attempts,
+                        ))
+                        .first::<(String, String, String, String, i32)>(c)
+                        .optional()?)
+                });
+                match next {
+                    Ok(Some((id, target, context, event, attempts))) => {
+                        let context: Value = serde_json::from_str(&context).unwrap();
+                        let ctx = RequestContext {
+                            account_id: context["account_id"].as_str().unwrap().into(),
+                            region: context["region"].as_str().unwrap().into(),
+                            request_id: context["request_id"].as_str().unwrap().into(),
+                            base_url: context["base_url"].as_str().unwrap().into(),
+                            access_key: None,
+                        };
+                        let payload = serde_json::from_str(&event).unwrap();
+                        let result = if target.starts_with("arn:aws:events:") {
+                            events
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    AwsError::sender(
+                                        400,
+                                        "ServiceUnavailable",
+                                        "EventBridge delivery is unavailable",
+                                    )
+                                })
+                                .and_then(|events| events.enqueue_event(&ctx, "default", payload))
+                        } else {
+                            lambda.enqueue(&ctx, &target, payload).map(|_| ())
+                        };
+                        let result = s3.db.transaction(|tx| {
+                            match result {
+                                Ok(_) => {
+                                    diesel::delete(
+                                        notification_outbox::table
+                                            .filter(notification_outbox::id.eq(&(id))),
+                                    )
+                                    .execute(tx)?;
+                                }
+                                Err(e) => {
+                                    eprintln!("S3 notification {id} to {target}: {e}");
+                                    diesel::update(
+                                        notification_outbox::table
+                                            .filter(notification_outbox::id.eq(&(id))),
+                                    )
+                                    .set((
+                                        notification_outbox::attempts.eq(&(attempts + 1)),
+                                        notification_outbox::due
+                                            .eq(&(now() + 1000 * i64::from(attempts + 1))),
+                                        notification_outbox::error.eq(&(e.to_string())),
+                                    ))
+                                    .execute(tx)?;
+                                }
+                            }
+                            Ok(())
+                        });
+                        if let Err(e) = result {
+                            eprintln!("S3 notification persistence: {e}");
+                        }
+                    }
+                    Ok(None) => {
+                        drop(s3);
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(e) => {
+                        eprintln!("S3 notification queue: {e}");
+                        drop(s3);
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 }
-                Ok(None)=>{drop(s3);std::thread::sleep(Duration::from_millis(50));},
-                Err(e)=>{eprintln!("S3 notification queue: {e}");drop(s3);std::thread::sleep(Duration::from_millis(100));},
             }
-        }
-    }).expect("S3 notification worker");
+        })
+        .expect("S3 notification worker");
 }
 
 pub(crate) fn history(s3: &S3, ctx: &RequestContext) -> Result<RawResponse, AwsError> {
     let rows=s3.db.read(|c| {
-        let mut stmt=c.prepare("SELECT id,target,context,event,attempts,error FROM notification_outbox ORDER BY rowid DESC LIMIT 100")?;
-        let rows=stmt.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i32>(4)?,r.get::<_,Option<String>>(5)?)))?;
+        let rows=notification_outbox::table.order(notification_outbox::seq.desc()).limit(100).select((notification_outbox::id,notification_outbox::target,notification_outbox::context,notification_outbox::event,notification_outbox::attempts,notification_outbox::error)).load::<(String,String,String,String,i32,Option<String>)>(c)?;
         let mut out=Vec::new();
-        for row in rows {let (id,target,context,event,attempts,error)=row?;let context:Value=serde_json::from_str(&context).unwrap();if context["account_id"]==ctx.account_id && context["region"]==ctx.region {out.push(json!({"id":id,"target":target,"event":serde_json::from_str::<Value>(&event).unwrap(),"attempts":attempts,"error":error,"state":if attempts>=3 {"failed"} else {"queued"}}));}}
+        for row in rows {let (id,target,context,event,attempts,error)=row;let context:Value=serde_json::from_str(&context).unwrap();if context["account_id"]==ctx.account_id && context["region"]==ctx.region {out.push(json!({"id":id,"target":target,"event":serde_json::from_str::<Value>(&event).unwrap(),"attempts":attempts,"error":error,"state":if attempts>=3 {"failed"} else {"queued"}}));}}
         Ok(out)
     })?;
     Ok(RawResponse {
@@ -245,10 +312,10 @@ mod tests {
             .0
             .db
             .read(|c| {
-                let mut stmt = c.prepare("SELECT event FROM notification_outbox ORDER BY rowid")?;
-                Ok(stmt
-                    .query_map([], |r| r.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?
+                Ok(notification_outbox::table
+                    .order(notification_outbox::seq)
+                    .select(notification_outbox::event)
+                    .load::<String>(c)?
                     .iter()
                     .map(|s| serde_json::from_str(s).unwrap())
                     .collect())

@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use roto_core::rusqlite::Transaction;
+use crate::table::Table;
+use diesel::sqlite::SqliteConnection;
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{JsonValue, Timestamp};
 use serde_json::{Value, json};
@@ -149,7 +150,7 @@ fn cancellation(codes: Vec<(String, String, Option<Item>)>) -> AwsError {
 
 fn condition_check_tx(
     d: &DynamoDb,
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     c: &ConditionCheck,
 ) -> Result<(), AwsError> {
@@ -333,7 +334,7 @@ pub(crate) fn transact_write(
 
 fn existing_item_for(
     d: &DynamoDb,
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     t: &TransactWriteItem,
 ) -> Result<Option<Item>, AwsError> {
@@ -400,7 +401,11 @@ pub(crate) fn transact_get(
 
 // ---- tags --------------------------------------------------------------------------------
 
-fn resource_table(tx: &Transaction, ctx: &RequestContext, arn: &str) -> Result<Table, AwsError> {
+fn resource_table(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    arn: &str,
+) -> Result<Table, AwsError> {
     Table::find(tx, ctx, arn)?.ok_or_else(|| {
         AwsError::sender(
             400,

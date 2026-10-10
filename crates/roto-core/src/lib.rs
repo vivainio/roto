@@ -7,6 +7,7 @@ pub mod ids;
 pub mod sigv4;
 pub mod store;
 
+pub use diesel;
 pub use error::AwsError;
 pub use http::{RawRequest, RawResponse, RequestContext, ServiceHandler};
 pub use rusqlite;

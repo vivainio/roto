@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::schema::*;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use md5::{Digest, Md5};
-use roto_core::rusqlite::{OptionalExtension, Transaction, params};
-use roto_core::store::{Db, Store};
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{FromJson, ToJson};
 use sha2::Sha256;
@@ -60,13 +62,13 @@ pub struct Sqs {
 impl Sqs {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("sqs", MIGRATIONS)?,
+            db: store.diesel_db("sqs", MIGRATIONS)?,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM queues", [])?;
+            diesel::delete(queues::table).execute(tx)?;
             Ok(())
         })
     }
@@ -157,33 +159,41 @@ impl Queue {
 }
 
 fn load_queue(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     account: &str,
     region: &str,
     name: &str,
 ) -> Result<Option<Queue>, AwsError> {
-    Ok(tx
-        .query_row(
-            "SELECT id, attributes, tags, created_at, modified_at FROM queues
-             WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-            params![account, region, name],
-            |r| {
-                Ok(Queue {
-                    id: r.get(0)?,
-                    account: account.to_string(),
-                    region: region.to_string(),
-                    name: name.to_string(),
-                    attrs: from_json_string(&r.get::<_, String>(1)?),
-                    tags: from_json_string(&r.get::<_, String>(2)?),
-                    created_at: r.get(3)?,
-                    modified_at: r.get(4)?,
-                })
-            },
-        )
-        .optional()?)
+    Ok(queues::table
+        .filter(queues::account_id.eq(account))
+        .filter(queues::region.eq(region))
+        .filter(queues::name.eq(name))
+        .select((
+            queues::id,
+            queues::attributes,
+            queues::tags,
+            queues::created_at,
+            queues::modified_at,
+        ))
+        .first::<(i64, String, String, i64, i64)>(tx)
+        .optional()?
+        .map(|(id, attrs, tags, created_at, modified_at)| Queue {
+            id,
+            account: account.into(),
+            region: region.into(),
+            name: name.into(),
+            attrs: from_json_string(&attrs),
+            tags: from_json_string(&tags),
+            created_at,
+            modified_at,
+        }))
 }
 
-fn queue_from_url(tx: &Transaction, ctx: &RequestContext, url: &str) -> Result<Queue, AwsError> {
+fn queue_from_url(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    url: &str,
+) -> Result<Queue, AwsError> {
     let mut parts = url.trim_end_matches('/').rsplit('/');
     let name = parts.next().unwrap_or_default();
     let account = parts
@@ -236,7 +246,7 @@ fn invalid_attr_value(name: &str) -> AwsError {
 /// ignored. Returns the attributes to store; an empty `Policy`/`RedrivePolicy` removes the
 /// attribute, which is signalled by an empty value.
 fn normalize_attributes(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     fifo: bool,
     attrs: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>, AwsError> {
@@ -262,7 +272,11 @@ fn normalize_attributes(
 }
 
 /// `Ok(None)` for an empty policy (meaning "remove").
-fn normalize_redrive(tx: &Transaction, fifo: bool, raw: &str) -> Result<Option<String>, AwsError> {
+fn normalize_redrive(
+    tx: &mut SqliteConnection,
+    fifo: bool,
+    raw: &str,
+) -> Result<Option<String>, AwsError> {
     let bad = || invalid_value("Redrive policy is not a dict or valid json");
     if raw.is_empty() {
         return Ok(None);
@@ -355,22 +369,22 @@ fn validate_message_attributes(
     Ok(())
 }
 
-fn expire(tx: &Transaction, q: &Queue, now: i64) -> Result<(), AwsError> {
-    tx.execute(
-        "DELETE FROM messages WHERE queue_id = ?1 AND sent_at < ?2",
-        params![q.id, now - q.int("MessageRetentionPeriod") * 1000],
-    )?;
+fn expire(tx: &mut SqliteConnection, q: &Queue, now: i64) -> Result<(), AwsError> {
+    diesel::delete(
+        messages::table
+            .filter(messages::queue_id.eq(&(q.id)))
+            .filter(messages::sent_at.lt(&(now - q.int("MessageRetentionPeriod") * 1000))),
+    )
+    .execute(tx)?;
     Ok(())
 }
 
-fn queue_attributes(tx: &Transaction, q: &Queue) -> Result<BTreeMap<String, String>, AwsError> {
+fn queue_attributes(
+    tx: &mut SqliteConnection,
+    q: &Queue,
+) -> Result<BTreeMap<String, String>, AwsError> {
     let now = now_ms();
     expire(tx, q, now)?;
-    let count = |sql: &str| -> Result<String, AwsError> {
-        Ok(tx
-            .query_row(sql, params![q.id, now], |r| r.get::<_, i64>(0))?
-            .to_string())
-    };
     let mut out: BTreeMap<String, String> = DEFAULTS
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -390,15 +404,32 @@ fn queue_attributes(tx: &Transaction, q: &Queue) -> Result<BTreeMap<String, Stri
     out.insert("LastModifiedTimestamp".into(), q.modified_at.to_string());
     out.insert(
         "ApproximateNumberOfMessages".into(),
-        count("SELECT COUNT(*) FROM messages WHERE queue_id = ?1 AND visible_at <= ?2")?,
+        messages::table
+            .filter(messages::queue_id.eq(q.id))
+            .filter(messages::visible_at.le(now))
+            .count()
+            .get_result::<i64>(tx)?
+            .to_string(),
     );
     out.insert(
         "ApproximateNumberOfMessagesNotVisible".into(),
-        count("SELECT COUNT(*) FROM messages WHERE queue_id = ?1 AND visible_at > ?2 AND receive_count > 0")?,
+        messages::table
+            .filter(messages::queue_id.eq(q.id))
+            .filter(messages::visible_at.gt(now))
+            .filter(messages::receive_count.gt(0_i64))
+            .count()
+            .get_result::<i64>(tx)?
+            .to_string(),
     );
     out.insert(
         "ApproximateNumberOfMessagesDelayed".into(),
-        count("SELECT COUNT(*) FROM messages WHERE queue_id = ?1 AND visible_at > ?2 AND receive_count = 0")?,
+        messages::table
+            .filter(messages::queue_id.eq(q.id))
+            .filter(messages::visible_at.gt(now))
+            .filter(messages::receive_count.eq(0_i64))
+            .count()
+            .get_result::<i64>(tx)?
+            .to_string(),
     );
     Ok(out)
 }
@@ -485,7 +516,7 @@ fn validate_new_message(q: &Queue, m: &NewMessage) -> Result<(), AwsError> {
 }
 
 fn put_message(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     q: &Queue,
     m: NewMessage,
@@ -503,12 +534,12 @@ fn put_message(
             hex::encode(h.finalize())
         });
         // 5 minute deduplication window.
-        let existing: Option<(String, i64)> = tx
-            .query_row(
-                "SELECT message_id, seq FROM messages WHERE queue_id = ?1 AND dedup_id = ?2 AND sent_at > ?3",
-                params![q.id, id, now - 300_000],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+        let existing: Option<(String, i64)> = messages::table
+            .filter(messages::queue_id.eq(&(q.id)))
+            .filter(messages::dedup_id.eq(&(id)))
+            .filter(messages::sent_at.gt(&(now - 300_000)))
+            .select((messages::message_id, messages::seq))
+            .first::<(String, i64)>(tx)
             .optional()?;
         if let Some((message_id, seq)) = existing {
             return Ok(Sent {
@@ -528,28 +559,24 @@ fn put_message(
         )));
     }
     let message_id = new_id();
-    tx.execute(
-        "INSERT INTO messages (queue_id, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at,
-                               group_id, dedup_id, sender_id, trace_header)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
-            q.id,
-            message_id,
-            m.body,
-            md5,
-            json_string(&m.attrs),
-            md5_attrs,
-            now,
-            now + delay * 1000,
-            m.group,
-            dedup,
-            ctx.account_id,
-            m.trace_header
-        ],
-    )?;
-    let sequence = q
-        .is_fifo()
-        .then(|| format!("{:018}", tx.last_insert_rowid()));
+    let inserted_sequence: i64 = diesel::insert_into(messages::table)
+        .values((
+            messages::queue_id.eq(&(q.id)),
+            messages::message_id.eq(&(message_id)),
+            messages::body.eq(&(m.body)),
+            messages::md5.eq(&(md5)),
+            messages::attrs.eq(&(json_string(&m.attrs))),
+            messages::md5_attrs.eq(&(md5_attrs)),
+            messages::sent_at.eq(&(now)),
+            messages::visible_at.eq(&(now + delay * 1000)),
+            messages::group_id.eq(&(m.group)),
+            messages::dedup_id.eq(&(dedup)),
+            messages::sender_id.eq(&(ctx.account_id)),
+            messages::trace_header.eq(&(m.trace_header)),
+        ))
+        .returning(messages::seq)
+        .get_result(tx)?;
+    let sequence = q.is_fifo().then(|| format!("{:018}", inserted_sequence));
     Ok(Sent {
         message_id,
         md5,
@@ -558,6 +585,9 @@ fn put_message(
     })
 }
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name=messages)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 struct Row {
     seq: i64,
     message_id: String,
@@ -575,7 +605,7 @@ struct Row {
 }
 
 fn receive_once(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     q: &Queue,
     max: usize,
     visibility: i64,
@@ -584,36 +614,24 @@ fn receive_once(
 ) -> Result<Vec<Message>, AwsError> {
     let now = now_ms();
     expire(tx, q, now)?;
-    let rows: Vec<Row> = {
-        let mut stmt = tx.prepare(
-            "SELECT seq, message_id, body, md5, attrs, md5_attrs, sent_at, receive_count, first_received_at,
-                    group_id, dedup_id, sender_id, trace_header
-             FROM messages m
-             WHERE queue_id = ?1 AND visible_at <= ?2
-               AND (group_id IS NULL OR NOT EXISTS (
-                     SELECT 1 FROM messages o WHERE o.queue_id = m.queue_id AND o.group_id = m.group_id
-                       AND o.visible_at > ?2 AND o.receive_count > 0))
-             ORDER BY seq LIMIT 200",
-        )?;
-        stmt.query_map(params![q.id, now], |r| {
-            Ok(Row {
-                seq: r.get(0)?,
-                message_id: r.get(1)?,
-                body: r.get(2)?,
-                md5: r.get(3)?,
-                attrs: r.get(4)?,
-                md5_attrs: r.get(5)?,
-                sent_at: r.get(6)?,
-                receive_count: r.get(7)?,
-                first_received_at: r.get(8)?,
-                group_id: r.get(9)?,
-                dedup_id: r.get(10)?,
-                sender_id: r.get(11)?,
-                trace_header: r.get(12)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?
-    };
+    let other = diesel::alias!(messages as other);
+    let blocked = other
+        .filter(other.field(messages::queue_id).eq(messages::queue_id))
+        .filter(other.field(messages::group_id).eq(messages::group_id))
+        .filter(other.field(messages::visible_at).gt(now))
+        .filter(other.field(messages::receive_count).gt(0_i64));
+    let rows = messages::table
+        .filter(messages::queue_id.eq(q.id))
+        .filter(messages::visible_at.le(now))
+        .filter(
+            messages::group_id
+                .is_null()
+                .or(diesel::dsl::not(diesel::dsl::exists(blocked))),
+        )
+        .order(messages::seq)
+        .limit(200)
+        .select(Row::as_select())
+        .load::<Row>(tx)?;
 
     let redrive = q.redrive();
     let mut out = Vec::new();
@@ -625,28 +643,42 @@ fn receive_once(
             && row.receive_count >= *max_receives
         {
             if let Some(dlq) = load_queue(tx, &q.account, &q.region, dlq_name)? {
-                tx.execute(
-                    "INSERT INTO messages (queue_id, message_id, body, md5, attrs, md5_attrs, sent_at, visible_at,
-                                           group_id, dedup_id, sender_id, trace_header)
-                     SELECT ?1, message_id, body, md5, attrs, md5_attrs, ?2, ?2, group_id, NULL, sender_id, trace_header
-                     FROM messages WHERE seq = ?3",
-                    params![dlq.id, now, row.seq],
-                )?;
+                diesel::insert_into(messages::table)
+                    .values((
+                        messages::queue_id.eq(dlq.id),
+                        messages::message_id.eq(&row.message_id),
+                        messages::body.eq(&row.body),
+                        messages::md5.eq(&row.md5),
+                        messages::attrs.eq(&row.attrs),
+                        messages::md5_attrs.eq(&row.md5_attrs),
+                        messages::sent_at.eq(now),
+                        messages::visible_at.eq(now),
+                        messages::group_id.eq(&row.group_id),
+                        messages::sender_id.eq(&row.sender_id),
+                        messages::trace_header.eq(&row.trace_header),
+                    ))
+                    .execute(tx)?;
             }
-            tx.execute("DELETE FROM messages WHERE seq = ?1", params![row.seq])?;
+            diesel::delete(messages::table.filter(messages::seq.eq(&(row.seq)))).execute(tx)?;
             continue;
         }
         let handle = format!("{}{}", new_id().replace('-', ""), new_id().replace('-', ""));
         let first = row.first_received_at.unwrap_or(now);
-        tx.execute(
-            "UPDATE messages SET receipt_handle = ?1, visible_at = ?2, receive_count = receive_count + 1,
-                                 first_received_at = ?3 WHERE seq = ?4",
-            params![handle, now + visibility * 1000, first, row.seq],
-        )?;
-        tx.execute(
-            "INSERT INTO receipts (handle, queue_id, seq) VALUES (?1, ?2, ?3)",
-            params![handle, q.id, row.seq],
-        )?;
+        diesel::update(messages::table.filter(messages::seq.eq(&(row.seq))))
+            .set((
+                messages::receipt_handle.eq(&(handle)),
+                messages::visible_at.eq(&(now + visibility * 1000)),
+                messages::receive_count.eq(&(row.receive_count + 1)),
+                messages::first_received_at.eq(&(first)),
+            ))
+            .execute(tx)?;
+        diesel::insert_into(receipts::table)
+            .values((
+                receipts::handle.eq(&(handle)),
+                receipts::queue_id.eq(&(q.id)),
+                receipts::seq.eq(&(row.seq)),
+            ))
+            .execute(tx)?;
 
         let all = want_attrs.contains("All");
         let mut attributes = BTreeMap::new();
@@ -794,11 +826,7 @@ impl Service for Sqs {
             let mut stored = BTreeMap::new();
             merge_attributes(&mut stored, attrs);
             let now = now_ms() / 1000;
-            tx.execute(
-                "INSERT INTO queues (account_id, region, name, attributes, tags, created_at, modified_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                params![ctx.account_id, ctx.region, name, json_string(&stored), json_string(&input.tags), now],
-            )?;
+            diesel::insert_into(queues::table).values((queues::account_id.eq(&(ctx.account_id)),queues::region.eq(&(ctx.region)),queues::name.eq(&(name)),queues::attributes.eq(&(json_string(&stored))),queues::tags.eq(&(json_string(&input.tags))),queues::created_at.eq(&(now)),queues::modified_at.eq(&(now)))).execute(tx)?;
             Ok(CreateQueueResult { queue_url: Some(format!("{}/{}/{}", ctx.base_url, ctx.account_id, name)) })
         })
     }
@@ -810,7 +838,7 @@ impl Service for Sqs {
     ) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             let q = queue_from_url(tx, ctx, &input.queue_url)?;
-            tx.execute("DELETE FROM queues WHERE id = ?1", params![q.id])?;
+            diesel::delete(queues::table.filter(queues::id.eq(&(q.id)))).execute(tx)?;
             Ok(())
         })
     }
@@ -847,16 +875,15 @@ impl Service for Sqs {
         self.db.transaction(|tx| {
             let prefix = input.queue_name_prefix.clone().unwrap_or_default();
             let after = input.next_token.clone().unwrap_or_default();
-            let mut stmt = tx.prepare(
-                "SELECT name FROM queues WHERE account_id = ?1 AND region = ?2 AND name > ?3
-                   AND substr(name, 1, length(?4)) = ?4 ORDER BY name LIMIT ?5",
-            )?;
-            let mut names: Vec<String> = stmt
-                .query_map(
-                    params![ctx.account_id, ctx.region, after, prefix, limit + 1],
-                    |r| r.get(0),
-                )?
-                .collect::<Result<_, _>>()?;
+            let mut names = queues::table
+                .filter(queues::account_id.eq(&ctx.account_id))
+                .filter(queues::region.eq(&ctx.region))
+                .filter(queues::name.gt(&after))
+                .filter(substr(queues::name, 1, length(&prefix)).eq(&prefix))
+                .order(queues::name)
+                .limit(i64::from(limit) + 1)
+                .select(queues::name)
+                .load::<String>(tx)?;
             let next_token = (names.len() as i32 > limit).then(|| {
                 names.truncate(limit as usize);
                 names.last().cloned().unwrap_or_default()
@@ -912,10 +939,12 @@ impl Service for Sqs {
             let mut q = queue_from_url(tx, ctx, &input.queue_url)?;
             let attrs = normalize_attributes(tx, q.is_fifo(), &input.attributes)?;
             merge_attributes(&mut q.attrs, attrs);
-            tx.execute(
-                "UPDATE queues SET attributes = ?1, modified_at = ?2 WHERE id = ?3",
-                params![json_string(&q.attrs), now_ms() / 1000, q.id],
-            )?;
+            diesel::update(queues::table.filter(queues::id.eq(&(q.id))))
+                .set((
+                    queues::attributes.eq(&(json_string(&q.attrs))),
+                    queues::modified_at.eq(&(now_ms() / 1000)),
+                ))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -1149,7 +1178,7 @@ impl Service for Sqs {
     fn purge_queue(&self, ctx: &RequestContext, input: PurgeQueueRequest) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
             let q = queue_from_url(tx, ctx, &input.queue_url)?;
-            tx.execute("DELETE FROM messages WHERE queue_id = ?1", params![q.id])?;
+            diesel::delete(messages::table.filter(messages::queue_id.eq(&(q.id)))).execute(tx)?;
             Ok(())
         })
     }
@@ -1167,10 +1196,9 @@ impl Service for Sqs {
                 )));
             }
             q.tags.extend(input.tags.clone());
-            tx.execute(
-                "UPDATE queues SET tags = ?1 WHERE id = ?2",
-                params![json_string(&q.tags), q.id],
-            )?;
+            diesel::update(queues::table.filter(queues::id.eq(&(q.id))))
+                .set(queues::tags.eq(&(json_string(&q.tags))))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -1186,10 +1214,9 @@ impl Service for Sqs {
             for k in &input.tag_keys {
                 q.tags.remove(k);
             }
-            tx.execute(
-                "UPDATE queues SET tags = ?1 WHERE id = ?2",
-                params![json_string(&q.tags), q.id],
-            )?;
+            diesel::update(queues::table.filter(queues::id.eq(&(q.id))))
+                .set(queues::tags.eq(&(json_string(&q.tags))))
+                .execute(tx)?;
             Ok(())
         })
     }
@@ -1251,10 +1278,7 @@ impl Service for Sqs {
                 "Resource": q.arn(),
             }));
             q.attrs.insert("Policy".into(), policy.to_string());
-            tx.execute(
-                "UPDATE queues SET attributes = ?1 WHERE id = ?2",
-                params![json_string(&q.attrs), q.id],
-            )?;
+            diesel::update(queues::table.filter(queues::id.eq(&(q.id)))).set(queues::attributes.eq(&(json_string(&q.attrs)))).execute(tx)?;
             Ok(())
         })
     }
@@ -1277,10 +1301,7 @@ impl Service for Sqs {
                 )));
             }
             q.attrs.insert("Policy".into(), policy.to_string());
-            tx.execute(
-                "UPDATE queues SET attributes = ?1 WHERE id = ?2",
-                params![json_string(&q.attrs), q.id],
-            )?;
+            diesel::update(queues::table.filter(queues::id.eq(&(q.id)))).set(queues::attributes.eq(&(json_string(&q.attrs)))).execute(tx)?;
             Ok(())
         })
     }
@@ -1320,51 +1341,53 @@ fn invalid_receipt() -> AwsError {
 
 /// `Some(Some(seq))` live message, `Some(None)` message since deleted, `None` unknown handle.
 fn lookup_receipt(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     q: &Queue,
     handle: &str,
 ) -> Result<Option<Option<i64>>, AwsError> {
-    Ok(tx
-        .query_row(
-            "SELECT seq FROM receipts WHERE queue_id = ?1 AND handle = ?2",
-            params![q.id, handle],
-            |r| r.get::<_, Option<i64>>(0),
-        )
+    Ok(receipts::table
+        .filter(receipts::queue_id.eq(&(q.id)))
+        .filter(receipts::handle.eq(&(handle)))
+        .select(receipts::seq)
+        .first::<Option<i64>>(tx)
         .optional()?)
 }
 
 /// Any receipt handle ever issued for a message deletes it; deleting again is a no-op.
-fn delete_by_receipt(tx: &Transaction, q: &Queue, handle: &str) -> Result<(), AwsError> {
+fn delete_by_receipt(tx: &mut SqliteConnection, q: &Queue, handle: &str) -> Result<(), AwsError> {
     match lookup_receipt(tx, q, handle)? {
         None => Err(invalid_receipt()),
         Some(None) => Ok(()),
         Some(Some(seq)) => {
-            tx.execute("DELETE FROM messages WHERE seq = ?1", params![seq])?;
+            diesel::delete(messages::table.filter(messages::seq.eq(&(seq)))).execute(tx)?;
             Ok(())
         }
     }
 }
 
-fn set_visibility(tx: &Transaction, q: &Queue, handle: &str, seconds: i32) -> Result<(), AwsError> {
+fn set_visibility(
+    tx: &mut SqliteConnection,
+    q: &Queue,
+    handle: &str,
+    seconds: i32,
+) -> Result<(), AwsError> {
     let Some(Some(seq)) = lookup_receipt(tx, q, handle)? else {
         return Err(invalid_receipt());
     };
     let now = now_ms();
-    let sent_at: i64 = tx.query_row(
-        "SELECT sent_at FROM messages WHERE seq = ?1",
-        params![seq],
-        |r| r.get(0),
-    )?;
+    let sent_at: i64 = messages::table
+        .filter(messages::seq.eq(&(seq)))
+        .select(messages::sent_at)
+        .first::<i64>(tx)?;
     let visible_at = now + i64::from(seconds) * 1000;
     if visible_at - sent_at > 43_200_000 {
         return Err(invalid_value(format!(
             "Value {seconds} for parameter VisibilityTimeout is invalid. Reason: Total VisibilityTimeout for the message is beyond the limit [43200 seconds]"
         )));
     }
-    tx.execute(
-        "UPDATE messages SET visible_at = ?1 WHERE seq = ?2",
-        params![visible_at, seq],
-    )?;
+    diesel::update(messages::table.filter(messages::seq.eq(&(seq))))
+        .set(messages::visible_at.eq(&(visible_at)))
+        .execute(tx)?;
     Ok(())
 }
 
@@ -1520,10 +1543,12 @@ impl Sqs {
             let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
                 .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
             // A stale execution must not delete a message received again by another consumer.
-            tx.execute(
-                "DELETE FROM messages WHERE queue_id=?1 AND receipt_handle=?2",
-                params![q.id, receipt],
-            )?;
+            diesel::delete(
+                messages::table
+                    .filter(messages::queue_id.eq(&(q.id)))
+                    .filter(messages::receipt_handle.eq(&(receipt))),
+            )
+            .execute(tx)?;
             Ok(())
         })
     }

@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use roto_core::rusqlite::{Row, Transaction, params};
-use roto_core::store::{Db, Store};
+use crate::models::{ParameterRow, TagInsert};
+use crate::schema::{parameters, resource_tags};
+use diesel::{SqliteConnection, prelude::*};
+use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::Timestamp;
 
@@ -17,14 +19,14 @@ pub struct Ssm {
 impl Ssm {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
-            db: store.db("ssm", MIGRATIONS)?,
+            db: store.diesel_db("ssm", MIGRATIONS)?,
         })
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
         self.db.transaction(|tx| {
-            tx.execute("DELETE FROM parameters", [])?;
-            tx.execute("DELETE FROM resource_tags", [])?;
+            diesel::delete(parameters::table).execute(tx)?;
+            diesel::delete(resource_tags::table).execute(tx)?;
             Ok(())
         })
     }
@@ -66,51 +68,70 @@ struct Param {
     last_modified: i64,
 }
 
-const COLS: &str = "name, version, type, value, description, allowed_pattern, key_id, data_type, tier, policies, labels, last_modified";
-
-fn from_row(r: &Row) -> roto_core::rusqlite::Result<Param> {
-    let labels: String = r.get(10)?;
-    Ok(Param {
-        name: r.get(0)?,
-        version: r.get(1)?,
-        ty: r.get(2)?,
-        value: r.get(3)?,
-        description: r.get(4)?,
-        allowed_pattern: r.get(5)?,
-        key_id: r.get(6)?,
-        data_type: r.get(7)?,
-        tier: r.get(8)?,
-        policies: r.get(9)?,
-        labels: serde_json::from_str(&labels).unwrap_or_default(),
-        last_modified: r.get(11)?,
-    })
+impl From<ParameterRow> for Param {
+    fn from(r: ParameterRow) -> Self {
+        Self {
+            name: r.name,
+            version: r.version,
+            ty: r.ty,
+            value: r.value,
+            description: r.description,
+            allowed_pattern: r.allowed_pattern,
+            key_id: r.key_id,
+            data_type: r.data_type,
+            tier: r.tier,
+            policies: r.policies,
+            labels: serde_json::from_str(&r.labels).unwrap_or_default(),
+            last_modified: r.last_modified,
+        }
+    }
 }
 
-fn versions(tx: &Transaction, ctx: &RequestContext, name: &str) -> Result<Vec<Param>, AwsError> {
-    let mut stmt = tx.prepare(&format!(
-        "SELECT {COLS} FROM parameters WHERE account_id = ?1 AND region = ?2 AND name = ?3 ORDER BY version"
-    ))?;
-    Ok(stmt
-        .query_map(params![ctx.account_id, ctx.region, name], from_row)?
-        .collect::<Result<_, _>>()?)
+fn versions(
+    tx: &mut SqliteConnection,
+    ctx: &RequestContext,
+    name: &str,
+) -> Result<Vec<Param>, AwsError> {
+    Ok(parameters::table
+        .filter(parameters::account_id.eq(&ctx.account_id))
+        .filter(parameters::region.eq(&ctx.region))
+        .filter(parameters::name.eq(name))
+        .order(parameters::version)
+        .select(ParameterRow::as_select())
+        .load::<ParameterRow>(tx)?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// Latest version of every parameter, ordered by name.
-fn latest_all(tx: &Transaction, ctx: &RequestContext) -> Result<Vec<Param>, AwsError> {
-    let mut stmt = tx.prepare(&format!(
-        "SELECT {COLS} FROM parameters p WHERE account_id = ?1 AND region = ?2
-           AND version = (SELECT MAX(version) FROM parameters q WHERE q.account_id = p.account_id
-                          AND q.region = p.region AND q.name = p.name)
-         ORDER BY name"
-    ))?;
-    Ok(stmt
-        .query_map(params![ctx.account_id, ctx.region], from_row)?
-        .collect::<Result<_, _>>()?)
+fn latest_all(tx: &mut SqliteConnection, ctx: &RequestContext) -> Result<Vec<Param>, AwsError> {
+    let previous = diesel::alias!(parameters as previous);
+    let latest = previous
+        .filter(
+            previous
+                .field(parameters::account_id)
+                .eq(parameters::account_id),
+        )
+        .filter(previous.field(parameters::region).eq(parameters::region))
+        .filter(previous.field(parameters::name).eq(parameters::name))
+        .select(diesel::dsl::max(previous.field(parameters::version)))
+        .single_value();
+    Ok(parameters::table
+        .filter(parameters::account_id.eq(&ctx.account_id))
+        .filter(parameters::region.eq(&ctx.region))
+        .filter(parameters::version.nullable().eq(latest))
+        .order(parameters::name)
+        .select(ParameterRow::as_select())
+        .load::<ParameterRow>(tx)?
+        .into_iter()
+        .map(Into::into)
+        .collect())
 }
 
 /// `name`, `name:3` (version) or `name:label`.
 fn resolve(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     selector: &str,
 ) -> Result<Option<Param>, AwsError> {
@@ -302,45 +323,58 @@ fn matches_filter(p: &Param, tags: &[Tag], key: &str, option: &str, values: &[St
 }
 
 fn load_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     ty: &str,
     id: &str,
 ) -> Result<Vec<Tag>, AwsError> {
-    let mut stmt = tx.prepare(
-        "SELECT key, value FROM resource_tags WHERE account_id = ?1 AND region = ?2 AND resource_type = ?3
-         AND resource_id = ?4 ORDER BY seq",
-    )?;
-    Ok(stmt
-        .query_map(params![ctx.account_id, ctx.region, ty, id], |r| {
-            Ok(Tag {
-                key: r.get(0)?,
-                value: r.get(1)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?)
+    Ok(resource_tags::table
+        .filter(resource_tags::account_id.eq(&ctx.account_id))
+        .filter(resource_tags::region.eq(&ctx.region))
+        .filter(resource_tags::resource_type.eq(ty))
+        .filter(resource_tags::resource_id.eq(id))
+        .order(resource_tags::seq)
+        .select((resource_tags::key, resource_tags::value))
+        .load::<(String, String)>(tx)?
+        .into_iter()
+        .map(|(key, value)| Tag { key, value })
+        .collect())
 }
 
 fn set_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     ty: &str,
     id: &str,
     tags: &[Tag],
 ) -> Result<(), AwsError> {
     for t in tags {
-        tx.execute(
-            "INSERT INTO resource_tags (account_id, region, resource_type, resource_id, key, value)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (account_id, region, resource_type, resource_id, key) DO UPDATE SET value = excluded.value",
-            params![ctx.account_id, ctx.region, ty, id, t.key, t.value],
-        )?;
+        let row = TagInsert {
+            account_id: &ctx.account_id,
+            region: &ctx.region,
+            resource_type: ty,
+            resource_id: id,
+            key: &t.key,
+            value: &t.value,
+        };
+        diesel::insert_into(resource_tags::table)
+            .values(&row)
+            .on_conflict((
+                resource_tags::account_id,
+                resource_tags::region,
+                resource_tags::resource_type,
+                resource_tags::resource_id,
+                resource_tags::key,
+            ))
+            .do_update()
+            .set(resource_tags::value.eq(diesel::upsert::excluded(resource_tags::value)))
+            .execute(tx)?;
     }
     Ok(())
 }
 
 fn check_resource(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     ty: &str,
     id: &str,
@@ -439,37 +473,21 @@ impl Service for Ssm {
                         format!("You attempted to create a new version of {} by calling the PutParameter API with the overwrite flag. Version {}, the oldest version, can't be deleted because it has a label associated with it. Move the label to another version of the parameter, and try again.", i.name, oldest.version),
                     ));
                 }
-                tx.execute(
-                    "DELETE FROM parameters WHERE account_id = ?1 AND region = ?2 AND name = ?3 AND version = ?4",
-                    params![ctx.account_id, ctx.region, i.name, oldest.version],
-                )?;
+                diesel::delete(parameters::table.filter(parameters::account_id.eq(&ctx.account_id)).filter(parameters::region.eq(&ctx.region)).filter(parameters::name.eq(&i.name)).filter(parameters::version.eq(&oldest.version))).execute(tx)?;
             }
             let ty = i.r#type.clone().or_else(|| previous.as_ref().map(|p| p.ty.clone())).unwrap_or_else(|| "String".into());
             let key_id = i.key_id.clone().or_else(|| previous.as_ref().and_then(|p| p.key_id.clone())).or_else(|| (ty == "SecureString").then(|| "alias/aws/ssm".to_string()));
             let value = if ty == "SecureString" { format!("kms:{}:{}", key_id.as_deref().unwrap_or("default"), i.value) } else { i.value.clone() };
             let tier = i.tier.clone().or_else(|| previous.as_ref().map(|p| p.tier.clone())).unwrap_or_else(|| "Standard".into());
             let version = previous.as_ref().map_or(1, |p| p.version + 1);
-            tx.execute(
-                "INSERT INTO parameters (account_id, region, name, version, type, value, description, allowed_pattern,
-                                         key_id, data_type, tier, policies, labels, last_modified)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, '[]', ?13)",
-                params![
-                    ctx.account_id,
-                    ctx.region,
-                    i.name,
-                    version,
-                    ty,
-                    value,
-                    i.description.clone().or_else(|| previous.as_ref().and_then(|p| p.description.clone())),
-                    i.allowed_pattern.clone().or_else(|| previous.as_ref().and_then(|p| p.allowed_pattern.clone())),
-                    key_id,
-                    data_type,
-                    tier,
-                    i.policies.clone().or_else(|| previous.as_ref().and_then(|p| p.policies.clone())),
-                    // Timestamps have second resolution; keep versions of one parameter distinguishable.
-                    previous.as_ref().map_or_else(now, |p| now().max(p.last_modified + 1))
-                ],
-            )?;
+            let row=ParameterRow {
+                account_id:ctx.account_id.clone(),region:ctx.region.clone(),name:i.name.clone(),version,ty,value,
+                description:i.description.clone().or_else(|| previous.as_ref().and_then(|p|p.description.clone())),
+                allowed_pattern:i.allowed_pattern.clone().or_else(|| previous.as_ref().and_then(|p|p.allowed_pattern.clone())),
+                key_id,data_type,tier:tier.clone(),policies:i.policies.clone().or_else(|| previous.as_ref().and_then(|p|p.policies.clone())),labels:"[]".into(),
+                last_modified:previous.as_ref().map_or_else(now,|p|now().max(p.last_modified+1)),
+            };
+            diesel::insert_into(parameters::table).values(&row).execute(tx)?;
             set_tags(tx, ctx, "Parameter", &i.name, &i.tags)?;
             Ok(PutParameterResult { version: Some(version), tier: Some(tier) })
         })
@@ -579,17 +597,24 @@ impl Service for Ssm {
         i: DeleteParameterRequest,
     ) -> Result<DeleteParameterResult, AwsError> {
         self.db.transaction(|tx| {
-            let n = tx.execute(
-                "DELETE FROM parameters WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                params![ctx.account_id, ctx.region, i.name],
-            )?;
+            let n = diesel::delete(
+                parameters::table
+                    .filter(parameters::account_id.eq(&ctx.account_id))
+                    .filter(parameters::region.eq(&ctx.region))
+                    .filter(parameters::name.eq(&i.name)),
+            )
+            .execute(tx)?;
             if n == 0 {
                 return Err(not_found(&i.name));
             }
-            tx.execute(
-                "DELETE FROM resource_tags WHERE account_id = ?1 AND region = ?2 AND resource_type = 'Parameter' AND resource_id = ?3",
-                params![ctx.account_id, ctx.region, i.name],
-            )?;
+            diesel::delete(
+                resource_tags::table
+                    .filter(resource_tags::account_id.eq(&ctx.account_id))
+                    .filter(resource_tags::region.eq(&ctx.region))
+                    .filter(resource_tags::resource_type.eq("Parameter"))
+                    .filter(resource_tags::resource_id.eq(&i.name)),
+            )
+            .execute(tx)?;
             Ok(DeleteParameterResult::default())
         })
     }
@@ -602,10 +627,13 @@ impl Service for Ssm {
         self.db.transaction(|tx| {
             let mut out = DeleteParametersResult::default();
             for n in &i.names {
-                let removed = tx.execute(
-                    "DELETE FROM parameters WHERE account_id = ?1 AND region = ?2 AND name = ?3",
-                    params![ctx.account_id, ctx.region, n],
-                )?;
+                let removed = diesel::delete(
+                    parameters::table
+                        .filter(parameters::account_id.eq(&ctx.account_id))
+                        .filter(parameters::region.eq(&ctx.region))
+                        .filter(parameters::name.eq(&n)),
+                )
+                .execute(tx)?;
                 if removed > 0 {
                     out.deleted_parameters.push(n.clone())
                 } else {
@@ -753,10 +781,7 @@ impl Service for Ssm {
                 } else {
                     labels.retain(|l| !i.labels.contains(l) || invalid.contains(l));
                 }
-                tx.execute(
-                    "UPDATE parameters SET labels = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4 AND version = ?5",
-                    params![serde_json::to_string(&labels).unwrap_or_default(), ctx.account_id, ctx.region, i.name, p.version],
-                )?;
+                diesel::update(parameters::table.filter(parameters::account_id.eq(&ctx.account_id)).filter(parameters::region.eq(&ctx.region)).filter(parameters::name.eq(&i.name)).filter(parameters::version.eq(&p.version))).set(parameters::labels.eq(&serde_json::to_string(&labels).unwrap_or_default())).execute(tx)?;
             }
             Ok(LabelParameterVersionResult { invalid_labels: invalid, parameter_version: Some(version) })
         })
@@ -781,10 +806,7 @@ impl Service for Ssm {
             };
             let (removed, invalid): (Vec<String>, Vec<String>) = i.labels.iter().cloned().partition(|l| target.labels.contains(l));
             let kept: Vec<String> = target.labels.iter().filter(|l| !removed.contains(l)).cloned().collect();
-            tx.execute(
-                "UPDATE parameters SET labels = ?1 WHERE account_id = ?2 AND region = ?3 AND name = ?4 AND version = ?5",
-                params![serde_json::to_string(&kept).unwrap_or_default(), ctx.account_id, ctx.region, i.name, i.parameter_version],
-            )?;
+            diesel::update(parameters::table.filter(parameters::account_id.eq(&ctx.account_id)).filter(parameters::region.eq(&ctx.region)).filter(parameters::name.eq(&i.name)).filter(parameters::version.eq(&i.parameter_version))).set(parameters::labels.eq(&serde_json::to_string(&kept).unwrap_or_default())).execute(tx)?;
             Ok(UnlabelParameterVersionResult { removed_labels: removed, invalid_labels: invalid })
         })
     }
@@ -809,10 +831,15 @@ impl Service for Ssm {
         self.db.transaction(|tx| {
             check_resource(tx, ctx, &i.resource_type, &i.resource_id)?;
             for k in &i.tag_keys {
-                tx.execute(
-                    "DELETE FROM resource_tags WHERE account_id = ?1 AND region = ?2 AND resource_type = ?3 AND resource_id = ?4 AND key = ?5",
-                    params![ctx.account_id, ctx.region, i.resource_type, i.resource_id, k],
-                )?;
+                diesel::delete(
+                    resource_tags::table
+                        .filter(resource_tags::account_id.eq(&ctx.account_id))
+                        .filter(resource_tags::region.eq(&ctx.region))
+                        .filter(resource_tags::resource_type.eq(&i.resource_type))
+                        .filter(resource_tags::resource_id.eq(&i.resource_id))
+                        .filter(resource_tags::key.eq(&k)),
+                )
+                .execute(tx)?;
             }
             Ok(RemoveTagsFromResourceResult::default())
         })
@@ -829,5 +856,230 @@ impl Service for Ssm {
                 tag_list: load_tags(tx, ctx, &i.resource_type, &i.resource_id)?,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn ctx() -> RequestContext {
+        RequestContext {
+            account_id: "123456789012".into(),
+            region: "us-east-1".into(),
+            access_key: None,
+            request_id: "test".into(),
+            base_url: "http://localhost:5070".into(),
+        }
+    }
+    fn put(
+        ssm: &Ssm,
+        c: &RequestContext,
+        name: &str,
+        value: &str,
+        overwrite: bool,
+    ) -> Result<PutParameterResult, AwsError> {
+        ssm.put_parameter(
+            c,
+            PutParameterRequest {
+                name: name.into(),
+                value: value.into(),
+                r#type: Some("SecureString".into()),
+                overwrite: Some(overwrite),
+                ..Default::default()
+            },
+        )
+    }
+    fn get(ssm: &Ssm, c: &RequestContext, name: &str) -> Parameter {
+        ssm.get_parameter(
+            c,
+            GetParameterRequest {
+                name: name.into(),
+                with_decryption: Some(true),
+            },
+        )
+        .unwrap()
+        .parameter
+        .unwrap()
+    }
+    #[test]
+    fn labels_tags_latest_and_scope_survive_restart() {
+        let path = std::env::temp_dir().join(format!("roto-ssm-{}", uuid::Uuid::new_v4()));
+        let c = ctx();
+        let mut region = c.clone();
+        region.region = "eu-west-1".into();
+        let mut account = c.clone();
+        account.account_id = "999999999999".into();
+        {
+            let store = Store::open(&path, Default::default()).unwrap();
+            let ssm = Ssm::new(&store).unwrap();
+            put(&ssm, &c, "/app/key", "one", false).unwrap();
+            put(&ssm, &c, "/app/key", "two", true).unwrap();
+            put(&ssm, &region, "/app/key", "region", false).unwrap();
+            put(&ssm, &account, "/app/key", "account", false).unwrap();
+            ssm.label_parameter_version(
+                &c,
+                LabelParameterVersionRequest {
+                    name: "/app/key".into(),
+                    parameter_version: Some(1),
+                    labels: vec!["stable".into()],
+                },
+            )
+            .unwrap();
+            ssm.add_tags_to_resource(
+                &c,
+                AddTagsToResourceRequest {
+                    resource_type: "Parameter".into(),
+                    resource_id: "/app/key".into(),
+                    tags: vec![Tag {
+                        key: "team".into(),
+                        value: "one".into(),
+                    }],
+                },
+            )
+            .unwrap();
+            ssm.add_tags_to_resource(
+                &c,
+                AddTagsToResourceRequest {
+                    resource_type: "Parameter".into(),
+                    resource_id: "/app/key".into(),
+                    tags: vec![
+                        Tag {
+                            key: "team".into(),
+                            value: "two".into(),
+                        },
+                        Tag {
+                            key: "env".into(),
+                            value: "dev".into(),
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+        }
+        {
+            let store = Store::open(&path, Default::default()).unwrap();
+            let ssm = Ssm::new(&store).unwrap();
+            assert_eq!(get(&ssm, &c, "/app/key").value.as_deref(), Some("two"));
+            assert_eq!(
+                get(&ssm, &c, "/app/key:stable").value.as_deref(),
+                Some("one")
+            );
+            assert_eq!(
+                get(&ssm, &region, "/app/key").value.as_deref(),
+                Some("region")
+            );
+            assert_eq!(
+                get(&ssm, &account, "/app/key").value.as_deref(),
+                Some("account")
+            );
+            let latest = ssm.db.read(|tx| latest_all(tx, &c)).unwrap();
+            assert_eq!(latest.len(), 1);
+            assert_eq!(latest[0].version, 2);
+            let tags = ssm
+                .list_tags_for_resource(
+                    &c,
+                    ListTagsForResourceRequest {
+                        resource_type: "Parameter".into(),
+                        resource_id: "/app/key".into(),
+                    },
+                )
+                .unwrap()
+                .tag_list;
+            assert_eq!(tags.len(), 2);
+            assert_eq!(tags[0].value, "two");
+            ssm.label_parameter_version(
+                &c,
+                LabelParameterVersionRequest {
+                    name: "/app/key".into(),
+                    parameter_version: Some(2),
+                    labels: vec!["stable".into()],
+                },
+            )
+            .unwrap();
+            assert_eq!(get(&ssm, &c, "/app/key:stable").version, Some(2));
+            let history = ssm
+                .get_parameter_history(
+                    &c,
+                    GetParameterHistoryRequest {
+                        name: "/app/key".into(),
+                        max_results: Some(1),
+                        with_decryption: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(history.parameters[0].version, Some(1));
+            assert!(history.parameters[0].labels.is_empty());
+            assert!(history.next_token.is_some());
+            ssm.delete_parameter(
+                &c,
+                DeleteParameterRequest {
+                    name: "/app/key".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                get(&ssm, &region, "/app/key").value.as_deref(),
+                Some("region")
+            );
+            assert!(
+                ssm.db
+                    .read(|tx| load_tags(tx, &c, "Parameter", "/app/key"))
+                    .unwrap()
+                    .is_empty()
+            );
+            ssm.reset().unwrap();
+            assert!(
+                ssm.db
+                    .read(|tx| latest_all(tx, &region))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn labeled_oldest_version_blocks_pruning_atomically() {
+        let store = Store::ephemeral();
+        let ssm = Ssm::new(&store).unwrap();
+        let c = ctx();
+        for n in 1..=VERSION_LIMIT {
+            assert_eq!(
+                put(&ssm, &c, "key", &n.to_string(), n > 1).unwrap().version,
+                Some(n as i64)
+            );
+        }
+        ssm.label_parameter_version(
+            &c,
+            LabelParameterVersionRequest {
+                name: "key".into(),
+                parameter_version: Some(1),
+                labels: vec!["stable".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            put(&ssm, &c, "key", "blocked", true).unwrap_err().code,
+            "ParameterMaxVersionLimitExceeded"
+        );
+        assert_eq!(get(&ssm, &c, "key").version, Some(100));
+        assert_eq!(get(&ssm, &c, "key:stable").version, Some(1));
+        ssm.label_parameter_version(
+            &c,
+            LabelParameterVersionRequest {
+                name: "key".into(),
+                parameter_version: Some(2),
+                labels: vec!["stable".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            put(&ssm, &c, "key", "next", true).unwrap().version,
+            Some(101)
+        );
+        let history = ssm.db.read(|tx| versions(tx, &c, "key")).unwrap();
+        assert_eq!(history.len(), 100);
+        assert_eq!(history[0].version, 2);
+        assert_eq!(get(&ssm, &c, "key:stable").version, Some(2));
     }
 }

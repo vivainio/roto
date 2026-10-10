@@ -1,10 +1,12 @@
 use crate::generated::*;
 use crate::misc::*;
+use crate::models::{PolicyRow, PolicyVersionRow};
 use crate::roles::{check_policy_document, load_role};
+use crate::schema::*;
 use crate::util::*;
-use roto_core::rusqlite::params;
-use roto_core::rusqlite::{OptionalExtension, Transaction};
-use roto_core::store::Db;
+use diesel::SqliteConnection;
+use roto_core::diesel::{self, prelude::*};
+use roto_core::store::DieselDb as Db;
 use roto_core::{AwsError, RequestContext};
 
 pub fn put_role_policy(
@@ -15,7 +17,23 @@ pub fn put_role_policy(
     check_policy_document(&i.policy_document)?;
     db.transaction(|tx| {
         load_role(tx, &ctx.account_id, &i.role_name)?;
-        tx.execute("INSERT INTO inline_policies(account_id,kind,entity,name,document) VALUES(?1,'role',?2,?3,?4) ON CONFLICT(account_id,kind,entity,name) DO UPDATE SET document=excluded.document", params![ctx.account_id, i.role_name, i.policy_name, i.policy_document])?;
+        diesel::insert_into(inline_policies::table)
+            .values((
+                inline_policies::account_id.eq(&ctx.account_id),
+                inline_policies::kind.eq("role"),
+                inline_policies::entity.eq(&i.role_name),
+                inline_policies::name.eq(&i.policy_name),
+                inline_policies::document.eq(&i.policy_document),
+            ))
+            .on_conflict((
+                inline_policies::account_id,
+                inline_policies::kind,
+                inline_policies::entity,
+                inline_policies::name,
+            ))
+            .do_update()
+            .set(inline_policies::document.eq(diesel::upsert::excluded(inline_policies::document)))
+            .execute(tx)?;
         Ok(())
     })
 }
@@ -27,31 +45,66 @@ pub fn delete_role_policy(
 ) -> Result<(), AwsError> {
     db.transaction(|tx| {
         load_role(tx, &ctx.account_id, &i.role_name)?;
-        tx.execute("DELETE FROM inline_policies WHERE account_id=?1 AND kind='role' AND entity=?2 AND name=?3", params![ctx.account_id, i.role_name, i.policy_name])?;
+        diesel::delete(
+            inline_policies::table
+                .filter(inline_policies::account_id.eq(&ctx.account_id))
+                .filter(inline_policies::kind.eq("role"))
+                .filter(inline_policies::entity.eq(&i.role_name))
+                .filter(inline_policies::name.eq(&i.policy_name)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
 
 pub(crate) fn load_policy(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     policy_arn: &str,
 ) -> Result<Policy, AwsError> {
-    let mut policy = tx.query_row(
-        "SELECT arn,name,path,policy_id,description,created_at,updated_at,default_version FROM policies WHERE account_id=?1 AND arn=?2",
-        params![ctx.account_id, policy_arn], |r| Ok(Policy {
-            arn: Some(r.get(0)?), policy_name: Some(r.get(1)?), path: Some(r.get(2)?),
-            policy_id: Some(r.get(3)?), description: r.get(4)?, create_date: Some(ts(r.get(5)?)),
-            update_date: Some(ts(r.get(6)?)), default_version_id: Some(r.get(7)?),
-            is_attachable: Some(true), ..Default::default()
+    let mut policy = policies::table
+        .filter(policies::account_id.eq(&ctx.account_id))
+        .filter(policies::arn.eq(&policy_arn))
+        .select(PolicyRow::as_select())
+        .first::<PolicyRow>(tx)
+        .map(|r| Policy {
+            arn: Some(r.arn),
+            policy_name: Some(r.name),
+            path: Some(r.path),
+            policy_id: Some(r.policy_id),
+            description: r.description,
+            create_date: Some(ts(r.created_at)),
+            update_date: Some(ts(r.updated_at)),
+            default_version_id: Some(r.default_version),
+            is_attachable: Some(true),
+            ..Default::default()
         })
-    ).optional()?.ok_or_else(|| AwsError::sender(404,"NoSuchEntity",format!("Policy {policy_arn} not found")))?;
-    policy.attachment_count = Some(tx.query_row(
-        "SELECT COUNT(*) FROM attachments WHERE account_id=?1 AND policy_arn=?2",
-        params![ctx.account_id, policy_arn],
-        |r| r.get(0),
-    )?);
-    policy.permissions_boundary_usage_count = Some(tx.query_row("SELECT (SELECT COUNT(*) FROM users WHERE account_id=?1 AND permissions_boundary=?2) + (SELECT COUNT(*) FROM roles WHERE account_id=?1 AND permissions_boundary=?2)",params![ctx.account_id,policy_arn],|r|r.get(0))?);
+        .optional()?
+        .ok_or_else(|| {
+            AwsError::sender(
+                404,
+                "NoSuchEntity",
+                format!("Policy {policy_arn} not found"),
+            )
+        })?;
+    policy.attachment_count = Some(
+        attachments::table
+            .filter(attachments::account_id.eq(&ctx.account_id))
+            .filter(attachments::policy_arn.eq(&policy_arn))
+            .count()
+            .first::<i64>(tx)? as i32,
+    );
+    let boundary_count = users::table
+        .filter(users::account_id.eq(&ctx.account_id))
+        .filter(users::permissions_boundary.eq(policy_arn))
+        .count()
+        .get_result::<i64>(tx)?
+        + roles::table
+            .filter(roles::account_id.eq(&ctx.account_id))
+            .filter(roles::permissions_boundary.eq(policy_arn))
+            .count()
+            .get_result::<i64>(tx)?;
+    policy.permissions_boundary_usage_count = Some(boundary_count as i32);
     policy.tags = load_tags(tx, &ctx.account_id, "policy", policy_arn)?;
     Ok(policy)
 }
@@ -65,13 +118,51 @@ pub fn create_policy(
     let path = normalize_path(i.path.as_deref())?;
     let policy_arn = arn(ctx, &format!("policy{}{}", path, i.policy_name));
     db.transaction(|tx| {
-        let duplicate: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM policies WHERE account_id=?1 AND name=?2)",params![ctx.account_id,i.policy_name],|r|r.get(0))?;
-        if duplicate {return Err(AwsError::sender(409,"EntityAlreadyExists",format!("A policy called {} already exists. Duplicate names are not allowed.",i.policy_name)));}
-        let time=now();
-        tx.execute("INSERT INTO policies(account_id,arn,name,path,policy_id,description,created_at,updated_at,default_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,'v1')",params![ctx.account_id,policy_arn,i.policy_name,path,gen_id("ANPA",17),i.description,time])?;
-        tx.execute("INSERT INTO policy_versions(policy_arn,version_id,document,created_at) VALUES(?1,'v1',?2,?3)",params![policy_arn,i.policy_document,time])?;
-        set_policy_tags(tx,ctx,&policy_arn,&i.tags)?;
-        Ok(CreatePolicyResponse {policy:Some(load_policy(tx,ctx,&policy_arn)?)})
+        let duplicate: bool = diesel::select(diesel::dsl::exists(
+            policies::table
+                .filter(policies::account_id.eq(&ctx.account_id))
+                .filter(policies::name.eq(&i.policy_name)),
+        ))
+        .first::<bool>(tx)?;
+        if duplicate {
+            return Err(AwsError::sender(
+                409,
+                "EntityAlreadyExists",
+                format!(
+                    "A policy called {} already exists. Duplicate names are not allowed.",
+                    i.policy_name
+                ),
+            ));
+        }
+        let time = now();
+        let row = PolicyRow {
+            account_id: ctx.account_id.clone(),
+            arn: policy_arn.clone(),
+            name: i.policy_name.clone(),
+            path: path.clone(),
+            policy_id: gen_id("ANPA", 17),
+            description: i.description.clone(),
+            created_at: time,
+            updated_at: time,
+            default_version: "v1".into(),
+            next_version: 2,
+        };
+        diesel::insert_into(policies::table)
+            .values(&row)
+            .execute(tx)?;
+        let version = PolicyVersionRow {
+            policy_arn: policy_arn.clone(),
+            version_id: "v1".into(),
+            document: i.policy_document.clone(),
+            created_at: time,
+        };
+        diesel::insert_into(policy_versions::table)
+            .values(&version)
+            .execute(tx)?;
+        set_policy_tags(tx, ctx, &policy_arn, &i.tags)?;
+        Ok(CreatePolicyResponse {
+            policy: Some(load_policy(tx, ctx, &policy_arn)?),
+        })
     })
 }
 pub fn get_policy(
@@ -97,28 +188,32 @@ pub fn delete_policy(
         {
             return Err(conflict("Cannot delete a policy attached to entities."));
         }
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM policy_versions WHERE policy_arn=?1",
-            params![i.policy_arn],
-            |r| r.get(0),
-        )?;
+        let count: i64 = policy_versions::table
+            .filter(policy_versions::policy_arn.eq(&i.policy_arn))
+            .count()
+            .first::<i64>(tx)?;
         if count > 1 {
             return Err(conflict(
                 "Cannot delete a policy with non-default versions.",
             ));
         }
-        tx.execute(
-            "DELETE FROM policy_versions WHERE policy_arn=?1",
-            params![i.policy_arn],
-        )?;
-        tx.execute(
-            "DELETE FROM tags WHERE account_id=?1 AND kind='policy' AND entity=?2",
-            params![ctx.account_id, i.policy_arn],
-        )?;
-        tx.execute(
-            "DELETE FROM policies WHERE account_id=?1 AND arn=?2",
-            params![ctx.account_id, i.policy_arn],
-        )?;
+        diesel::delete(
+            policy_versions::table.filter(policy_versions::policy_arn.eq(&i.policy_arn)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("policy"))
+                .filter(tags::entity.eq(&i.policy_arn)),
+        )
+        .execute(tx)?;
+        diesel::delete(
+            policies::table
+                .filter(policies::account_id.eq(&ctx.account_id))
+                .filter(policies::arn.eq(&i.policy_arn)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -137,12 +232,11 @@ pub fn list_policies(
         ) {
             return Err(validation("Invalid policy usage filter."));
         }
-        let mut stmt = tx.prepare(
-            "SELECT arn FROM policies WHERE account_id=?1 ORDER BY name COLLATE NOCASE,arn",
-        )?;
-        let arns: Vec<String> = stmt
-            .query_map(params![ctx.account_id], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
+        let arns = policies::table
+            .filter(policies::account_id.eq(&ctx.account_id))
+            .order((policies::name, policies::arn))
+            .select(policies::arn)
+            .load::<String>(tx)?;
         let mut policies = Vec::new();
         for a in arns {
             let p = load_policy(tx, ctx, &a)?;
@@ -170,32 +264,31 @@ pub fn list_policies(
     })
 }
 fn load_version(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     a: &str,
     v: &str,
 ) -> Result<PolicyVersion, AwsError> {
     let p = load_policy(tx, ctx, a)?;
-    tx.query_row(
-        "SELECT document,created_at FROM policy_versions WHERE policy_arn=?1 AND version_id=?2",
-        params![a, v],
-        |r| {
-            Ok(PolicyVersion {
-                document: Some(r.get(0)?),
-                create_date: Some(ts(r.get(1)?)),
-                version_id: Some(v.into()),
-                is_default_version: Some(p.default_version_id.as_deref() == Some(v)),
-            })
-        },
-    )
-    .optional()?
-    .ok_or_else(|| {
-        AwsError::sender(
-            404,
-            "NoSuchEntity",
-            format!("Policy {a} version {v} does not exist or is not attachable."),
-        )
-    })
+    policy_versions::table
+        .filter(policy_versions::policy_arn.eq(&a))
+        .filter(policy_versions::version_id.eq(&v))
+        .select(PolicyVersionRow::as_select())
+        .first::<PolicyVersionRow>(tx)
+        .map(|r| PolicyVersion {
+            document: Some(r.document),
+            create_date: Some(ts(r.created_at)),
+            version_id: Some(r.version_id),
+            is_default_version: Some(p.default_version_id.as_deref() == Some(v)),
+        })
+        .optional()?
+        .ok_or_else(|| {
+            AwsError::sender(
+                404,
+                "NoSuchEntity",
+                format!("Policy {a} version {v} does not exist or is not attachable."),
+            )
+        })
 }
 pub fn get_policy_version(
     db: &Db,
@@ -216,12 +309,14 @@ pub fn create_policy_version(
     check_policy_document(&i.policy_document)?;
     db.transaction(|tx| {
         load_policy(tx,ctx,&i.policy_arn)?;
-        let count:i64=tx.query_row("SELECT COUNT(*) FROM policy_versions WHERE policy_arn=?1",params![i.policy_arn],|r|r.get(0))?;
+        let count:i64=policy_versions::table.filter(policy_versions::policy_arn.eq(&i.policy_arn)).count().first::<i64>(tx)?;
         if count>=5 {return Err(AwsError::sender(409,"LimitExceeded","A managed policy can have up to 5 versions. Before you create a new version, you must delete an existing version."));}
-        let next:i64=tx.query_row("SELECT next_version FROM policies WHERE arn=?1",params![i.policy_arn],|r|r.get(0))?;
+        let next:i64=policies::table.filter(policies::arn.eq(&i.policy_arn)).select(policies::next_version).first::<i64>(tx)?;
         let version=format!("v{next}");
-        tx.execute("INSERT INTO policy_versions(policy_arn,version_id,document,created_at) VALUES(?1,?2,?3,?4)",params![i.policy_arn,version,i.policy_document,now()])?;
-        tx.execute("UPDATE policies SET next_version=next_version+1,updated_at=?2,default_version=CASE WHEN ?3 THEN ?4 ELSE default_version END WHERE arn=?1",params![i.policy_arn,now(),i.set_as_default.unwrap_or(false),version])?;
+        let row=PolicyVersionRow {policy_arn:i.policy_arn.clone(),version_id:version.clone(),document:i.policy_document.clone(),created_at:now()};
+        diesel::insert_into(policy_versions::table).values(&row).execute(tx)?;
+        let default_version=if i.set_as_default.unwrap_or(false) {version.clone()} else {policies::table.filter(policies::arn.eq(&i.policy_arn)).select(policies::default_version).first::<String>(tx)?};
+        diesel::update(policies::table.filter(policies::arn.eq(&i.policy_arn))).set((policies::next_version.eq(next+1),policies::updated_at.eq(now()),policies::default_version.eq(default_version))).execute(tx)?;
         Ok(CreatePolicyVersionResponse {policy_version:Some(load_version(tx,ctx,&i.policy_arn,&version)?)})
     })
 }
@@ -231,12 +326,22 @@ pub fn list_policy_versions(
     i: ListPolicyVersionsRequest,
 ) -> Result<ListPolicyVersionsResponse, AwsError> {
     db.transaction(|tx| {
-        load_policy(tx,ctx,&i.policy_arn)?;
-        let mut stmt=tx.prepare("SELECT version_id FROM policy_versions WHERE policy_arn=?1 ORDER BY CAST(substr(version_id,2) AS INTEGER)")?;
-        let ids:Vec<String>=stmt.query_map(params![i.policy_arn],|r|r.get(0))?.collect::<Result<_,_>>()?;
-        let (ids,truncated,marker)=paginate(ids,i.marker.as_deref(),i.max_items)?;
-        let versions=ids.iter().map(|v|load_version(tx,ctx,&i.policy_arn,v)).collect::<Result<_,_>>()?;
-        Ok(ListPolicyVersionsResponse {versions,is_truncated:Some(truncated),marker})
+        load_policy(tx, ctx, &i.policy_arn)?;
+        let mut ids = policy_versions::table
+            .filter(policy_versions::policy_arn.eq(&i.policy_arn))
+            .select(policy_versions::version_id)
+            .load::<String>(tx)?;
+        ids.sort_by_key(|v| v[1..].parse::<i64>().unwrap_or_default());
+        let (ids, truncated, marker) = paginate(ids, i.marker.as_deref(), i.max_items)?;
+        let versions = ids
+            .iter()
+            .map(|v| load_version(tx, ctx, &i.policy_arn, v))
+            .collect::<Result<_, _>>()?;
+        Ok(ListPolicyVersionsResponse {
+            versions,
+            is_truncated: Some(truncated),
+            marker,
+        })
     })
 }
 pub fn delete_policy_version(
@@ -249,10 +354,12 @@ pub fn delete_policy_version(
         if v.is_default_version == Some(true) {
             return Err(conflict("Cannot delete the default version of a policy."));
         }
-        tx.execute(
-            "DELETE FROM policy_versions WHERE policy_arn=?1 AND version_id=?2",
-            params![i.policy_arn, i.version_id],
-        )?;
+        diesel::delete(
+            policy_versions::table
+                .filter(policy_versions::policy_arn.eq(&i.policy_arn))
+                .filter(policy_versions::version_id.eq(&i.version_id)),
+        )
+        .execute(tx)?;
         Ok(())
     })
 }
@@ -267,7 +374,7 @@ pub fn set_default_policy_version(
             return Err(validation(format!(r"Value '{}' at 'versionId' failed to satisfy constraint: Member must satisfy regular expression pattern: v[1-9][0-9]*(\.[A-Za-z0-9-]*)?",i.version_id)));
         }
         load_version(tx,ctx,&i.policy_arn,&i.version_id)?;
-        tx.execute("UPDATE policies SET default_version=?2,updated_at=?3 WHERE arn=?1",params![i.policy_arn,i.version_id,now()])?;
+        diesel::update(policies::table.filter(policies::arn.eq(&i.policy_arn))).set((policies::default_version.eq(&i.version_id),policies::updated_at.eq(&now()))).execute(tx)?;
         Ok(())
     })
 }
@@ -303,7 +410,7 @@ pub fn list_policy_tags(
     })
 }
 fn check_entity(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     name: &str,
@@ -323,7 +430,7 @@ fn check_entity(
     Ok(())
 }
 pub(crate) fn attach(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     name: &str,
@@ -340,24 +447,33 @@ pub(crate) fn attach(
             format!("Policy {a} does not exist or is not attachable."),
         )
     })?;
-    tx.execute(
-        "INSERT OR IGNORE INTO attachments(account_id,kind,entity,policy_arn) VALUES(?1,?2,?3,?4)",
-        params![ctx.account_id, kind, name, a],
-    )?;
+    diesel::insert_into(attachments::table)
+        .values((
+            attachments::account_id.eq(&ctx.account_id),
+            attachments::kind.eq(&kind),
+            attachments::entity.eq(&name),
+            attachments::policy_arn.eq(&a),
+        ))
+        .on_conflict_do_nothing()
+        .execute(tx)?;
     Ok(())
 }
 pub(crate) fn detach(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     name: &str,
     a: &str,
 ) -> Result<(), AwsError> {
     check_entity(tx, ctx, kind, name)?;
-    let n = tx.execute(
-        "DELETE FROM attachments WHERE account_id=?1 AND kind=?2 AND entity=?3 AND policy_arn=?4",
-        params![ctx.account_id, kind, name, a],
-    )?;
+    let n = diesel::delete(
+        attachments::table
+            .filter(attachments::account_id.eq(&ctx.account_id))
+            .filter(attachments::kind.eq(&kind))
+            .filter(attachments::entity.eq(&name))
+            .filter(attachments::policy_arn.eq(&a)),
+    )
+    .execute(tx)?;
     if n == 0 {
         return Err(AwsError::sender(
             404,
@@ -368,7 +484,7 @@ pub(crate) fn detach(
     Ok(())
 }
 fn attached(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     kind: &str,
     name: &str,
@@ -377,18 +493,23 @@ fn attached(
     max: Option<i32>,
 ) -> Result<(Vec<AttachedPolicy>, bool, Option<String>), AwsError> {
     check_entity(tx, ctx, kind, name)?;
-    let mut stmt=tx.prepare("SELECT a.policy_arn,p.name FROM attachments a JOIN policies p ON p.arn=a.policy_arn WHERE a.account_id=?1 AND a.kind=?2 AND a.entity=?3 AND substr(p.path,1,length(?4))=?4 ORDER BY p.name COLLATE NOCASE,p.arn")?;
-    let items = stmt
-        .query_map(
-            params![ctx.account_id, kind, name, prefix.unwrap_or("/")],
-            |r| {
-                Ok(AttachedPolicy {
-                    policy_arn: Some(r.get(0)?),
-                    policy_name: Some(r.get(1)?),
-                })
-            },
-        )?
-        .collect::<Result<_, _>>()?;
+    let items = attachments::table
+        .inner_join(policies::table.on(policies::arn.eq(attachments::policy_arn)))
+        .filter(attachments::account_id.eq(&ctx.account_id))
+        .filter(attachments::kind.eq(kind))
+        .filter(attachments::entity.eq(name))
+        .filter(
+            substr(policies::path, 1, length(literal_prefix(prefix))).eq(literal_prefix(prefix)),
+        )
+        .order((policies::name, policies::arn))
+        .select((policies::arn, policies::name))
+        .load::<(String, String)>(tx)?
+        .into_iter()
+        .map(|(policy_arn, policy_name)| AttachedPolicy {
+            policy_arn: Some(policy_arn),
+            policy_name: Some(policy_name),
+        })
+        .collect();
     paginate(items, marker, max)
 }
 
@@ -477,32 +598,148 @@ pub fn list_entities_for_policy(
 ) -> Result<ListEntitiesForPolicyResponse, AwsError> {
     db.transaction(|tx| {
         load_policy(tx, ctx, &i.policy_arn)?;
-        if !matches!(i.entity_filter.as_deref(), None | Some("User" | "Role" | "Group")) {
+        if !matches!(
+            i.entity_filter.as_deref(),
+            None | Some("User" | "Role" | "Group")
+        ) {
             return Err(validation("Invalid entity filter."));
         }
-        if !matches!(i.policy_usage_filter.as_deref(), None | Some("PermissionsPolicy" | "PermissionsBoundary")) {
+        if !matches!(
+            i.policy_usage_filter.as_deref(),
+            None | Some("PermissionsPolicy" | "PermissionsBoundary")
+        ) {
             return Err(validation("Invalid policy usage filter."));
         }
         let mut entities: Vec<(String, String, String)> = Vec::new();
-        for (kind, table, id) in [("user", "users", "user_id"), ("role", "roles", "role_id"), ("group", "groups", "group_id")] {
-            if i.entity_filter.as_ref().is_some_and(|f| !f.eq_ignore_ascii_case(kind)) { continue; }
-            let sql = if i.policy_usage_filter.as_deref() == Some("PermissionsBoundary") {
-                if kind == "group" { continue; }
-                format!("SELECT e.name,e.{id} FROM {table} e WHERE e.account_id=?1 AND e.permissions_boundary=?2 AND substr(e.path,1,length(?3))=?3 ORDER BY e.name COLLATE NOCASE")
+        if i.entity_filter
+            .as_ref()
+            .is_none_or(|f| f.eq_ignore_ascii_case("user"))
+        {
+            let mut query = users::table
+                .filter(users::account_id.eq(&ctx.account_id))
+                .filter(
+                    substr(
+                        users::path,
+                        1,
+                        length(literal_prefix(i.path_prefix.as_deref())),
+                    )
+                    .eq(literal_prefix(i.path_prefix.as_deref())),
+                )
+                .into_boxed();
+            if i.policy_usage_filter.as_deref() == Some("PermissionsBoundary") {
+                query = query.filter(users::permissions_boundary.eq(&i.policy_arn));
             } else {
-                format!("SELECT e.name,e.{id} FROM {table} e JOIN attachments a ON a.account_id=e.account_id AND a.entity=e.name WHERE a.account_id=?1 AND a.policy_arn=?2 AND a.kind='{kind}' AND substr(e.path,1,length(?3))=?3 ORDER BY e.name COLLATE NOCASE")
-            };
-            let mut stmt=tx.prepare(&sql)?;
-            let rows=stmt.query_map(params![ctx.account_id,i.policy_arn,i.path_prefix.as_deref().unwrap_or("/")],|r| Ok((kind.to_string(),r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
-            entities.extend(rows.collect::<Result<Vec<_>,_>>()?);
+                query = query.filter(
+                    users::name.eq_any(
+                        attachments::table
+                            .filter(attachments::account_id.eq(&ctx.account_id))
+                            .filter(attachments::kind.eq("user"))
+                            .filter(attachments::policy_arn.eq(&i.policy_arn))
+                            .select(attachments::entity),
+                    ),
+                );
+            }
+            let rows = query
+                .order(users::name)
+                .select((users::name, users::user_id))
+                .load::<(String, String)>(tx)?;
+            entities.extend(
+                rows.into_iter()
+                    .map(|(name, id)| ("user".to_string(), name, id)),
+            );
         }
-        let (entities,truncated,marker)=paginate(entities,i.marker.as_deref(),i.max_items)?;
-        let mut out=ListEntitiesForPolicyResponse {is_truncated:Some(truncated),marker,..Default::default()};
-        for (kind,name,id) in entities {
+        if i.entity_filter
+            .as_ref()
+            .is_none_or(|f| f.eq_ignore_ascii_case("role"))
+        {
+            let mut query = roles::table
+                .filter(roles::account_id.eq(&ctx.account_id))
+                .filter(
+                    substr(
+                        roles::path,
+                        1,
+                        length(literal_prefix(i.path_prefix.as_deref())),
+                    )
+                    .eq(literal_prefix(i.path_prefix.as_deref())),
+                )
+                .into_boxed();
+            if i.policy_usage_filter.as_deref() == Some("PermissionsBoundary") {
+                query = query.filter(roles::permissions_boundary.eq(&i.policy_arn));
+            } else {
+                query = query.filter(
+                    roles::name.eq_any(
+                        attachments::table
+                            .filter(attachments::account_id.eq(&ctx.account_id))
+                            .filter(attachments::kind.eq("role"))
+                            .filter(attachments::policy_arn.eq(&i.policy_arn))
+                            .select(attachments::entity),
+                    ),
+                );
+            }
+            let rows = query
+                .order(roles::name)
+                .select((roles::name, roles::role_id))
+                .load::<(String, String)>(tx)?;
+            entities.extend(
+                rows.into_iter()
+                    .map(|(name, id)| ("role".to_string(), name, id)),
+            );
+        }
+        if i.entity_filter
+            .as_ref()
+            .is_none_or(|f| f.eq_ignore_ascii_case("group"))
+        {
+            let mut query = groups::table
+                .filter(groups::account_id.eq(&ctx.account_id))
+                .filter(
+                    substr(
+                        groups::path,
+                        1,
+                        length(literal_prefix(i.path_prefix.as_deref())),
+                    )
+                    .eq(literal_prefix(i.path_prefix.as_deref())),
+                )
+                .into_boxed();
+            if i.policy_usage_filter.as_deref() != Some("PermissionsBoundary") {
+                query = query.filter(
+                    groups::name.eq_any(
+                        attachments::table
+                            .filter(attachments::account_id.eq(&ctx.account_id))
+                            .filter(attachments::kind.eq("group"))
+                            .filter(attachments::policy_arn.eq(&i.policy_arn))
+                            .select(attachments::entity),
+                    ),
+                );
+                let rows = query
+                    .order(groups::name)
+                    .select((groups::name, groups::group_id))
+                    .load::<(String, String)>(tx)?;
+                entities.extend(
+                    rows.into_iter()
+                        .map(|(name, id)| ("group".to_string(), name, id)),
+                );
+            }
+        }
+        let (entities, truncated, marker) = paginate(entities, i.marker.as_deref(), i.max_items)?;
+        let mut out = ListEntitiesForPolicyResponse {
+            is_truncated: Some(truncated),
+            marker,
+            ..Default::default()
+        };
+        for (kind, name, id) in entities {
             match kind.as_str() {
-                "user"=>out.policy_users.push(PolicyUser {user_name:Some(name),user_id:Some(id)}),
-                "role"=>out.policy_roles.push(PolicyRole {role_name:Some(name),role_id:Some(id)}),
-                _=>out.policy_groups.push(PolicyGroup {group_name:Some(name),group_id:Some(id)}),
+                "user" => out.policy_users.push(PolicyUser {
+                    user_name: Some(name),
+                    user_id: Some(id),
+                }),
+                "role" => out.policy_roles.push(PolicyRole {
+                    role_name: Some(name),
+                    role_id: Some(id),
+                }),
+                _ => out.policy_groups.push(PolicyGroup {
+                    group_name: Some(name),
+                    group_id: Some(id),
+                }),
             }
         }
         Ok(out)
@@ -533,7 +770,7 @@ fn check_policy_tag_keys(keys: &[String]) -> Result<(), AwsError> {
     Ok(())
 }
 fn set_policy_tags(
-    tx: &Transaction,
+    tx: &mut SqliteConnection,
     ctx: &RequestContext,
     a: &str,
     tags: &[Tag],
@@ -556,8 +793,27 @@ fn set_policy_tags(
         ));
     }
     for t in tags {
-        tx.execute("DELETE FROM tags WHERE account_id=?1 AND kind='policy' AND entity=?2 AND key=?3 COLLATE NOCASE AND key<>?3",params![ctx.account_id,a,t.key])?;
-        tx.execute("INSERT INTO tags(account_id,kind,entity,key,value) VALUES(?1,'policy',?2,?3,?4) ON CONFLICT(account_id,kind,entity,key) DO UPDATE SET value=excluded.value",params![ctx.account_id,a,t.key,t.value])?;
+        diesel::delete(
+            tags::table
+                .filter(tags::account_id.eq(&ctx.account_id))
+                .filter(tags::kind.eq("policy"))
+                .filter(tags::entity.eq(&a))
+                .filter(tags::key.eq(&t.key))
+                .filter(tags::key.ne(&t.key)),
+        )
+        .execute(tx)?;
+        diesel::insert_into(tags::table)
+            .values((
+                tags::account_id.eq(&ctx.account_id),
+                tags::kind.eq("policy"),
+                tags::entity.eq(&a),
+                tags::key.eq(&t.key),
+                tags::value.eq(&t.value),
+            ))
+            .on_conflict((tags::account_id, tags::kind, tags::entity, tags::key))
+            .do_update()
+            .set(tags::value.eq(diesel::upsert::excluded(tags::value)))
+            .execute(tx)?;
     }
     Ok(())
 }
@@ -770,7 +1026,7 @@ mod tests {
         create(&iam, &c, "test");
         let orphan_count: i64 = iam
             .db
-            .read(|db| Ok(db.query_row("SELECT COUNT(*) FROM policy_versions", [], |r| r.get(0))?))
+            .read(|db| Ok(policy_versions::table.count().get_result::<i64>(db)?))
             .unwrap();
         assert_eq!(orphan_count, 1);
     }

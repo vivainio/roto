@@ -3,6 +3,7 @@ mod event_sources;
 mod executor;
 #[allow(clippy::all)]
 mod generated;
+mod schema;
 mod service;
 #[cfg(test)]
 mod tests;

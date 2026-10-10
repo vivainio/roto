@@ -10,6 +10,8 @@
 mod filter;
 #[allow(clippy::all)]
 mod generated;
+mod models;
+mod schema;
 mod service;
 
 use std::sync::Arc;
