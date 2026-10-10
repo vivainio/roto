@@ -116,12 +116,17 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let logs = roto_svc_logs::CloudWatchLogsHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let lambda =
         roto_svc_lambda::LambdaHandler::unstarted(&store, Default::default(), sqs.0.clone())
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
+    lambda.0.set_logs(logs.0.clone());
     let events = Arc::new(
         roto_svc_eventbridge::EventBridgeHandler::new(&store, lambda.0.clone(), sqs.0.clone())
             .unwrap_or_else(|e| {
@@ -173,6 +178,7 @@ async fn main() {
         Arc::new(sns),
         Arc::new(kinesis),
         Arc::new(kms),
+        Arc::new(logs),
         lambda.clone(),
         events.clone(),
     ];

@@ -49,7 +49,11 @@ enum Kind {
 }
 
 /// `(serviceId, shape)` pairs carried as raw JSON instead of a generated struct.
-const RAW_SHAPES: &[(&str, &str)] = &[("DynamoDB", "AttributeValue")];
+const RAW_SHAPES: &[(&str, &str)] = &[
+    ("DynamoDB", "AttributeValue"),
+    // CloudWatch Logs field types can contain nested field types recursively.
+    ("CloudWatch Logs", "LogFieldType"),
+];
 
 /// `(serviceId, shape, member)`: collections that are always present in JSON responses, even when
 /// empty (DynamoDB lists `Items: []`; most services omit empty lists).

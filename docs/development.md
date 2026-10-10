@@ -14,7 +14,8 @@ git diff --exit-code
 
 The final command catches generated-code drift and any other uncommitted changes;
 inspect the diff when working in a modified tree. Generation covers STS, SQS,
-IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, CloudFormation, and Kinesis.
+IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, CloudFormation,
+Kinesis, KMS, and CloudWatch Logs.
 
 ## Moto compatibility tests
 
@@ -102,6 +103,19 @@ scripts/sync-moto-tests.sh test_sts test_sqs
 Implement operations in the relevant service crate, add meaningful Rust or
 compatibility coverage, regenerate when model/codegen changes require it, and
 update the coverage baseline and book when observable behavior changes.
+
+## Minimal CRUD service example
+
+`roto-svc-logs` is the small service example. It implements log-group create,
+list, delete, retention updates, tags, and one event query. The protocol types
+and dispatcher come from `models/logs/service-2.json`; the handwritten behavior
+is in `crates/roto-svc-logs/src/service.rs`, with the SQLite tables and migration
+in `schema.rs` and `lib.rs`. Its handlers scope each key by account and region,
+use Diesel transactions for mutations, and return generated AWS response types.
+
+Lambda connects to the log service in process and writes captured output to
+`/aws/lambda/<function>`. Stream management, direct `PutLogEvents`, Insights,
+and subscription features stay outside this example.
 
 ## Typed SQLite access
 

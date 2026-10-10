@@ -16,6 +16,7 @@ full AWS compatibility.
 | Secrets Manager | Secrets, versions, staging labels, deletion/restore, tags, policies, rotation bookkeeping, batch get | Cross-region replication, Lambda rotation execution |
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
 | Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
+| CloudWatch Logs | Log group CRUD, retention and tags, basic event filtering, local Lambda output | Log streams API, direct `PutLogEvents`, Insights, subscriptions, advanced filter patterns, retention enforcement |
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
 | IoT Data Plane | `Publish` to currently connected local WebSocket topic subscribers; `+` and `#` topic filters | MQTT connections/protocol, retained messages, durable delivery, IoT Rules, shadows |
 | API Gateway Management API | `PostToConnection` to a live local WebSocket connection ID | WebSocket API creation/deployment, route selection and integrations, `GetConnection`, `DeleteConnection` |
