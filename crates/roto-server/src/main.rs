@@ -364,6 +364,7 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         ctx.account_id = app.account_id.clone();
         ctx.access_key = None;
         let app = app.clone();
+        let response_request = raw.clone();
         return match tokio::task::spawn_blocking(move || {
             app.gateway.handle(
                 app.services["lambda"].as_ref(),
@@ -375,8 +376,11 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         })
         .await
         {
-            Ok(response) => into_response(response),
-            Err(_) => (StatusCode::BAD_GATEWAY, "Internal Server Error").into_response(),
+            Ok(response) => finish_request_response(into_response(response), &response_request),
+            Err(_) => finish_request_response(
+                (StatusCode::BAD_GATEWAY, "Internal Server Error").into_response(),
+                &response_request,
+            ),
         };
     }
 
@@ -417,10 +421,13 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             "roto cannot route this request to a service ({} {})",
             raw.method, raw.path
         );
-        return into_response(plain_error(
-            &AwsError::sender(400, "UnrecognizedClientException", msg),
-            &request_id,
-        ));
+        return into_request_response(
+            plain_error(
+                &AwsError::sender(400, "UnrecognizedClientException", msg),
+                &request_id,
+            ),
+            &raw,
+        );
     };
     let mut call =
         unsupported::Call::new(Some(handler.service()), &raw, &ctx, "not_implemented", None);
@@ -480,14 +487,12 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             started.elapsed().as_millis(),
         ));
     }
-    match result {
-        Ok(Ok(resp)) => into_response(resp),
-        Ok(Err(e)) => into_response(plain_error(&e, &request_id)),
-        Err(_) => into_response(plain_error(
-            &AwsError::internal("handler panicked"),
-            &request_id,
-        )),
-    }
+    let response = match result {
+        Ok(Ok(resp)) => resp,
+        Ok(Err(e)) => plain_error(&e, &request_id),
+        Err(_) => plain_error(&AwsError::internal("handler panicked"), &request_id),
+    };
+    into_request_response(response, &raw)
 }
 
 /// SigV4 scope from the `Authorization` header or a presigned URL's `X-Amz-Credential`.
@@ -535,6 +540,26 @@ fn into_response(r: RawResponse) -> Response {
         }
     }
     resp
+}
+
+fn into_request_response(r: RawResponse, req: &RawRequest) -> Response {
+    finish_request_response(into_response(r), req)
+}
+
+fn finish_request_response(mut response: Response, req: &RawRequest) -> Response {
+    let close_after_response = req.body.is_empty()
+        && req
+            .header("expect")
+            .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"));
+    if close_after_response {
+        // Hyper can finish a zero-length expected body without sending 100 Continue.
+        // Botocore leaves its early-response parser on a pooled connection, so close
+        // this connection to make it reset that parser before the next request.
+        response
+            .headers_mut()
+            .insert("connection", HeaderValue::from_static("close"));
+    }
+    response
 }
 
 /// Unsigned requests have no credential scope; moto's server-mode harness (and some SDK setups)
