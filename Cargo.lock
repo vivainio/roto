@@ -1226,6 +1226,7 @@ dependencies = [
  "roto-svc-eventbridge",
  "roto-svc-iam",
  "roto-svc-kinesis",
+ "roto-svc-kms",
  "roto-svc-lambda",
  "roto-svc-s3",
  "roto-svc-secretsmanager",
@@ -1289,6 +1290,18 @@ version = "0.0.1"
 dependencies = [
  "base64 0.22.1",
  "md5",
+ "roto-core",
+ "roto-protocol",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "roto-svc-kms"
+version = "0.0.1"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
  "roto-core",
  "roto-protocol",
  "serde_json",

@@ -139,6 +139,10 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let kms = roto_svc_kms::KmsHandler::new(&store).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
     let setup_sqs = sqs.0.clone();
     let setup_lambda = lambda.0.clone();
     let lambda = Arc::new(lambda);
@@ -153,6 +157,7 @@ async fn main() {
         Arc::new(secretsmanager),
         Arc::new(sns),
         Arc::new(kinesis),
+        Arc::new(kms),
         lambda.clone(),
         events.clone(),
     ];

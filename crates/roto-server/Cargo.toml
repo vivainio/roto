@@ -29,3 +29,5 @@ roto-protocol = { version = "0.0.1", path = "../roto-protocol" }
 roto-svc-eventbridge = { version = "0.0.1", path = "../roto-svc-eventbridge" }
 
 roto-svc-kinesis = { version = "0.0.1", path = "../roto-svc-kinesis" }
+
+roto-svc-kms = { version = "0.0.1", path = "../roto-svc-kms" }

@@ -20,7 +20,7 @@ is a regression.
 | **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
 | **CloudFormation** | 6 / 90 | 25 resource integration tests | Synchronous create/update/delete, stack/resource descriptions, SQS/SNS/S3/DynamoDB/Kinesis resources, refs/attributes/substitution, tags, outputs, dependency ordering, persistence. No automatic rollback, change sets, nested stacks, IAM/Lambda/EventBridge/SSM resources. |
 | **Kinesis** | 28 / 39 | 76 / 76 | Persisted streams/shards/records, hash routing, iterators, split/merge/scaling, retention, tags, consumer registration, stored encryption/monitoring settings, CloudFormation streams. No enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies or actual encryption. |
-| KMS | not started | – | Planned lightweight simulation: key metadata plus a base64 JSON ciphertext envelope; no per-message storage. |
+| **KMS** | 10 / 54 | 4 native tests, HTTP smoke | Persisted symmetric keys and aliases, enable/disable, Encrypt/Decrypt, ReEncrypt, random data keys. Versioned base64 JSON ciphertext envelope; no per-message storage or real encryption. |
 
 Credentials are issued and tracked but **never enforced**: no signature verification, IAM policy
 evaluation, bucket policies, ACL checks or trust-policy checks. This is deliberate.
@@ -116,4 +116,4 @@ Delivery is at least once. Commands run with roto's OS permissions, without cont
 
 ## Next
 
-KMS, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.
+Extend KMS metadata APIs, then IAM managed policies/groups; extend Lambda integrations as needed. See `PLAN.md`.

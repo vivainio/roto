@@ -18,9 +18,11 @@ full AWS compatibility.
 | Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Lua startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Schedules, input transformers, archives/replays, cross-account targets, permissions |
 | Kinesis | Streams, shards, records, polling, expiring iterators, resharding, retention, tags, consumer registration, encryption/monitoring metadata | Enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies, actual encryption |
+| KMS | Persisted symmetric keys and aliases, enable/disable, Encrypt/Decrypt, ReEncrypt, random data keys | Real encryption, asymmetric operations, policies/grants, rotation, deletion, key/alias listing |
 | CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis, refs, outputs, tags, updates, persistence | Rollback, change sets, nested stacks, additional resource types |
 
-KMS has not been started.
+KMS uses a versioned base64 JSON envelope for simulated ciphertext; it provides no
+cryptographic protection. See [KMS](kms.md).
 
 ## S3 details
 

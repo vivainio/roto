@@ -155,3 +155,9 @@ for simulated ciphertext (key ID, encryption context, base64 plaintext). No per-
 plaintext/ciphertext store or real encryption. Decode checks key state and context;
 data-key generation still returns random bytes of the requested length. Asymmetric
 cryptographic operations remain unsupported until separately implemented.
+
+KMS core simulation implemented: CreateKey/DescribeKey, CreateAlias, EnableKey/DisableKey,
+Encrypt/Decrypt/ReEncrypt, GenerateDataKey and GenerateDataKeyWithoutPlaintext.
+Keys and aliases persist; native tests cover context/state/key checks, isolation,
+binary payloads, data-key lengths, restart and reset. Metadata listing, policies,
+grants, rotation and deletion remain future work.
