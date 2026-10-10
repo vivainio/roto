@@ -1551,6 +1551,7 @@ dependencies = [
 name = "roto-svc-sqs"
 version = "0.0.1"
 dependencies = [
+ "diesel",
  "hex",
  "md-5",
  "roto-core",

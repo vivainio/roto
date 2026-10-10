@@ -240,3 +240,9 @@ has 22 passing native tests (one existing ignored); EventBridge keeps its 23-pas
 Streams, records, shard sequences and iterator tokens now use typed queries,
 including record retention and stream token invalidation. All 76 Moto tests,
 five native tests and service Clippy pass.
+
+## SNS Diesel port (2026-10-10)
+
+Topics and subscriptions use named Diesel rows and typed CRUD, preserving
+creation order and fan-out behavior. Moto remains 126 passing, 1 skipped and
+58 excluded. Native tests and service Clippy pass.
