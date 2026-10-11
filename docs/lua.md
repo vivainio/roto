@@ -4,6 +4,7 @@ Lua declares resources and wires queues to Lambda functions. Functions can execu
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
 through RIE, or run an inline Lua placeholder handler.
 See [runtime Lua handlers and interception](runtime-hooks.md) for inline functions and request hooks.
+See the [complete Lua API reference](lua-api.md) for all bindings, options, and examples.
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
 ```sh
@@ -43,7 +44,7 @@ scripts/demo.sh                 # seeded ephemeral server on port 5071
 roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
 ```
 
-It creates useful data across ten stateful services, including multi-page
+It creates useful data across eleven stateful services, including multi-page
 bucket contents, versions, nested DynamoDB items, retained queue messages,
 Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
 No moto or Python dependencies are needed. Verify it with
@@ -120,7 +121,7 @@ configuration and cannot be submitted through AWS APIs.
 ## Other service operations
 
 `roto.call(service, operation, input)` accepts AWS-shaped input and returns decoded JSON.
-It supports Lambda, SQS, DynamoDB, SSM, Secrets Manager, and EventBridge (`events` or `eventbridge`):
+It supports Lambda, SQS, DynamoDB, SSM, Secrets Manager, Kinesis, and EventBridge (`events` or `eventbridge`):
 
 ```lua
 roto.call("ssm", "PutParameter", {

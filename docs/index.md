@@ -93,7 +93,7 @@ or read [Architecture](architecture.md) to work on the implementation.
 See [Performance](benchmarks.md) for measured startup, idle RSS, and API latency,
 with a reproducible suite and raw results.
 
-The book also covers [Lua setup](lua.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
+The book also covers [Lua setup](lua.md), the [full Lua API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),
 [CloudWatch Logs](cloudwatch-logs.md), [Kinesis](kinesis.md), [KMS](kms.md),
