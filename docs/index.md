@@ -10,6 +10,27 @@ with persistent resources that survive server restarts. Point your AWS clients
 at its local endpoint, create your development environment once, and keep using
 its buckets, queues, tables, and other supported resources across sessions.
 
+## Core services and optional Lua services
+
+roto's **core services** are hand-tuned in Rust and built into the server binary.
+These are where we aim to offer a **first-class local development experience**,
+with useful service behavior, persistence, and cross-service integration.
+Most users will start here: typical AWS applications are built on services such
+as S3, SQS, DynamoDB, Lambda, SNS, and EventBridge. These support everyday
+application workloads such as storing data, processing messages, and running
+event-driven code. See
+[core service coverage](services.md#core-services-first-class-experience)
+for the supported behavior and remaining gaps.
+
+The optional **Lua services** are provided for completeness and mostly offer
+simple CRUD, metadata storage, and configuration simulation, mainly for service
+administration rather than everyday application workloads. They have a narrower
+scope and do not carry the same first-class experience goal. Adding them requires
+downloading a **separate service bundle** from a GitHub release and passing
+`--lua-services` when starting the server; installing `roto-aws` alone does not
+include them. See [optional Lua service coverage](services.md#optional-lua-services-completeness-coverage)
+and [bundle installation](getting-started.md#add-optional-lua-services).
+
 ## Why an open-source LocalStack alternative
 
 LocalStack for AWS is now distributed as commercial software. In March 2026,
@@ -69,7 +90,7 @@ service coverage is narrower than LocalStack's; check
 Start with [Getting started](getting-started.md), check [service coverage](services.md),
 or read [Architecture](architecture.md) to work on the implementation.
 
-See [Benchmarks](benchmarks.md) for measured startup, idle RSS, and API latency,
+See [Performance](benchmarks.md) for measured startup, idle RSS, and API latency,
 with a reproducible suite and raw results.
 
 The book also covers [Lua setup](lua.md), runnable [demos](demos.md), [integration testing](integration-testing.md),

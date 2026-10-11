@@ -1,6 +1,10 @@
-# Benchmarks
+# Performance
 
-The small benchmark suite measures Roto startup, idle process memory, and a few
+This chapter covers startup time, idle memory, API latency, and using Roto in
+isolated test fixtures. The measurements below come from a small, reproducible
+benchmark suite.
+
+The suite measures Roto startup, idle process memory, and a few
 AWS API requests. It uses disposable servers and Python's standard library; it
 needs no Moto, boto3, Docker, or extra Python packages.
 

@@ -134,3 +134,34 @@ SQLite database. `rusqlite` remains only in the shared store for migrations and
 the inspection UI's dynamic schema and row access; service handlers use Diesel.
 Add a direct Diesel dependency when using its derives or table macros; the core
 crate converts Diesel errors to the existing storage error response.
+
+## Python package releases
+
+Install with `uv tool install roto-aws`; the package provides the `roto-server`
+command. Upgrade with `uv tool upgrade roto-aws`. For development from source,
+run `cargo run -p roto-server -- --port 5070`.
+
+Push a Cargo-compatible version tag such as `v0.0.1` to trigger
+`.github/workflows/release.yml`. The shared workflow sets the workspace version
+from the tag, builds Linux x64/ARM64, Windows x64, macOS Intel/ARM64 wheels and a
+source distribution, then the local publishing job uploads them to PyPI.
+The shared components are pinned to a commit in `vivainio/actions`.
+
+Before the first release, create the GitHub environment `pypi` and configure a
+PyPI Trusted Publisher (or pending publisher for a new project) with:
+
+- Project: `roto-aws`
+- Owner: `vivainio`
+- Repository: `roto`
+- Workflow filename: `release.yml`
+- Environment: `pypi`
+
+Release tags should point to commits that pass the existing CI checks.
+
+Build locally with `uvx maturin build --release --locked --out dist` or
+`uvx maturin sdist --out dist`.
+
+To retry uploading already-built distributions, run the release workflow
+manually and provide the original release run ID in `artifact-run-id`. This
+skips rebuilding and publishes that run's artifacts. Verify the chosen run
+belongs to the release you intend to publish.
