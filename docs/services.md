@@ -5,6 +5,20 @@ This overview describes the implementation on **2026-10-10**. See
 moto test results, and detailed gaps. A service being listed here does not mean
 full AWS compatibility.
 
+## Core services: first-class experience
+
+The core services below are hand-tuned implementations in Rust, built into the
+server binary. These are the services where roto aims to offer a **first-class
+local development experience**, with working service behavior, persistence, and
+cross-service integration. They are the focus of compatibility and behavior
+improvements; the gaps listed below still apply.
+
+**Most users should start with the core services.** Typical AWS applications use
+services such as S3, SQS, DynamoDB, Lambda, SNS, and EventBridge for data storage,
+messaging, and event-driven processing. The optional Lua bundle is mainly useful
+when your local environment also needs service administration or configuration
+APIs.
+
 | Service | Available behavior | Main gaps |
 | --- | --- | --- |
 | STS | Caller identity, sessions, role assumption | Authorization-message decoding |
@@ -22,6 +36,36 @@ full AWS compatibility.
 | API Gateway v2 WebSocket APIs and Management API | In-memory WebSocket API, Lambda proxy integrations, routes and route responses, stages/deployments, route selection, `PostToConnection` | HTTP APIs, custom domains, authorizers, non-Lambda integrations, `GetConnection`, `DeleteConnection`, IAM/permission enforcement |
 | Kinesis | Streams, shards, records, polling, expiring iterators, resharding, retention, tags, consumer registration, encryption/monitoring metadata | Enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies, actual encryption |
 | KMS | Persisted symmetric keys and aliases, listing, tags, key policies, rotation status, deletion scheduling, Encrypt/Decrypt, ReEncrypt, random data keys | Real encryption, asymmetric operations, grants, multi-region keys, policy enforcement |
+| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, recursive nested stacks from S3 templates, cross-stack exports/imports, refs, outputs, tags, change sets, events, rollback attempts, retention, stack policies, termination protection, persistence | Nested change sets, imports of existing resources, transforms, rollback triggers, Lambda configuration updates, full policy semantics |
+
+
+KMS uses a versioned base64 JSON envelope for simulated ciphertext; it provides no
+cryptographic protection. See [KMS](kms.md).
+
+## Optional Lua services: completeness coverage
+
+Lua services are provided for completeness, with mostly simple resource CRUD,
+metadata storage, and configuration simulation. They have a narrower scope than
+the core Rust services and do not carry the same first-class experience goal.
+For example, RDS does not run a SQL database, OpenSearch does not run a search
+backend, and ECS does not execute containers. A successful configuration API call
+does not mean the underlying AWS service behavior is available.
+
+**These services require a separate download.** They are not included in the
+server binary or the `roto-aws` installation. Download the
+`roto-lua-services-<tag>.zip` asset from the matching
+[GitHub release](https://github.com/vivainio/roto/releases), then load it explicitly:
+
+```sh
+roto-server --lua-services ./roto-lua-services-vX.Y.Z.zip
+```
+
+Use the actual downloaded filename in place of `vX.Y.Z`; no extraction or
+separate Lua runtime is needed. See [Getting started](getting-started.md#add-optional-lua-services)
+and the [server reference](server.md#optional-lua-service-bundle) for loading options.
+
+| Service | Available behavior | Main gaps |
+| --- | --- | --- |
 | CUR | Lua report definition CRUD, tags, pagination; account-scoped persistence | Billing report generation |
 | ACM | Lua certificate metadata, synthetic requests, PEM imports/retrieval, tags and options | X.509 parsing/issuance, export, renewal/email delivery, advanced list filters |
 | Budgets | Lua budgets, notifications/subscribers, tags, pagination and time periods | Billing engine, alert delivery, budget actions |
@@ -32,10 +76,7 @@ full AWS compatibility.
 | OpenSearch | Lua domain configuration CRUD, revisions, multi-describe, engine-filtered listing and tags; REST/JSON | Configuration simulation only; no search backend/data endpoint, VPC provisioning, packages or upgrades |
 | RDS | Lua instance/cluster configuration, membership, deletion protection, subnet/parameter groups, parameter overrides, tags and pagination; Query/XML | Configuration simulation only; no SQL backend/endpoint, snapshots, restore, DocumentDB or RDS Data API |
 | Cloud Map | Lua HTTP namespaces, services/instances, discovery, custom health, revisions, attributes, operations and tags | DNS namespaces/Route 53, asynchronous workers, cross-account discovery, idempotency replay |
-| CloudFormation | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, recursive nested stacks from S3 templates, cross-stack exports/imports, refs, outputs, tags, change sets, events, rollback attempts, retention, stack policies, termination protection, persistence | Nested change sets, imports of existing resources, transforms, rollback triggers, Lambda configuration updates, full policy semantics |
-
-KMS uses a versioned base64 JSON envelope for simulated ciphertext; it provides no
-cryptographic protection. See [KMS](kms.md).
+| Organizations | Lua organization, root and OU hierarchy, account reads and tags | Account creation/moving, handshakes, policies, delegated administrators and IAM side effects |
 
 ## S3 details
 

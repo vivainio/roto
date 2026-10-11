@@ -276,8 +276,15 @@ roto-server --ephemeral --setup examples/lua/setup.lua
 
 ## Optional Lua service bundle
 
-The server binary does not embed Lua service scripts. Install the optional
-`roto-lua-services-<tag>.zip` asset from the matching GitHub release and pass it
+Lua services provide completeness coverage, mostly simple CRUD, metadata storage,
+and configuration simulation. The hand-tuned Rust core services are where roto
+aims to offer a first-class local development experience; see
+[service coverage](services.md) for the distinction and limits.
+
+The server binary and `roto-aws` installation do not include Lua service scripts.
+Download the optional
+`roto-lua-services-<tag>.zip` asset from the matching
+[GitHub release](https://github.com/vivainio/roto/releases) and pass it
 without extracting:
 
 ```sh
