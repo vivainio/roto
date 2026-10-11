@@ -95,10 +95,10 @@ fn connect_data(connect: &Connect) -> Value {
 
 async fn hook(app: &Arc<App>, operation: &str, mut request: Value) -> Result<Value, String> {
     let hooks = app.hooks.lock().unwrap().clone();
-    if !hooks.matches("mqtt", Some(operation)) {
+    if !hooks.matches_mqtt(operation) {
         return Ok(Value::Null);
     }
-    request["service"] = json!("mqtt");
+    request["transport"] = json!("mqtt");
     request["operation"] = json!(operation);
     let context = json!({"account_id":app.account_id,"region":"us-east-1",
         "request_id":roto_core::ids::request_id()});

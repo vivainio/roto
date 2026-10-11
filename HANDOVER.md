@@ -11,7 +11,7 @@ Implemented 2026-10-11 on `feat/iot-mqtt-websocket`.
 - HTTP IoT Data Plane Publish delivers raw payloads as MQTT QoS 0 PUBLISH.
   Client publishes are dropped; QoS 1 receives PUBACK. Authentication, sessions,
   wills, retained messages, MQTT 5, QoS 2, and offline delivery are unsupported.
-- Lua `roto.intercept_request("mqtt", "Connect"/"Subscribe", callback)` hooks
+- Lua `roto.mqtt.on_connect(callback)` / `roto.mqtt.on_subscribe(callback)` hooks
   receive decoded client metadata and ordered topic/QoS filters. CONNECT
   refusals return CONNACK codes; SUBSCRIBE can reject individual filters.
   Callback errors or invalid results fail closed. See `docs/runtime-hooks.md`.

@@ -52,7 +52,12 @@ fn lambda_call(
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct Hooks(Arc<std::sync::Mutex<HashMap<(String, String), Callback>>>);
+pub struct Hooks(Arc<std::sync::Mutex<HashMap<HookKey, Callback>>>);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum HookKey {
+    Service(String, String),
+    Mqtt(String),
+}
 #[derive(Clone, Debug)]
 struct Callback {
     lua: Lua,
@@ -92,8 +97,15 @@ impl Hooks {
             self.0
                 .lock()
                 .unwrap()
-                .contains_key(&(service.into(), operation.into()))
+                .contains_key(&HookKey::Service(service.into(), operation.into()))
         })
+    }
+
+    pub fn matches_mqtt(&self, operation: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .contains_key(&HookKey::Mqtt(operation.into()))
     }
 
     /// Invoke a protocol-specific hook using the same VM, lock and deadline as HTTP hooks.
@@ -102,7 +114,7 @@ impl Hooks {
             .0
             .lock()
             .unwrap()
-            .get(&("mqtt".into(), operation.into()))
+            .get(&HookKey::Mqtt(operation.into()))
             .cloned();
         let Some(callback) = callback else {
             return Ok(Value::Null);
@@ -126,7 +138,7 @@ impl Hooks {
             .0
             .lock()
             .unwrap()
-            .get(&(service.into(), operation.into()))
+            .get(&HookKey::Service(service.into(), operation.into()))
             .cloned();
         let Some(callback) = callback else {
             return Ok(None);
@@ -413,7 +425,7 @@ pub fn run(
             move |lua, (service, operation, callback): (String, String, mlua::Function)| {
                 setup_only(lua)?;
                 registrations.0.lock().unwrap().insert(
-                    (service, operation),
+                    HookKey::Service(service, operation),
                     Callback {
                         lua: lua.clone(),
                         function: callback,
@@ -424,6 +436,27 @@ pub fn run(
             },
         )?,
     )?;
+    let mqtt_api = lua.create_table()?;
+    for (name, operation) in [("on_connect", "Connect"), ("on_subscribe", "Subscribe")] {
+        let registrations = hooks.clone();
+        let hook_lock = runtime_lock.clone();
+        mqtt_api.set(
+            name,
+            lua.create_function(move |lua, callback: mlua::Function| {
+                setup_only(lua)?;
+                registrations.0.lock().unwrap().insert(
+                    HookKey::Mqtt(operation.into()),
+                    Callback {
+                        lua: lua.clone(),
+                        function: callback,
+                        lock: hook_lock.clone(),
+                    },
+                );
+                Ok(())
+            })?,
+        )?;
+    }
+    roto.set("mqtt", mqtt_api)?;
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;
     lua.globals().set("roto", roto)?;
