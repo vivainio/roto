@@ -233,6 +233,61 @@ fn http_posts_event_and_metadata_and_records_error_status() {
 }
 
 #[test]
+fn http_empty_success_body_is_a_null_result() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for status in ["204 No Content", "200 OK", "200 OK"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buffer = Vec::new();
+            let mut part = [0; 1024];
+            // The event is tiny, so the body arrives with the headers.
+            while !buffer.windows(4).any(|b| b == b"\r\n\r\n") {
+                let n = stream.read(&mut part).unwrap();
+                assert!(n > 0);
+                buffer.extend_from_slice(&part[..n]);
+            }
+            let body = if status == "200 OK" && buffer.ends_with(b"{\"n\":2}") {
+                "\n"
+            } else {
+                ""
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let handler = configured(
+        "http",
+        Executor::Http {
+            url: format!("http://{addr}/handler"),
+            headers: BTreeMap::new(),
+        },
+    );
+    create(&handler, "http", 3);
+    for event in [r#"{"n":0}"#, r#"{"n":1}"#, r#"{"n":2}"#] {
+        let response = invoke(&handler, "http", event.as_bytes(), "RequestResponse");
+        assert!(
+            !response
+                .headers
+                .iter()
+                .any(|(k, _)| k == "x-amz-function-error")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            Value::Null
+        );
+    }
+    server.join().unwrap();
+}
+
+#[test]
 fn async_jobs_retry_and_survive_restart() {
     let dir = std::env::temp_dir().join(format!(
         "roto-lambda-persistence-{}",
