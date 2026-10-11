@@ -1,6 +1,6 @@
 -- Demonstrate policy simulation using the decoded MQTT request dictionaries.
-roto.intercept_request("mqtt", "Connect", function(request, context)
-  assert(request.service == "mqtt" and request.operation == "Connect")
+roto.mqtt.on_connect(function(request, context)
+  assert(request.transport == "mqtt" and request.operation == "Connect")
   assert(request.path == "/mqtt" and request.source_ip == "127.0.0.1")
   assert(request.connection_id and request.headers and context.request_id)
   local connect = request.connect
@@ -20,7 +20,7 @@ roto.intercept_request("mqtt", "Connect", function(request, context)
   return nil -- Normal acceptance.
 end)
 
-roto.intercept_request("mqtt", "Subscribe", function(request, context)
+roto.mqtt.on_subscribe(function(request, context)
   assert(request.connect.client_id and request.packet_id and context.account_id)
   local codes = {}
   for i, filter in ipairs(request.filters) do

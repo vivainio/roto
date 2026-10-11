@@ -62,22 +62,26 @@ setup calls do not trigger them. Requests without a matching registration do
 not enter Lua. Callback errors and invalid responses return an internal AWS
 error. There is no global interceptor or missing-support fallback registration.
 
-## MQTT connection and subscription interception
+## MQTT connection and subscription hooks
 
-Register `roto.intercept_request("mqtt", "Connect", callback)` or
-`roto.intercept_request("mqtt", "Subscribe", callback)` to simulate policies.
-These callbacks receive decoded MQTT dictionaries, and return MQTT decisions
-rather than HTTP responses:
+Register `roto.mqtt.on_connect(callback)` or
+`roto.mqtt.on_subscribe(callback)` to simulate policies.
+These MQTT lifecycle hooks are separate from AWS service request interception.
+They receive decoded MQTT dictionaries and return MQTT decisions. They share
+the Lua VM, serialization lock, and execution limits with service interceptors.
+A later registration for the same MQTT hook replaces the previous callback.
+
+For example:
 
 ```lua
-roto.intercept_request("mqtt", "Connect", function(request, context)
+roto.mqtt.on_connect(function(request, context)
   if request.connect.client_id == "blocked" then
     return {return_code = 5} -- Not authorized.
   end
   return nil
 end)
 
-roto.intercept_request("mqtt", "Subscribe", function(request, context)
+roto.mqtt.on_subscribe(function(request, context)
   local codes = {}
   for i, filter in ipairs(request.filters) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
@@ -86,7 +90,7 @@ roto.intercept_request("mqtt", "Subscribe", function(request, context)
 end)
 ```
 
-Both request dictionaries include `service` (`mqtt`), `operation`, `path`, raw
+Both request dictionaries include `transport` (`mqtt`), `operation`, `path`, raw
 WebSocket `query`, `headers` (Authorization omitted), actual peer `source_ip`
 and `source_port`, and Roto's `connection_id`. The nested `connect` table
 contains `protocol_version` (4), `client_id`, `clean_session`, `keep_alive`,
