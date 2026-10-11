@@ -41,3 +41,33 @@ refused filters receive no messages while accepted filters still work.
 The example inspects client credentials, clean-session/keepalive settings, will
 metadata, peer address, WebSocket headers, and connection/packet IDs. See
 [the runtime hooks documentation](../../docs/runtime-hooks.md) for the contract.
+
+## Run the browser checks with agent-browser
+
+With `agent-browser` installed and both servers running as above, use a named
+browser session. The browser still loads the real MQTT.js CDN bundle:
+
+```sh
+agent-browser --session roto-mqtt-check open http://127.0.0.1:5072/
+agent-browser --session roto-mqtt-check snapshot -i
+agent-browser --session roto-mqtt-check find role button click --name "Run acceptance checks"
+agent-browser --session roto-mqtt-check wait --text "PASS: all MQTT.js browser acceptance checks"
+agent-browser --session roto-mqtt-check get text '#status'
+agent-browser --session roto-mqtt-check get text '#log'
+agent-browser --session roto-mqtt-check close
+```
+
+For the Lua denial checks, start the two servers with these commands instead
+(in separate terminals), then run the same browser commands:
+
+```sh
+target/debug/roto-server --ephemeral --port 5071 --setup demos/mqtt/setup.lua
+python3 demos/mqtt/serve.py --hooks
+```
+
+The final status should be `PASS: all MQTT.js browser acceptance checks including
+Lua denials`. If the wait times out, inspect `#status` and `#log`, or run
+`agent-browser --session roto-mqtt-check errors` and
+`agent-browser --session roto-mqtt-check console`. Close the browser session
+when finished and stop the disposable servers with Ctrl-C. If you selected
+another demo port, adjust the browser URL accordingly.
