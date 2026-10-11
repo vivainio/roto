@@ -275,6 +275,7 @@ async fn main() {
         .route("/roto-api/dynamodb/query", post(inspection::dynamodb_query))
         .route("/roto-api/s3/object", get(inspection::object))
         .route("/roto-api/health", get(inspection::health))
+        .route("/mqtt", get(websocket::mqtt::websocket))
         .route("/roto-api/ws", get(websocket::websocket))
         .route("/roto-api/iot/ws", get(websocket::websocket))
         .route("/v2/apis", any(handle))

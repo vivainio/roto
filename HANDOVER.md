@@ -1,61 +1,30 @@
-# Handover: minimal MQTT-over-WebSocket for IoT (proposed plan)
+# Handover: minimal MQTT-over-WebSocket for IoT
 
-Proposed 2026-10-11, not started. Goal: let applications that talk to AWS IoT
-through an MQTT client library run against roto locally instead of the real
-IoT endpoint.
+Implemented 2026-10-11 on `feat/iot-mqtt-websocket`.
 
-## Why
+- `/mqtt` negotiates the `mqtt` WebSocket subprotocol and accepts MQTT 3.1.1.
+- `crates/roto-mqtt` is a dependency-free minimal wire codec. It handles partial
+  and combined packets, remaining-length encoding, and a 1 MiB packet limit.
+- `crates/roto-server/src/websocket/mqtt.rs` handles CONNECT/CONNACK,
+  SUBSCRIBE/SUBACK (QoS 0/1), UNSUBSCRIBE/UNSUBACK, PINGREQ/PINGRESP, and
+  DISCONNECT using the existing shared connection/topic registry.
+- HTTP IoT Data Plane Publish delivers raw payloads as MQTT QoS 0 PUBLISH.
+  Client publishes are dropped; QoS 1 receives PUBACK. Authentication, sessions,
+  wills, retained messages, MQTT 5, QoS 2, and offline delivery are unsupported.
+- `demos/mqtt` is a plain HTML app loading MQTT.js 5.16.0 from unpkg. Its
+  Python standard-library server proxies HTTP publishes. No Node or npm is needed.
+  See its README for launch commands and browser acceptance checks.
 
-A typical app publishes through the IoT Data Plane `Publish` API on the server
-and has browsers subscribe with **mqtt.js v5**, MQTT 3.1.1 (`protocolVersion: 4`)
-over `wss`, QoS 1, exact topics (no wildcards), no retained messages, and a
-health ping to `$aws/things/ping`. Without a local broker, such apps must use a
-real AWS IoT endpoint and credentials even for local development.
+Verified with `agent-browser` against disposable servers: MQTT.js connection,
+subprotocol, QoS grants, exact/wildcard and health-topic delivery, 20 KB binary
+payload, PUBACK without client publish fan-out, unsubscribe, keepalive,
+disconnect, reconnect without sessions, and resubscribe. The page displayed
+`PASS: all MQTT.js browser acceptance checks`.
 
-Roto already accepts iot-data `Publish` and fans out to subscribers on its custom
-JSON WebSocket (`docs/iot.md`, `/roto-api/ws`). mqtt.js cannot talk to that, so
-roto needs an MQTT listener on top of the existing topic registry
-(`crates/roto-server/src/websocket.rs`, described in the IoT section below).
-
-## Reference client
-
-**mqtt.js is the reference client.** Behaviour is defined by what mqtt.js
-(`mqtt@5`) needs in order to connect, subscribe, receive and stay alive. When the
-spec and mqtt.js disagree on something optional, follow mqtt.js. The acceptance
-test is a real mqtt.js client, not a hand-rolled packet test.
-
-## Scope: super minimal
-
-Accept connections; do only what keeps mqtt.js connected and delivers messages.
-
-Handle:
-- WebSocket upgrade on an MQTT path (e.g. `/mqtt`) echoing subprotocol `mqtt`.
-- CONNECT -> CONNACK accepted. Ignore client id, credentials, clean flag,
-  keepalive, will.
-- SUBSCRIBE -> register filters in the existing registry, SUBACK granting the
-  requested QoS (0/1).
-- UNSUBSCRIBE -> remove filters, UNSUBACK.
-- PINGREQ -> PINGRESP.
-- DISCONNECT -> close.
-- Delivery: iot-data `Publish` matching a subscription -> PUBLISH packet to the
-  client, always at QoS 0 (no packet ids or retransmission).
-
-Ignore on purpose:
-- Client PUBLISH: accept and drop (send PUBACK for QoS 1 so mqtt.js does not stall).
-- Sessions, retained messages, will, authentication, MQTT 5, QoS 2, `$SYS`.
-- Messages published while a client is disconnected are lost (best effort, as in
-  `docs/iot.md`). Clients resubscribe on reconnect.
-
-## Steps
-
-1. Test first: a mqtt.js client (connect, subscribe, iot-data publish, receive,
-   unsubscribe, ping, QoS 1 client publish gets PUBACK) against a roto server,
-   in the style of `tests/smoke-websocket.py`. Needs node + `mqtt@5`; keep it out
-   of the default cargo test run if node is unavailable.
-2. Implement the listener: packet parse/encode (variable-length remaining length,
-   topic and packet-id fields), wired to the existing connection/topic registry.
-3. Update `docs/iot.md` and the IoT row in `docs/services.md`; run the full
-   build/tests; commit to `main`.
+`cargo build --workspace --locked`, `cargo test --workspace --locked`, codec
+unit tests, and `tests/smoke-websocket.py` pass. The latter now tolerates a null
+Lambda result while polling disconnect history. Documentation covers the
+endpoint and limits in `docs/iot.md` and the service coverage table.
 
 ---
 
@@ -74,9 +43,8 @@ Management API callbacks.
   use JSON `subscribe` / `unsubscribe` messages. Topic filters support `+` and
   `#`.
 - IoT Data Plane `Publish` delivers UTF-8 and base64-wrapped binary payloads to
-  connected matching subscribers. Delivery is local and best-effort; MQTT,
-  retained messages, durable offline delivery, and MQTT acknowledgements are
-  not implemented.
+  connected matching subscribers. Delivery is local and best-effort; retained messages and durable offline
+  delivery are not implemented. The minimal MQTT endpoint is described above.
 - API Gateway Management API `PostToConnection` uses the same connection hub
   and sends text or binary WebSocket frames. The API ID and stage are not
   configured for the custom local sockets.

@@ -2,7 +2,37 @@
 
 Roto accepts the IoT Data Plane `Publish` HTTP request and delivers its payload
 to matching clients connected to Roto's local WebSocket endpoint. This supports
-browser clients without an MQTT library or MQTT wire protocol.
+browser clients using MQTT.js or Roto's custom JSON protocol.
+
+## MQTT over WebSocket
+
+Connect to `ws://localhost:5070/mqtt` using MQTT 3.1.1 (`protocolVersion: 4`
+in MQTT.js). The upgrade negotiates the `mqtt` subprotocol. For example, with
+MQTT.js loaded in the browser:
+
+```javascript
+const client = mqtt.connect("ws://localhost:5070/mqtt", { protocolVersion: 4 });
+client.on("connect", () => client.subscribe("devices/123/state", { qos: 1 }));
+client.on("message", (topic, payload) => console.log(topic, payload.toString()));
+```
+
+Subscriptions support exact topics and `+`/`#` filters through the same registry
+as the JSON endpoint. HTTP IoT publishes arrive as MQTT PUBLISH packets with
+unchanged payload bytes, always at QoS 0. SUBACK grants requested QoS 0/1;
+QoS 2 and invalid filters receive a failure code. UNSUBSCRIBE, PINGREQ, and
+DISCONNECT are supported. Client PUBLISH payloads are dropped; QoS 1 receives
+PUBACK so the client does not stall.
+
+Client IDs, credentials, clean session, keepalive settings, and wills do not
+create persistent state or authentication. MQTT 5, QoS 2, retained messages,
+and offline delivery are unsupported. Clients must resubscribe on reconnect.
+The local packet size limit is 1 MiB. For `wss`, put a TLS proxy in front of Roto.
+
+The [browser demo](https://github.com/vivainio/roto/tree/main/demos/mqtt)
+loads MQTT.js from a CDN and includes acceptance checks; it requires no Node
+installation. See `demos/mqtt/README.md` for launch instructions.
+
+## Custom JSON WebSocket
 
 Connect to `ws://localhost:5070/roto-api/ws` (or the alias
 `ws://localhost:5070/roto-api/iot/ws`). On connection, the server sends a JSON
@@ -50,7 +80,8 @@ iot.publish(topic="devices/123/state", qos=0, payload=b"online")
 Publishes are delivered to currently connected subscribers only. Retained
 messages are not supported; `retain=true` returns an `InvalidRequestException`.
 QoS 0 and 1 values are accepted, but delivery is local and best-effort: there is
-no durable queue, replay, session state, or MQTT acknowledgement protocol.
+no durable queue, replay, or session state. The JSON endpoint uses the command
+acknowledgements shown above.
 
 Run the native end-to-end checks without Moto or AWS SDK packages:
 
