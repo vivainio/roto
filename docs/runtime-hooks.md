@@ -2,7 +2,8 @@
 
 A `--setup` script can register inline Lambda handlers and exact-operation request
 interceptors. Roto retains their Lua closures after startup. See
-[Lua setup](lua.md) for resource creation and executor bindings.
+[Lua setup](lua.md) for resource creation and executor bindings, and the
+[Lua API reference](lua-api.md) for every binding and callback contract.
 
 ## Inline placeholder Lambdas
 
