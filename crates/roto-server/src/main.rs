@@ -294,6 +294,10 @@ async fn main() {
         // moto's server-mode test harness resets state through this path.
         .route("/moto-api/reset", post(reset))
         .fallback(handle)
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            s3_browser,
+        ))
         .with_state(app);
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
@@ -372,6 +376,99 @@ async fn request_trace(
 ) -> axum::Json<serde_json::Value> {
     let trace_id = params.get("trace_id").map(String::as_str);
     axum::Json(app.trace.snapshot(trace_id))
+}
+
+// Intercept browser routes before API and inspection routes on website hosts.
+async fn s3_browser(
+    State(app): State<Arc<App>>,
+    mut req: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let host_bucket = req
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .and_then(roto_svc_s3::website::bucket_from_host);
+    let path = req.uri().path().to_owned();
+    let target = if let Some(bucket) = host_bucket {
+        Some((bucket, path, String::new()))
+    } else if let Some(rest) = path.strip_prefix("/s3/").filter(|_| {
+        !req.headers().contains_key("authorization")
+            && !req
+                .uri()
+                .query()
+                .is_some_and(|q| q.contains("X-Amz-Algorithm="))
+    }) {
+        let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+        if bucket.is_empty() {
+            None
+        } else {
+            if !rest.contains('/') {
+                let location = format!(
+                    "{path}/{}",
+                    req.uri()
+                        .query()
+                        .map(|q| format!("?{q}"))
+                        .unwrap_or_default()
+                );
+                return (StatusCode::TEMPORARY_REDIRECT, [("location", location)]).into_response();
+            }
+            Some((
+                roto_protocol::restxml::percent_decode_path(bucket),
+                format!("/{key}"),
+                format!("/s3/{bucket}"),
+            ))
+        }
+    } else {
+        None
+    };
+    let Some((bucket, path, prefix)) = target else {
+        return next.run(req).await;
+    };
+    let Some(handler) = app.services.get("s3").cloned() else {
+        return (StatusCode::NOT_FOUND, "S3 is not initialized").into_response();
+    };
+    req.headers_mut().remove("x-roto-website-prefix");
+    let mut headers: Vec<_> = req
+        .headers()
+        .iter()
+        .filter(|(n, _)| n.as_str() != "host")
+        .filter_map(|(n, v)| Some((n.as_str().to_owned(), v.to_str().ok()?.to_owned())))
+        .collect();
+    headers.retain(|(name, _)| name != "x-roto-website-authority");
+    headers.push((
+        "x-roto-website-authority".into(),
+        req.headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("localhost")
+            .to_owned(),
+    ));
+    headers.push(("host".into(), format!("{bucket}.s3-website.localhost")));
+    headers.push(("x-roto-website-prefix".into(), prefix));
+    let raw = RawRequest {
+        method: req.method().to_string(),
+        path,
+        query: req.uri().query().unwrap_or("").into(),
+        headers,
+        ..Default::default()
+    };
+    let ctx = RequestContext {
+        account_id: app.account_id.clone(),
+        region: "us-east-1".into(),
+        access_key: None,
+        request_id: ids::request_id(),
+        base_url: String::new(),
+    };
+    match tokio::task::spawn_blocking(move || handler.handle(&ctx, &raw)).await {
+        Ok(Ok(raw)) => into_response(raw),
+        Ok(Err(e)) => (
+            StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            e.message,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "S3 browser failed").into_response(),
+    }
 }
 
 async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {

@@ -21,6 +21,7 @@ mod keypath;
 mod multipart;
 mod notifications;
 mod service;
+pub mod website;
 
 use std::sync::Arc;
 
@@ -232,6 +233,9 @@ impl ServiceHandler for S3Handler {
     }
 
     fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError> {
+        if let Some(bucket) = req.header("host").and_then(website::bucket_from_host) {
+            return website::serve(&self.0, ctx, req, &bucket);
+        }
         if req.method == "GET" && req.path == "/roto-api/s3/notifications" {
             return notifications::history(&self.0, ctx);
         }

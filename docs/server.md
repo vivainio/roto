@@ -41,6 +41,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/resources` | Resource collection catalog |
 | `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
 | `GET` | `/roto-api/sqs/messages` | Read-only SQS message peek, grouped by account, region, and queue URL |
+| `GET`, `HEAD` | `/s3/{bucket}/{key}` | Inline S3 objects, index pages, and folder listings |
 | `GET` | `/roto-api/s3/object` | Download an object or read a bounded preview |
 | `GET` | `/roto-api/health` | JSON service availability and server version |
 | `GET` | `/roto-api/ws` | Local WebSocket connection endpoint; also available at `/roto-api/iot/ws` |
@@ -84,6 +85,12 @@ not retained. The resource browser also exposes the `sns/sms_messages` collectio
 status remains 200. These MiniStack-style endpoints use only the `/roto-api`
 prefix. SES message history, TLS certificate discovery, and SFTP port discovery
 are unavailable because Roto does not implement the corresponding services or listeners.
+
+S3 browser access is also available at `/s3/<bucket>/`, including directly by IP
+address. HTML renders inline, relative links work, and directories show an index
+page or listing. Bucket hosts such as `<bucket>.s3-website.localhost:5070` serve
+the bucket at the origin root for root-relative links. See the [S3 guide](s3.md)
+for content types, website configuration, DNS, HTTPS proxies, and access boundaries.
 
 Open `http://localhost:5070/roto-api/` to browse created resources and their data:
 
