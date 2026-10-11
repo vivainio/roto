@@ -124,13 +124,14 @@ function objectUrl(row, preview = false) {
 }
 function resourceActions(row, cell) {
   const drill = (label, table, field, value) => cell.append(action(label, () => navigate(table, { field, value: String(value) }, String(row.name || row.key || row.arn || row.id || value))));
-  if (service === 's3' && collection === 'buckets') { drill('Browse objects', 'objects', 'bucket', row.name); drill('Bucket settings', 'bucket_configs', 'bucket', row.name); }
+  if (service === 's3' && collection === 'buckets') { drill('Browse objects', 'objects', 'bucket', row.name); drill('Bucket settings', 'bucket_configs', 'bucket', row.name); const site = element('a', 'Open in browser ↗'); site.href = '/s3/' + encodeURIComponent(row.name) + '/'; site.target = '_blank'; site.rel = 'noopener'; cell.append(site); }
   if (service === 'dynamodb' && collection === 'tables') drill('Browse items', 'items', 'table_id', row.table_id);
   if (service === 'dynamodb' && collection === 'backups') drill('Backup items', 'backup_items', 'arn', row.arn);
   if (service === 'sqs' && collection === 'queues') drill('Browse messages', 'messages', 'queue_id', row.id);
   if (service === 'sns' && collection === 'topics') drill('Subscriptions', 'subscriptions', 'topic_arn', row.arn);
   if (service === 's3' && collection === 'uploads') drill('Parts', 'parts', 'upload_id', row.upload_id);
   if (service === 's3' && collection === 'objects' && !row.delete_marker) {
+    const open = element('a', 'Open in browser ↗'); open.href = '/s3/' + encodeURIComponent(row.bucket) + '/' + row.key.split('/').map(encodeURIComponent).join('/'); open.target = '_blank'; open.rel = 'noopener'; cell.append(open);
     const link = element('a', 'Download'); link.href = objectUrl(row); link.download = row.key.split('/').pop() || 'object'; cell.append(link);
     const preview = element('details'); const summary = element('summary', 'Preview as text'); const content = element('pre');
     preview.append(summary, content); cell.append(preview);
