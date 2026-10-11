@@ -1,106 +1,61 @@
-# S3 Moto HTTP timeout handover
+# Handover: minimal MQTT-over-WebSocket for IoT (proposed plan)
 
-Recorded 2026-10-10 after the service Diesel conversion (`40c736a`). The bug is
-still unresolved. It also reproduces with the pre-port S3 implementation;
-do not treat it as a Diesel regression or add it to expected failures to hide it.
+Proposed 2026-10-11, not started. Goal: let applications that talk to AWS IoT
+through an MQTT client library run against roto locally instead of the real
+IoT endpoint.
 
-## Reproduce
+## Why
 
-From the repository root, use a free port and a distinct trace filename:
+A typical app publishes through the IoT Data Plane `Publish` API on the server
+and has browsers subscribe with **mqtt.js v5**, MQTT 3.1.1 (`protocolVersion: 4`)
+over `wss`, QoS 1, exact topics (no wildcards), no retained messages, and a
+health ping to `$aws/things/ping`. Without a local broker, such apps must use a
+real AWS IoT endpoint and credentials even for local development.
 
-```sh
-mkdir -p api-traces
-ROTO_TEST_PORT=5073 \
-  ROTO_TRACE_FILE="$PWD/api-traces/s3-timeout-focused.jsonl" \
-  scripts/run-moto-tests.sh test_s3 -k test_list_object_versions_with_delimiter
-```
+Roto already accepts iot-data `Publish` and fans out to subscribers on its custom
+JSON WebSocket (`docs/iot.md`, `/roto-api/ws`). mqtt.js cannot talk to that, so
+roto needs an MQTT listener on top of the existing topic registry
+(`crates/roto-server/src/websocket.rs`, described in the IoT section below).
 
-The selector also matches another passing test. The failing node is:
+## Reference client
 
-```text
-tests/test_s3/test_s3_list_object_versions.py::test_list_object_versions_with_delimiter
-```
+**mqtt.js is the reference client.** Behaviour is defined by what mqtt.js
+(`mqtt@5`) needs in order to connect, subscribe, receive and stay alive. When the
+spec and mqtt.js disagree on something optional, follow mqtt.js. The acceptance
+test is a real mqtt.js client, not a hand-rolled packet test.
 
-For the full baseline:
+## Scope: super minimal
 
-```sh
-ROTO_TEST_PORT=5073 \
-  ROTO_TRACE_FILE="$PWD/api-traces/s3-timeout-full.jsonl" \
-  scripts/run-moto-tests.sh test_s3
-```
+Accept connections; do only what keeps mqtt.js connected and delivers messages.
 
-The runner builds the server and starts a fresh ephemeral store. It truncates the
-selected trace file. Its temporary server log is removed on exit; preserve that
-log or launch the server separately if investigating wire behavior.
+Handle:
+- WebSocket upgrade on an MQTT path (e.g. `/mqtt`) echoing subprotocol `mqtt`.
+- CONNECT -> CONNACK accepted. Ignore client id, credentials, clean flag,
+  keepalive, will.
+- SUBSCRIBE -> register filters in the existing registry, SUBACK granting the
+  requested QoS (0/1).
+- UNSUBSCRIBE -> remove filters, UNSUBACK.
+- PINGREQ -> PINGRESP.
+- DISCONNECT -> close.
+- Delivery: iot-data `Publish` matching a subscription -> PUBLISH packet to the
+  client, always at QoS 0 (no packet ids or retransmission).
 
-## Observed failure
+Ignore on purpose:
+- Client PUBLISH: accept and drop (send PUBACK for QoS 1 so mqtt.js does not stall).
+- Sessions, retained messages, will, authentication, MQTT 5, QoS 2, `$SYS`.
+- Messages published while a client is disconnected are lost (best effort, as in
+  `docs/iot.md`). Clients resubscribe on reconnect.
 
-The test alternates nonempty PUTs (`Body=b"data-1"`, etc.) and empty PUTs
-(`Body=b""`) on one boto3 client with bucket versioning enabled. It fails during
-setup at a nonempty `put_object`, before the version-listing assertions.
+## Steps
 
-The client waits in `socket.recv_into` until pytest-timeout's 30-second limit.
-Its captured log reports:
-
-```text
-MissingHeaderBodySeparatorDefect()
-urllib3.exceptions.HeaderParsingError
-unparsed data: 'HTTP/1.1 200 OK\r\n...content-length: 0\r\n...\r\n\r\n'
-```
-
-A complete final response status line appears inside what the client is parsing
-as headers. The server trace records the affected PUT as successful (HTTP 200,
-duration 0 ms); this points toward response parsing/framing rather than a blocked
-storage transaction, but the root cause has not been established.
-
-Two full post-port runs each produced **1 failed, 240 passed, 59 skipped,
-127 deselected, 2 xfailed**. A focused comparison temporarily restored the
-tracked S3 files from `7a13ed6` (before the S3 port), leaving the other services
-converted, and produced **1 failed, 1 passed, 427 deselected**, with the same
-timeout and header-parsing symptom. The converted files were restored afterward.
-All 15 native S3 tests, service Clippy, workspace tests and demo smoke passed.
-
-## Local environment and evidence
-
-The reproducing environment was macOS with Python 3.9.6 in `.venv-moto`:
-
-| Package | Version |
-| --- | --- |
-| boto3 / botocore | 1.42.97 |
-| urllib3 | 1.26.20 |
-| Moto | 5.0.11 |
-| pytest | 8.4.2 |
-| pytest-timeout | 2.4.0 |
-
-Artifacts from this session (local only, not committed):
-
-- `/tmp/s3-diesel-moto.log` and `/tmp/s3-diesel-moto-repeat.log`: full failures.
-- `/tmp/s3-before-port-moto.log`: focused pre-port comparison.
-- `api-traces/s3-diesel.jsonl` and `api-traces/s3-diesel-repeat.jsonl`: full traces.
-- `api-traces/s3-before-port.jsonl`: focused pre-port trace.
-
-Temporary files may disappear; the commands above regenerate the evidence.
-
-## Next investigation
-
-1. Reduce to repeated alternating empty/nonempty PUTs on one persistent boto3
-   connection. Capture client debug output and raw HTTP traffic, especially the
-   response to an empty PUT and the following nonempty PUT.
-2. Inspect `Expect: 100-continue` handling. Botocore's
-   `.venv-moto/lib/python3.9/site-packages/botocore/awsrequest.py` implements
-   `_send_output`, `_handle_expect_response`, `_consume_headers`, and a custom
-   `AWSHTTPResponse`. It changes `response_class` after an early final response;
-   check whether that state survives into a later request. This is a hypothesis,
-   not a confirmed cause.
-3. Compare with a fresh connection per request, disabling `Expect` as a diagnostic,
-   and a current supported Python environment. Record the package versions for
-   each comparison. Do not silently change the runner or baseline exclusions.
-4. On the server side, `crates/roto-server/src/main.rs` uses `axum::serve`, reads
-   the request body in `handle`, and constructs responses in `into_response`.
-   Check informational-response ordering and empty-body framing at that boundary.
-5. Once the cause is established, add a focused regression at the responsible
-   layer, then rerun the focused test, full S3 Moto suite and demo smoke. Keep the
-   original version-listing assertions intact.
+1. Test first: a mqtt.js client (connect, subscribe, iot-data publish, receive,
+   unsubscribe, ping, QoS 1 client publish gets PUBACK) against a roto server,
+   in the style of `tests/smoke-websocket.py`. Needs node + `mqtt@5`; keep it out
+   of the default cargo test run if node is unavailable.
+2. Implement the listener: packet parse/encode (variable-length remaining length,
+   topic and packet-id fields), wired to the existing connection/topic registry.
+3. Update `docs/iot.md` and the IoT row in `docs/services.md`; run the full
+   build/tests; commit to `main`.
 
 ---
 
