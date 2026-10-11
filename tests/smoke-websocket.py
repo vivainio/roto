@@ -308,7 +308,7 @@ def main():
                         endpoint, port, "lambda", "/roto-api/lambda/invocations", None, method="GET"
                     ))
                     if any(
-                        item.get("result", {}).get("requestContext", {}).get("eventType") == "DISCONNECT"
+                        (item.get("result") or {}).get("requestContext", {}).get("eventType") == "DISCONNECT"
                         for item in history["invocations"]
                     ):
                         break

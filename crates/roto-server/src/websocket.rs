@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 
 use crate::App;
 
+pub mod mqtt;
+
 const OUTBOUND_CAPACITY: usize = 128;
 const API_GATEWAY_MAX_MESSAGE_SIZE: usize = 128 * 1024;
 
@@ -28,6 +30,7 @@ struct Client {
     outbound: mpsc::Sender<OutboundFrame>,
     subscriptions: HashSet<String>,
     api_gateway: Option<(String, String)>,
+    mqtt: bool,
 }
 
 #[derive(Default)]
@@ -82,6 +85,8 @@ impl Hub {
         })
         .to_string();
 
+        let mqtt_packet = roto_mqtt::publish(&topic, &request.body)
+            .map_err(|_| invalid("Publish exceeds the local MQTT packet size limit"))?;
         let mut state = self.0.lock().unwrap();
         state.clients.retain(|_, client| {
             let matches = client
@@ -90,7 +95,11 @@ impl Hub {
                 .any(|filter| topic_matches(filter, &topic));
             if matches {
                 !matches!(
-                    client.outbound.try_send(OutboundFrame::Text(event.clone())),
+                    client.outbound.try_send(if client.mqtt {
+                        OutboundFrame::Binary(mqtt_packet.clone())
+                    } else {
+                        OutboundFrame::Text(event.clone())
+                    }),
                     Err(mpsc::error::TrySendError::Closed(_))
                 )
             } else {
@@ -261,6 +270,7 @@ async fn serve_api_gateway(
             outbound,
             subscriptions: HashSet::new(),
             api_gateway: Some((api.api_id.clone(), api.stage_name.clone())),
+            mqtt: false,
         },
     );
     // The local endpoint exposes the connection ID so a local client can call the
@@ -578,6 +588,7 @@ async fn serve(mut socket: WebSocket, hub: Hub) {
             outbound,
             subscriptions: HashSet::new(),
             api_gateway: None,
+            mqtt: false,
         },
     );
     if send_json(&mut socket, json!({"type":"ready", "connectionId":id}))

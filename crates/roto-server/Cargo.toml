@@ -38,3 +38,4 @@ sha2 = "0.11.0"
 
 zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+roto-mqtt = { version = "0.0.1", path = "../roto-mqtt" }

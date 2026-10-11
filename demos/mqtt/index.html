@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roto MQTT demo</title>
+<style>
+  body { max-width: 850px; margin: 40px auto; padding: 0 20px; font: 16px system-ui; color: #203040; }
+  input, button { padding: 8px; font: inherit; margin: 4px 0; }
+  input { width: 70%; } pre { background: #eef3f7; padding: 16px; white-space: pre-wrap; }
+</style>
+<h1>Roto MQTT demo</h1>
+<p>MQTT.js over WebSocket, MQTT 3.1.1. Messages are published through the IoT HTTP API.</p>
+<label for="topic">Topic</label><br><input id="topic" value="demo/state"><br>
+<label for="payload">Payload</label><br><input id="payload" value="Hello from Roto"><br>
+<button id="connect">Connect and subscribe</button>
+<button id="publish">Publish through IoT API</button>
+<button id="disconnect">Disconnect</button>
+<button id="checks">Run acceptance checks</button>
+<p id="status" role="status">Loading MQTT.js…</p>
+<pre id="log" aria-label="Messages"></pre>
+<script src="https://unpkg.com/mqtt@5.16.0/dist/mqtt.min.js"></script>
+<script>
+const log = text => { document.querySelector('#log').textContent += text + '\n'; };
+const status = text => { document.querySelector('#status').textContent = text; };
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const clients = new Set();
+let client;
+let configuration;
+async function config() { return configuration ??= await (await fetch('/config')).json(); }
+function within(promise, label) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(label + ' timed out')), 5000);
+    promise.then(value => { clearTimeout(timeout); resolve(value); }, error => { clearTimeout(timeout); reject(error); });
+  });
+}
+function event(client, name, predicate = () => true) {
+  return within(new Promise((resolve, reject) => {
+    const handler = (...args) => { if (predicate(...args)) { cleanup(); resolve(args); } };
+    const error = reason => { cleanup(); reject(reason); };
+    const cleanup = () => { client.off(name, handler); client.off('error', error); };
+    client.on(name, handler); client.once('error', error);
+  }), name);
+}
+async function open(clientId = 'demo-' + Math.random().toString(16).slice(2)) {
+  const { mqttUrl } = await config();
+  const c = mqtt.connect(mqttUrl, {
+    protocolVersion: 4, clientId, clean: false, keepalive: 1, reconnectPeriod: 0,
+    username: 'fake', password: 'fake', will: { topic: 'demo/will', payload: 'ignored', qos: 1 },
+  });
+  clients.add(c);
+  c.on('error', error => log('ERROR: ' + error.message));
+  await event(c, 'connect');
+  return c;
+}
+async function publish(topic, payload) {
+  const response = await fetch('/publish?topic=' + encodeURIComponent(topic), { method: 'POST', body: payload });
+  if (!response.ok) throw new Error(await response.text());
+}
+function check(condition, message) { if (!condition) throw new Error(message); log('PASS: ' + message); }
+async function checks() {
+  status('Running acceptance checks…');
+  const testClients = [];
+  try {
+    const first = await open('acceptance'); testClients.push(first);
+    const second = await open('acceptance-second'); testClients.push(second);
+    const count = [];
+    first.on('message', (...args) => count.push(args));
+    check(first.stream.socket.protocol === 'mqtt', 'WebSocket mqtt subprotocol');
+    const grants = await within(first.subscribeAsync({ 'demo/state': { qos: 1 }, '$aws/things/ping': { qos: 0 } }), 'subscribe');
+    check(grants[0].qos === 1 && grants[1].qos === 0, 'QoS 0/1 subscription grants');
+    await within(second.subscribeAsync('demo/+', { qos: 1 }), 'wildcard subscribe');
+    const delivered = event(first, 'message');
+    const wildcard = event(second, 'message');
+    const binary = new Uint8Array(20000).fill(255);
+    await publish('demo/state', binary);
+    const [topic, payload, packet] = await delivered;
+    check(topic === 'demo/state' && payload.length === binary.length && payload.every(byte => byte === 255)
+      && packet.qos === 0, 'Binary HTTP publish delivered at QoS 0, multi-byte packet length');
+    check((await wildcard)[1].length === binary.length, 'Shared registry wildcard delivery');
+    const health = event(first, 'message');
+    await publish('$aws/things/ping', 'healthy');
+    check((await health)[1].toString() === 'healthy', '$aws/things/ping delivery');
+    const before = count.length;
+    await within(first.publishAsync('demo/state', 'dropped', { qos: 1 }), 'PUBACK');
+    await sleep(100);
+    check(count.length === before, 'Client QoS 1 publish acknowledged and dropped');
+    await within(first.unsubscribeAsync('demo/state'), 'unsubscribe');
+    const remaining = event(second, 'message');
+    await publish('demo/state', 'after unsubscribe');
+    await remaining; await sleep(100);
+    check(count.length === before, 'Unsubscribe stops delivery');
+    await event(first, 'packetreceive', packet => packet.cmd === 'pingresp');
+    check(first.connected, 'MQTT keepalive PINGRESP');
+    await first.subscribeAsync('demo/state', { qos: 1 });
+    await first.endAsync();
+    const fresh = await open('acceptance'); testClients.push(fresh);
+    const freshMessages = [];
+    fresh.on('message', (...args) => freshMessages.push(args));
+    const existing = event(second, 'message');
+    await publish('demo/state', 'no old session'); await existing; await sleep(100);
+    check(freshMessages.length === 0, 'Reconnect has no saved subscriptions');
+    await fresh.subscribeAsync('demo/state', { qos: 1 });
+    const resubscribed = event(fresh, 'message');
+    await publish('demo/state', 'fresh');
+    check((await resubscribed)[1].toString() === 'fresh', 'Resubscribe after reconnect');
+    status('PASS: all MQTT.js browser acceptance checks');
+  } catch (error) { status('FAIL: ' + error.message); log(error.stack); }
+  finally { for (const c of testClients) { await c.endAsync(true); clients.delete(c); } }
+}
+const action = fn => async () => { try { await fn(); } catch (error) { status('FAIL: ' + error.message); } };
+document.querySelector('#connect').onclick = action(async () => {
+  if (client) { await client.endAsync(true); clients.delete(client); }
+  client = await open();
+  client.on('message', (topic, payload) => log(topic + ': ' + payload.toString()));
+  await client.subscribeAsync(document.querySelector('#topic').value, { qos: 1 });
+  status('Connected and subscribed');
+});
+document.querySelector('#publish').onclick = action(async () => {
+  await publish(document.querySelector('#topic').value, document.querySelector('#payload').value);
+});
+document.querySelector('#disconnect').onclick = action(async () => {
+  if (client) { await client.endAsync(); clients.delete(client); client = undefined; }
+  status('Disconnected');
+});
+document.querySelector('#checks').onclick = action(async () => {
+  const button = document.querySelector('#checks'); button.disabled = true;
+  try { await checks(); } finally { button.disabled = false; }
+});
+window.addEventListener('beforeunload', () => { for (const c of clients) c.end(true); });
+status(typeof mqtt === 'undefined' ? 'FAIL: MQTT.js CDN unavailable' : 'Ready');
+</script>
+</html>
