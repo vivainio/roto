@@ -304,6 +304,15 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
                     String::from_utf8_lossy(&body).into_owned(),
                 );
             }
+            // A worker that sends no body (e.g. 204) returned nothing, like a handler
+            // returning None; that is a null result rather than malformed JSON.
+            if body.iter().all(u8::is_ascii_whitespace) {
+                return Outcome {
+                    payload: Value::Null,
+                    logs: String::new(),
+                    failed: false,
+                };
+            }
             match serde_json::from_slice(&body) {
                 Ok(payload) => Outcome {
                     payload,

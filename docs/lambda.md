@@ -209,7 +209,8 @@ Roto POSTs the event JSON to `url`, with the configured headers and invocation m
 if supplied, is passed in `X-Roto-Client-Context`. Content-Type is `application/json` unless
 explicitly overridden. Redirects are not followed.
 
-A 2xx response must contain one JSON result. Non-2xx responses, connection errors, invalid
+A 2xx response must contain one JSON result; an empty body (for example `204 No Content`) is a
+`null` result, like a handler that returns nothing. Non-2xx responses, connection errors, invalid
 JSON, and timeouts become function errors. Non-2xx response bodies are retained as diagnostic
 logs. Stdout, stderr, and HTTP response bodies each have a 6 MiB limit.
 
