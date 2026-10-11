@@ -6,6 +6,10 @@ browser clients using MQTT.js or Roto's custom JSON protocol.
 
 ## MQTT over WebSocket
 
+**MQTT.js is the reference client and acceptance test** for this subset. The
+browser demo uses MQTT.js v5 with MQTT 3.1.1 (`protocolVersion: 4`); library
+version 5 does not require the MQTT 5 wire protocol.
+
 Connect to `ws://localhost:5070/mqtt` using MQTT 3.1.1 (`protocolVersion: 4`
 in MQTT.js). The upgrade negotiates the `mqtt` subprotocol. For example, with
 MQTT.js loaded in the browser:
@@ -24,13 +28,19 @@ DISCONNECT are supported. Client PUBLISH payloads are dropped; QoS 1 receives
 PUBACK so the client does not stall.
 
 Client IDs, credentials, clean session, keepalive settings, and wills do not
-create persistent state or authentication. MQTT 5, QoS 2, retained messages,
+create persistent state or authentication. Optional [Lua hooks](runtime-hooks.md#mqtt-connection-and-subscription-interception)
+receive this metadata and can refuse connections or individual subscription
+filters. MQTT 5, QoS 2, retained messages,
 and offline delivery are unsupported. Clients must resubscribe on reconnect.
 The local packet size limit is 1 MiB. For `wss`, put a TLS proxy in front of Roto.
 
 The [browser demo](https://github.com/vivainio/roto/tree/main/demos/mqtt)
 loads MQTT.js from a CDN and includes acceptance checks; it requires no Node
-installation. See `demos/mqtt/README.md` for launch instructions.
+installation. See `demos/mqtt/README.md` for launch instructions. Its **Run
+acceptance checks** button verifies connection, QoS grants, topic filtering,
+binary payload delivery, unsubscribe, keepalive, and reconnect. Start Roto with
+`--setup demos/mqtt/setup.lua` and the demo server with `--hooks` to additionally
+verify Lua connection refusals and per-filter subscription denial.
 
 ## Custom JSON WebSocket
 

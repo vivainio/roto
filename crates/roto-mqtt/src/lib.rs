@@ -5,7 +5,7 @@ pub const MAX_PACKET_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Packet {
-    Connect,
+    Connect(Connect),
     Subscribe {
         id: u16,
         filters: Vec<(String, u8)>,
@@ -20,6 +20,24 @@ pub enum Packet {
     },
     Ping,
     Disconnect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Connect {
+    pub client_id: String,
+    pub clean_session: bool,
+    pub keep_alive: u16,
+    pub username: Option<String>,
+    pub password: Option<Vec<u8>>,
+    pub will: Option<Will>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Will {
+    pub topic: String,
+    pub payload: Vec<u8>,
+    pub qos: u8,
+    pub retain: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -67,20 +85,37 @@ pub fn decode(input: &[u8]) -> Result<Option<(Packet, usize)>, Error> {
             if flags & 1 != 0 || (flags & 4 == 0 && flags & 0x38 != 0) || (flags >> 3) & 3 == 3 {
                 return Err(Error::Malformed);
             }
-            reader.u16()?; // Keepalive is handled by responding to PINGREQ.
-            reader.text()?; // Client ID and clean session are ignored.
-            if flags & 4 != 0 {
-                reader.text()?;
-                reader.bytes()?;
-            }
-            if flags & 128 != 0 {
-                reader.text()?;
-            }
-            if flags & 64 != 0 {
-                reader.bytes()?;
-            }
+            let keep_alive = reader.u16()?;
+            let client_id = reader.text()?.to_owned();
+            let will = if flags & 4 != 0 {
+                Some(Will {
+                    topic: reader.text()?.to_owned(),
+                    payload: reader.bytes()?.to_vec(),
+                    qos: (flags >> 3) & 3,
+                    retain: flags & 32 != 0,
+                })
+            } else {
+                None
+            };
+            let username = if flags & 128 != 0 {
+                Some(reader.text()?.to_owned())
+            } else {
+                None
+            };
+            let password = if flags & 64 != 0 {
+                Some(reader.bytes()?.to_vec())
+            } else {
+                None
+            };
             reader.finished()?;
-            Packet::Connect
+            Packet::Connect(Connect {
+                client_id,
+                keep_alive,
+                clean_session: flags & 2 != 0,
+                username,
+                password,
+                will,
+            })
         }
         0x82 => {
             let id = reader.id()?;
@@ -174,7 +209,9 @@ impl<'a> Reader<'a> {
     }
 }
 
-pub const CONNACK: &[u8] = &[0x20, 2, 0, 0];
+pub fn connack(code: u8) -> Vec<u8> {
+    vec![0x20, 2, 0, code]
+}
 pub const PINGRESP: &[u8] = &[0xd0, 0];
 
 pub fn puback(id: u16) -> Vec<u8> {
@@ -222,6 +259,42 @@ fn frame(header: u8, body: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_connect_metadata_and_binary_credentials() {
+        let mut body = vec![0, 4, b'M', b'Q', b'T', b'T', 4, 0xec, 0, 10];
+        for field in [
+            &b"client"[..],
+            &b"will/topic"[..],
+            &[0, 255],
+            &b"user"[..],
+            &[255, 0],
+        ] {
+            body.extend_from_slice(&(field.len() as u16).to_be_bytes());
+            body.extend_from_slice(field);
+        }
+        let encoded = frame(0x10, &body);
+        assert_eq!(
+            decode(&encoded),
+            Ok(Some((
+                Packet::Connect(Connect {
+                    client_id: "client".into(),
+                    clean_session: false,
+                    keep_alive: 10,
+                    username: Some("user".into()),
+                    password: Some(vec![255, 0]),
+                    will: Some(Will {
+                        topic: "will/topic".into(),
+                        payload: vec![0, 255],
+                        qos: 1,
+                        retain: true
+                    }),
+                }),
+                encoded.len()
+            )))
+        );
+        assert_eq!(connack(5), [0x20, 2, 0, 5]);
+    }
 
     #[test]
     fn split_and_combined_packets() {

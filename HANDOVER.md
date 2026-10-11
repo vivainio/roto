@@ -11,15 +11,24 @@ Implemented 2026-10-11 on `feat/iot-mqtt-websocket`.
 - HTTP IoT Data Plane Publish delivers raw payloads as MQTT QoS 0 PUBLISH.
   Client publishes are dropped; QoS 1 receives PUBACK. Authentication, sessions,
   wills, retained messages, MQTT 5, QoS 2, and offline delivery are unsupported.
+- Lua `roto.intercept_request("mqtt", "Connect"/"Subscribe", callback)` hooks
+  receive decoded client metadata and ordered topic/QoS filters. CONNECT
+  refusals return CONNACK codes; SUBSCRIBE can reject individual filters.
+  Callback errors or invalid results fail closed. See `docs/runtime-hooks.md`.
 - `demos/mqtt` is a plain HTML app loading MQTT.js 5.16.0 from unpkg. Its
   Python standard-library server proxies HTTP publishes. No Node or npm is needed.
-  See its README for launch commands and browser acceptance checks.
+  MQTT.js is the reference client and acceptance test. See its README for
+  launch commands and browser acceptance checks; `--setup demos/mqtt/setup.lua`
+  plus the demo server's `--hooks` option enables policy denial checks.
 
 Verified with `agent-browser` against disposable servers: MQTT.js connection,
 subprotocol, QoS grants, exact/wildcard and health-topic delivery, 20 KB binary
 payload, PUBACK without client publish fan-out, unsubscribe, keepalive,
 disconnect, reconnect without sessions, and resubscribe. The page displayed
-`PASS: all MQTT.js browser acceptance checks`.
+`PASS: all MQTT.js browser acceptance checks including Lua denials`.
+Additional checks cover explicit refusal, hook errors/invalid results, mixed
+subscription grants, no delivery to denied filters, and continued delivery to
+accepted filters.
 
 `cargo build --workspace --locked`, `cargo test --workspace --locked`, codec
 unit tests, and `tests/smoke-websocket.py` pass. The latter now tolerates a null

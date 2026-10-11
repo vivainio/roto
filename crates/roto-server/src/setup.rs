@@ -96,6 +96,22 @@ impl Hooks {
         })
     }
 
+    /// Invoke a protocol-specific hook using the same VM, lock and deadline as HTTP hooks.
+    pub fn mqtt(&self, operation: &str, request: Value, context: Value) -> Result<Value, String> {
+        let callback = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&("mqtt".into(), operation.into()))
+            .cloned();
+        let Some(callback) = callback else {
+            return Ok(Value::Null);
+        };
+        let _guard = callback.lock.lock().map_err(|error| error.to_string())?;
+        timed_call(&callback.lua, &callback.function, (request, context), 1)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn intercept(
         &self,
         service: &str,

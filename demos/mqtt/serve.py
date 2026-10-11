@@ -11,6 +11,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=5072)
 parser.add_argument('--roto-port', type=int, default=5071)
+parser.add_argument('--hooks', action='store_true', help='Include Lua denial checks; start Roto with demos/mqtt/setup.lua')
 args = parser.parse_args()
 
 
@@ -20,7 +21,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/config':
-            body = json.dumps({'mqttUrl': f'ws://127.0.0.1:{args.roto_port}/mqtt'}).encode()
+            body = json.dumps({'mqttUrl': f'ws://127.0.0.1:{args.roto_port}/mqtt', 'hooks': args.hooks}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
