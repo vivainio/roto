@@ -49,8 +49,8 @@ async function open(clientId = 'demo-' + Math.random().toString(16).slice(2)) {
   });
   clients.add(c);
   c.on('error', error => log('ERROR: ' + error.message));
-  await event(c, 'connect');
-  return c;
+  try { await event(c, 'connect'); return c; }
+  catch (error) { await c.endAsync(true); clients.delete(c); throw error; }
 }
 async function publish(topic, payload) {
   const response = await fetch('/publish?topic=' + encodeURIComponent(topic), { method: 'POST', body: payload });
@@ -103,7 +103,30 @@ async function checks() {
     const resubscribed = event(fresh, 'message');
     await publish('demo/state', 'fresh');
     check((await resubscribed)[1].toString() === 'fresh', 'Resubscribe after reconnect');
-    status('PASS: all MQTT.js browser acceptance checks');
+    const { hooks } = await config();
+    if (hooks) {
+      for (const [id, code] of [['denied', 5], ['hook-error', 3], ['invalid-hook', 3]]) {
+        let denied;
+        try { const unexpected = await open(id); testClients.push(unexpected); }
+        catch (error) { denied = error; }
+        check(denied && denied.code === code, 'Lua connect refusal ' + id + ' (code ' + code + ')');
+      }
+      const suback = event(fresh, 'packetreceive', packet => packet.cmd === 'suback');
+      await new Promise(resolve => fresh.subscribe({
+        'demo/state': { qos: 1 }, 'demo/private/#': { qos: 1 },
+      }, () => resolve()));
+      const [ack] = await suback;
+      check(ack.granted[0] === 1 && ack.granted[1] === 128, 'Lua per-filter subscribe refusal');
+      await second.subscribeAsync('demo/#', { qos: 1 });
+      const observed = event(second, 'message');
+      const beforeDenied = freshMessages.length;
+      await publish('demo/private/item', 'denied filter'); await observed; await sleep(100);
+      check(freshMessages.length === beforeDenied, 'Denied filter does not receive publishes');
+      const allowed = event(fresh, 'message');
+      await publish('demo/state', 'allowed filter');
+      check((await allowed)[1].toString() === 'allowed filter', 'Allowed filter still receives publishes');
+    }
+    status('PASS: all MQTT.js browser acceptance checks' + (hooks ? ' including Lua denials' : ''));
   } catch (error) { status('FAIL: ' + error.message); log(error.stack); }
   finally { for (const c of testClients) { await c.endAsync(true); clients.delete(c); } }
 }

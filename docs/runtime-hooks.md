@@ -62,6 +62,59 @@ setup calls do not trigger them. Requests without a matching registration do
 not enter Lua. Callback errors and invalid responses return an internal AWS
 error. There is no global interceptor or missing-support fallback registration.
 
+## MQTT connection and subscription interception
+
+Register `roto.intercept_request("mqtt", "Connect", callback)` or
+`roto.intercept_request("mqtt", "Subscribe", callback)` to simulate policies.
+These callbacks receive decoded MQTT dictionaries, and return MQTT decisions
+rather than HTTP responses:
+
+```lua
+roto.intercept_request("mqtt", "Connect", function(request, context)
+  if request.connect.client_id == "blocked" then
+    return {return_code = 5} -- Not authorized.
+  end
+  return nil
+end)
+
+roto.intercept_request("mqtt", "Subscribe", function(request, context)
+  local codes = {}
+  for i, filter in ipairs(request.filters) do
+    codes[i] = filter.topic == "private/#" and 128 or filter.qos
+  end
+  return {return_codes = roto.array(codes)}
+end)
+```
+
+Both request dictionaries include `service` (`mqtt`), `operation`, `path`, raw
+WebSocket `query`, `headers` (Authorization omitted), actual peer `source_ip`
+and `source_port`, and Roto's `connection_id`. The nested `connect` table
+contains `protocol_version` (4), `client_id`, `clean_session`, `keep_alive`,
+`username`, `password` (when valid UTF-8), `password_base64` (preserving binary
+passwords), and `will` with `topic`, `qos`, `retain`, and `payload_base64`.
+Absent optional values are null. The Subscribe request additionally contains
+`packet_id` and an ordered `filters` array of `{topic, qos}` dictionaries.
+Context contains `account_id`, `region` (local default `us-east-1`), and
+`request_id`. These trusted hooks can see MQTT credentials; avoid logging them.
+
+Returning `nil` applies normal behavior. Connect results use `return_code`
+0 (accept), 1 (unsupported version), 2 (client ID rejected), 3 (unavailable),
+4 (bad credentials), or 5 (not authorized). Refusal sends CONNACK then closes.
+Subscribe results require one `return_codes` entry per filter: 0 or 1 to grant
+at most the requested QoS, or 128 to reject. Invalid filters and QoS 2 cannot be
+accepted by a hook. Accepted filters enter the shared topic registry; rejected
+filters do not. Rejecting a repeat subscription does not revoke an existing
+subscription; use unsubscribe to remove it.
+
+Errors, timeouts, and invalid results fail closed: CONNECT receives code 3,
+and SUBSCRIBE receives failure codes for every filter. The hooks share the Lua
+serialization and execution limits below, run after the WebSocket upgrade,
+and are not included in the AWS HTTP request trace. Without hooks, valid
+connections and QoS 0/1 subscriptions are accepted. This simulates policy
+outcomes; it does not implement AWS IoT IAM policies or signature validation.
+
+See `demos/mqtt/setup.lua` and the browser demo's Lua denial checks.
+
 ## Execution limits
 
 Callbacks from one setup script execute serially. Lua instruction hooks check
