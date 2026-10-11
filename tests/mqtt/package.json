@@ -1,0 +1,11 @@
+{
+  "name": "roto-mqtt-integration",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "mqtt": "5.16.0"
+  }
+}

@@ -13,6 +13,21 @@ jobs:
       - run: cargo test --workspace
       - name: Generated code is up to date
         run: scripts/gen.sh && git diff --exit-code
+  mqtt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.3" }
+      - run: cargo build -p roto-server --locked
+      - run: bun install --frozen-lockfile
+        working-directory: tests/mqtt
+      - name: MQTT.js WebSocket integration and Lua policy checks
+        run: bun test
+        working-directory: tests/mqtt
   lua-services:
     runs-on: ubuntu-latest
     strategy:

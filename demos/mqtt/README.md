@@ -71,3 +71,22 @@ Lua denials`. If the wait times out, inspect `#status` and `#log`, or run
 `agent-browser --session roto-mqtt-check console`. Close the browser session
 when finished and stop the disposable servers with Ctrl-C. If you selected
 another demo port, adjust the browser URL accordingly.
+
+## Run the MQTT.js integration checks with Bun
+
+The CI integration test runs MQTT.js 5.16.0 under Bun 1.4.3, including the Lua
+policy denial checks. It starts a fresh ephemeral Roto server on a free port and
+stops it afterward; no browser or Python demo server is needed.
+
+```sh
+cargo build -p roto-server --locked
+cd tests/mqtt
+bun install --frozen-lockfile
+bun test
+```
+
+The test uses `forceNativeWebSocket: true` because Bun does not implement the
+`ws.createWebSocketStream` used by MQTT.js's default Node transport. Dependencies
+are pinned in `tests/mqtt/bun.lock`. Set `ROTO_SERVER` to an absolute binary path
+if using a different Cargo target directory. The browser checks remain useful
+for verifying the real browser transport.
