@@ -10,7 +10,7 @@ use roto_core::store::{DieselDb as Db, Store};
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::{Blob, Timestamp};
 
-use crate::blobs::{Blobs, Placement};
+use crate::blobs::{self, Blobs, Placement};
 use crate::config;
 use crate::generated::*;
 
@@ -210,6 +210,62 @@ pub(crate) struct NewObj {
     pub acl: Option<String>,
 }
 
+/// What the setup helper `roto.s3.link` can set on a linked object.
+#[derive(Default, Clone)]
+pub struct LinkAttrs {
+    pub content_type: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    /// Response headers by their snake_case name (`cache_control`, `content_encoding`, ...).
+    pub headers: BTreeMap<String, String>,
+}
+
+enum Body<'a> {
+    Data(&'a [u8]),
+    /// `link:` path and the size of the host file.
+    Link(String, i64),
+}
+
+/// Size and a pseudo-ETag for a file, from `stat` alone so the body is never read. The ETag is
+/// the md5 of path, size and mtime, so it changes when the file does but is not the body's md5.
+fn file_fingerprint(path: &std::path::Path) -> std::io::Result<(i64, String)> {
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mtime = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let size = meta.len();
+    let seed = format!("{}:{size}:{mtime}", path.display());
+    Ok((size as i64, md5_hex(seed.as_bytes())))
+}
+
+/// Content type from the extension. Archives (`.gz`, `.tgz`) stay `binary/octet-stream`.
+fn guess_content_type(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "txt" | "log" => "text/plain",
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        "yaml" | "yml" => "application/yaml",
+        "md" => "text/markdown",
+        "sql" => "application/sql",
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "zip" => "application/zip",
+        _ => return None,
+    })
+}
+
 impl S3 {
     fn fix_moved(
         &self,
@@ -237,7 +293,8 @@ impl S3 {
         cur: &Obj,
     ) -> Result<(), AwsError> {
         let mut path = cur.path.clone();
-        if !path.is_empty() {
+        // A link keeps pointing at its host file; there is no stored body to move.
+        if !path.is_empty() && !blobs::is_link(&path) {
             path = Blobs::version_rel(bucket, &cur.key, &cur.version_id);
             self.blobs.move_rel(&cur.path, &path).map_err(io)?;
         }
@@ -249,7 +306,8 @@ impl S3 {
 
     fn drop_row(&self, tx: &mut SqliteConnection, o: &Obj) -> Result<(), AwsError> {
         diesel::delete(objects::table.filter(objects::seq.eq(&(o.seq)))).execute(tx)?;
-        if !o.path.is_empty() {
+        // Never touch the host file behind a link.
+        if !o.path.is_empty() && !blobs::is_link(&o.path) {
             self.blobs.remove(&o.path).map_err(io)?;
         }
         Ok(())
@@ -272,7 +330,7 @@ impl S3 {
             .map(Into::into);
         let Some(o) = next else { return Ok(()) };
         let mut path = o.path.clone();
-        if !path.is_empty() {
+        if !path.is_empty() && !blobs::is_link(&path) {
             let p = self.blobs.relocate_live(&o.path, bucket, key).map_err(io)?;
             self.fix_moved(tx, bucket, &p)?;
             path = p.rel;
@@ -293,6 +351,18 @@ impl S3 {
         etag: String,
         attrs: NewObj,
     ) -> Result<Obj, AwsError> {
+        self.store_body(tx, b, key, Body::Data(data), etag, attrs)
+    }
+
+    fn store_body(
+        &self,
+        tx: &mut SqliteConnection,
+        b: &BucketRow,
+        key: &str,
+        body: Body,
+        etag: String,
+        attrs: NewObj,
+    ) -> Result<Obj, AwsError> {
         let version_id = if b.enabled() {
             new_version_id()
         } else {
@@ -304,8 +374,14 @@ impl S3 {
         if let Some(cur) = latest_obj(tx, &b.name, key)? {
             self.retire_latest(tx, &b.name, &cur)?;
         }
-        let placement = self.blobs.write_live(&b.name, key, data).map_err(io)?;
-        self.fix_moved(tx, &b.name, &placement)?;
+        let (rel, size) = match body {
+            Body::Data(data) => {
+                let placement = self.blobs.write_live(&b.name, key, data).map_err(io)?;
+                self.fix_moved(tx, &b.name, &placement)?;
+                (placement.rel, data.len() as i64)
+            }
+            Body::Link(path, size) => (path, size),
+        };
         let content_type = attrs
             .content_type
             .clone()
@@ -322,11 +398,11 @@ impl S3 {
                 objects::version_id.eq(&(version_id)),
                 objects::is_latest.eq(1_i64),
                 objects::delete_marker.eq(0_i64),
-                objects::size.eq(&(data.len() as i64)),
+                objects::size.eq(&size),
                 objects::etag.eq(&(etag)),
                 objects::content_type.eq(&(content_type)),
                 objects::last_modified.eq(&(last_modified)),
-                objects::path.eq(&(placement.rel)),
+                objects::path.eq(&(rel)),
                 objects::metadata.eq(&(json_string(&attrs.metadata))),
                 objects::headers.eq(&(json_string(&attrs.headers))),
                 objects::tags.eq(&(json_string(&attrs.tags))),
@@ -335,6 +411,78 @@ impl S3 {
             ))
             .execute(tx)?;
         Ok(find_obj(tx, &b.name, key, Some(&version_id))?.expect("just inserted"))
+    }
+
+    /// Registers `key` as a reference to the host file `host`: no copy is made and reads are
+    /// served from the file. Safe to repeat; an existing link to the same file is refreshed.
+    pub fn link_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        host: &std::path::Path,
+        attrs: LinkAttrs,
+    ) -> Result<(), AwsError> {
+        let host = std::fs::canonicalize(host)
+            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
+        let (size, etag) = file_fingerprint(&host)
+            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
+        let content_type = attrs
+            .content_type
+            .or_else(|| guess_content_type(&host).map(str::to_string));
+        let known = self.db.read(|c| Ok(load_bucket(c, bucket).is_ok()))?;
+        if !known {
+            let location_constraint = (ctx.region != "us-east-1").then(|| ctx.region.clone());
+            Service::create_bucket(
+                self,
+                ctx,
+                CreateBucketRequest {
+                    bucket: bucket.to_string(),
+                    create_bucket_configuration: location_constraint.map(|l| {
+                        CreateBucketConfiguration {
+                            location_constraint: Some(l),
+                            ..Default::default()
+                        }
+                    }),
+                    ..Default::default()
+                },
+            )?;
+        }
+        let link = blobs::link_path(&host);
+        self.db.transaction(|tx| {
+            let b = load_bucket(tx, bucket)?;
+            if let Some(cur) = latest_obj(tx, bucket, key)? {
+                if cur.path == link {
+                    diesel::update(objects::table.filter(objects::seq.eq(&(cur.seq))))
+                        .set((
+                            objects::size.eq(&size),
+                            objects::etag.eq(&etag),
+                            objects::content_type
+                                .eq(content_type.as_deref().unwrap_or("binary/octet-stream")),
+                            objects::last_modified.eq(&(now())),
+                            objects::metadata.eq(&(json_string(&attrs.metadata))),
+                            objects::headers.eq(&(json_string(&attrs.headers))),
+                        ))
+                        .execute(tx)?;
+                    return Ok(());
+                }
+            }
+            let attrs = NewObj {
+                content_type: content_type.clone(),
+                metadata: attrs.metadata.clone(),
+                headers: attrs.headers.clone(),
+                ..Default::default()
+            };
+            self.store_body(
+                tx,
+                &b,
+                key,
+                Body::Link(link.clone(), size),
+                etag.clone(),
+                attrs,
+            )?;
+            Ok(())
+        })
     }
 
     pub(crate) fn read_body(&self, o: &Obj) -> Result<Vec<u8>, AwsError> {

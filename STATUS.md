@@ -60,6 +60,11 @@ behaviour. `scripts/gen.sh` regenerates; CI fails if generated code is stale.
   `<data>/s3/.roto/`. Writes are temp-file + atomic rename. A key that is also a prefix
   (`a` and `a/b`) is stored as `a/.roto-self`; unsafe key segments (`..`, empty, control
   characters, over-long) are escaped. SQLite is the source of truth for metadata and all listings.
+* **Linked objects:** Lua setup `roto.s3.link` / `link_dir` register host files as objects
+  without copying them (`objects.path` is `link:<host path>`); reads come from the file, which
+  roto never writes, moves or deletes. Size and a size+mtime pseudo-ETag are captured at link time.
+* **Live Lua:** `--enable-lua-api` serves `POST /roto-api/lua` (loopback, no browsers) to run
+  scripts with the setup API against a running server.
 * Not yet: `roto s3 rescan` (re-importing files edited by hand), crash-recovery reconciliation,
   and fsync controls beyond SQLite's `--durable`.
 

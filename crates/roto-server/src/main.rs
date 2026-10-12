@@ -1,6 +1,7 @@
 mod apigateway_v2;
 mod gateway;
 mod inspection;
+mod lua_api;
 mod lua_service;
 mod lua_wire;
 mod setup;
@@ -65,6 +66,9 @@ struct Args {
     /// Optional Lua service bundle directory or ZIP with a root manifest.json.
     #[arg(long, env = "ROTO_LUA_SERVICES")]
     lua_services: Option<PathBuf>,
+    /// Accept Lua scripts at POST /roto-api/lua from loopback clients (runs code on this host).
+    #[arg(long)]
+    enable_lua_api: bool,
     /// Write one JSON object per AWS HTTP request; request bodies and credentials are omitted.
     #[arg(long)]
     trace: Option<PathBuf>,
@@ -81,6 +85,7 @@ struct App {
     api_gateway_v2: apigateway_v2::Registry,
     websockets: websocket::Hub,
     hooks: std::sync::Mutex<setup::Hooks>,
+    lua_api: Option<lua_api::LuaApi>,
 }
 
 #[tokio::main]
@@ -184,6 +189,7 @@ async fn main() {
     });
     let setup_sqs = sqs.0.clone();
     let setup_lambda = lambda.0.clone();
+    let setup_s3 = s3.0.clone();
     let lambda = Arc::new(lambda);
     let s3 = Arc::new(s3);
     let handlers: Vec<Arc<dyn ServiceHandler>> = vec![
@@ -229,6 +235,24 @@ async fn main() {
                 std::process::exit(1);
             });
     services.insert("cloudformation", Arc::new(cloudformation));
+    let endpoint = format!(
+        "http://{}:{}",
+        if args.host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            &args.host
+        },
+        args.port
+    );
+    let lua_api = args.enable_lua_api.then(|| lua_api::LuaApi {
+        region: args.setup_region.clone(),
+        endpoint: endpoint.clone(),
+        vars: args.set.clone(),
+        sqs: setup_sqs.clone(),
+        lambda: setup_lambda.clone(),
+        s3: setup_s3.clone(),
+        running: Default::default(),
+    });
     let app = Arc::new(App {
         services,
         store,
@@ -239,17 +263,9 @@ async fn main() {
         api_gateway_v2: apigateway_v2::Registry::default(),
         websockets: websocket::Hub::default(),
         hooks: Default::default(),
+        lua_api,
     });
 
-    let endpoint = format!(
-        "http://{}:{}",
-        if args.host == "0.0.0.0" {
-            "127.0.0.1"
-        } else {
-            &args.host
-        },
-        args.port
-    );
     if let Some(path) = args.setup {
         let set_vars = args.set;
         let ctx = RequestContext {
@@ -261,8 +277,16 @@ async fn main() {
         };
         let services = app.services.clone();
         let hooks = tokio::task::spawn_blocking(move || {
-            setup::run(&path, ctx, &set_vars, setup_sqs, setup_lambda, services)
-                .map_err(|e| e.to_string())
+            setup::run(
+                &path,
+                ctx,
+                &set_vars,
+                setup_sqs,
+                setup_lambda,
+                setup_s3,
+                services,
+            )
+            .map_err(|e| e.to_string())
         })
         .await
         .expect("setup task failed")
@@ -304,6 +328,7 @@ async fn main() {
         .route("/roto-api/trace", get(request_trace))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
+        .route("/roto-api/lua", post(lua_api::run))
         // moto's server-mode test harness resets state through this path.
         .route("/moto-api/reset", post(reset))
         .fallback(handle)
@@ -946,6 +971,7 @@ mod discovery_tests {
             websockets: Default::default(),
             api_gateway_v2: Default::default(),
             hooks: Default::default(),
+            lua_api: None,
         })
     }
 
@@ -1030,6 +1056,7 @@ mod discovery_tests {
         let sqs = Arc::new(roto_svc_sqs::Sqs::new(&app.store).unwrap());
         let lambda =
             Arc::new(roto_svc_lambda::Lambda::new(&app.store, Default::default()).unwrap());
+        let s3 = Arc::new(roto_svc_s3::S3::new(&app.store).unwrap());
         let path = std::env::temp_dir().join(format!("roto-hooks-{}.lua", ids::request_id()));
         std::fs::write(
             &path,
@@ -1053,7 +1080,7 @@ roto.intercept_request("iotdata", "Publish", function() return {status=429, body
         let services = app.services.clone();
         let script = path.clone();
         let hooks = tokio::task::spawn_blocking(move || {
-            setup::run(&script, ctx, &[], sqs, lambda, services)
+            setup::run(&script, ctx, &[], sqs, lambda, s3, services)
         })
         .await
         .unwrap()
