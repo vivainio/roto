@@ -84,7 +84,7 @@ S3 supports path-style and virtual-host addressing, range and conditional reads,
 copy operations, delete markers, multipart uploads and `aws-chunked` uploads.
 Listings use SQLite metadata. Current object bodies are visible in the
 [storage directory](storage.md). Lua setup can also register host files as
-objects without copying them (`roto.s3.link`; see [Lua API](lua-api.md#s3-helpers)).
+objects without copying them (`roto.s3.link`; see [Lua API](lua-api.md#s3)).
 
 Many bucket sub-resources are stored and returned without executing their
 behavior. For example, storing lifecycle or CORS settings does not implement

@@ -42,7 +42,7 @@ PUBACK so the client does not stall.
 
 Client IDs, credentials, clean session, keepalive settings, and wills do not
 create persistent state or authentication. Optional [Lua hooks](runtime-hooks.md#mqtt-connection-and-subscription-hooks)
-(`roto.mqtt.on_connect` and `roto.mqtt.on_subscribe`) receive this metadata and
+(`roto.hooks.mqtt_connect` and `roto.hooks.mqtt_subscribe`) receive this metadata and
 can refuse connections or individual subscription filters. MQTT 5, QoS 2, retained messages,
 and offline delivery are unsupported. Clients must resubscribe on reconnect.
 The local packet size limit is 1 MiB. For `wss`, put a TLS proxy in front of Roto.

@@ -8,7 +8,7 @@ cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.lua
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using the
 name bound by the setup script. `roto.lambda.bind(name, executor)` works for functions created
-before or after startup. `roto.lambda.function_` can create/update metadata and bind an executor
+before or after startup. `roto.lambda.fn` can create/update metadata and bind an executor
 in one step. Bindings are local configuration and are never accepted through an AWS API.
 
 For example, with local AWS credentials configured:

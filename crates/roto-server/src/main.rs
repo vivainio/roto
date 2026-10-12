@@ -1061,12 +1061,12 @@ mod discovery_tests {
         std::fs::write(
             &path,
             r#"
-roto.intercept_request("sts", "DecodeAuthorizationMessage", function(request)
+roto.hooks.request("sts", "DecodeAuthorizationMessage", function(request)
   assert(request.headers.authorization == nil)
   return {status=200, headers={["content-type"]="text/xml"}, body="stubbed"}
 end)
-roto.intercept_request("sts", "GetCallerIdentity", function() return nil end)
-roto.intercept_request("iotdata", "Publish", function() return {status=429, body="throttled"} end)
+roto.hooks.request("sts", "GetCallerIdentity", function() return nil end)
+roto.hooks.request("iotdata", "Publish", function() return {status=429, body="throttled"} end)
 "#,
         )
         .unwrap();

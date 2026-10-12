@@ -57,10 +57,10 @@ def smoke():
             command = root / "examples/lua/process_jobs.sh"
             script.write_text(f'''
 local jobs = roto.sqs.queue("jobs", {{visibility_timeout=30}})
-local shell = roto.lambda.function_("shell", {{timeout=5, executor={{command={{"sh", {json.dumps(str(command))}}}}}}})
+local shell = roto.lambda.fn("shell", {{timeout=5, executor={{command={{"sh", {json.dumps(str(command))}}}}}}})
 roto.lambda.event_source(jobs, shell, {{enabled=false}})
 local web = roto.sqs.queue("web-jobs")
-local handler = roto.lambda.function_("http", {{executor={{url="http://127.0.0.1:{http.server_port}/jobs"}}}})
+local handler = roto.lambda.fn("http", {{executor={{url="http://127.0.0.1:{http.server_port}/jobs"}}}})
 roto.lambda.event_source(web, handler)
 ''')
             clients = {service: boto3.client(service, endpoint_url=endpoint, region_name="us-east-1",

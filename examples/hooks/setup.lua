@@ -1,6 +1,6 @@
 -- roto-server --ephemeral --setup examples/hooks/setup.lua
 local jobs = roto.sqs.queue("jobs", {visibility_timeout = 5})
-local worker = roto.lambda.function_("quick-worker", {
+local worker = roto.lambda.fn("quick-worker", {
   timeout = 5,
   handler = function(event, context)
     return {ok = true, event = event, requestId = context.request_id}
@@ -10,7 +10,7 @@ roto.lambda.event_source(jobs, worker)
 
 -- Return nil to let Roto handle the request normally.
 local calls = 0
-roto.intercept_request("sqs", "SendMessage", function(request, context)
+roto.hooks.request("sqs", "SendMessage", function(request, context)
   calls = calls + 1
   if request.input and request.input.MessageBody == "fail" then
     return {

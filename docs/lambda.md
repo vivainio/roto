@@ -8,7 +8,7 @@ cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.lua
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using a name
 bound by the setup script. `roto.lambda.bind(name, executor)` works for functions created before
-or after startup. `roto.lambda.function_` can create/update metadata and bind an executor in one
+or after startup. `roto.lambda.fn` can create/update metadata and bind an executor in one
 step. Bindings are local configuration and are never accepted through an AWS API.
 
 For example, with local AWS credentials configured:
@@ -32,7 +32,7 @@ script. The event is decoded JSON, so you can examine its fields and return a
 custom JSON payload directly:
 
 ```lua
-roto.lambda.function_("greet", {
+roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
     return {
@@ -65,7 +65,7 @@ For a stateful Lua placeholder, capture a counter outside the callback:
 
 ```lua
 local invocations = 0
-roto.lambda.function_("lua-counter", {
+roto.lambda.fn("lua-counter", {
   handler = function(event, context)
     invocations = invocations + 1
     return {count = invocations, requestId = context.request_id}
@@ -83,14 +83,14 @@ referencing an earlier process's inline handler fail rather than invoke a new
 handler accidentally. Callbacks from one setup script execute serially. Lua
 instruction checks enforce the function timeout for Lua code, but cannot
 interrupt blocking native calls such as `os.execute` or file I/O. Resource setup
-helpers and `roto.call`/`roto.request` are unavailable inside runtime callbacks.
+helpers and `roto.call`/`roto.wire` are unavailable inside runtime callbacks.
 
 ## Intercept AWS requests from Lua
 
 Setup scripts can also inspect incoming AWS requests and supply custom responses:
 
 ```lua
-roto.intercept_request("lambda", "Invoke", function(request, context)
+roto.hooks.request("lambda", "Invoke", function(request, context)
   if request.input and request.input.preview then
     return {
       status = 200,
@@ -129,7 +129,7 @@ roto.lambda.bind("command-echo", {
 To create the function and configure every command binding option together:
 
 ```lua
-roto.lambda.function_("process-upload", {
+roto.lambda.fn("process-upload", {
   timeout = 10,
   memory_size = 256,
   description = "Run a local Python handler",
@@ -194,7 +194,7 @@ roto.lambda.bind("http-worker", {
 Or create the metadata and binding in one step. Headers are optional:
 
 ```lua
-roto.lambda.function_("http-echo", {
+roto.lambda.fn("http-echo", {
   timeout = 10,
   executor = {url = "http://127.0.0.1:8080/echo"},
 })
@@ -244,7 +244,7 @@ roto.lambda.bind("cold-worker", {container = "my-worker:latest", warm = false})
 roto.lambda.bind("warm-worker", {container = "my-worker:latest", warm = true})
 
 -- Create metadata and a warm binding together.
-roto.lambda.function_("image-worker", {
+roto.lambda.fn("image-worker", {
   timeout = 30,
   memory_size = 256,
   environment = {
@@ -303,11 +303,11 @@ cat result.json
 The setup is:
 
 ```lua
-roto.lambda.function_("warm-counter", {
+roto.lambda.fn("warm-counter", {
   timeout = 30,
   executor = {container = "roto-lambda-warm:latest", warm = true},
 })
-roto.lambda.function_("cold-counter", {
+roto.lambda.fn("cold-counter", {
   timeout = 30,
   executor = {container = "roto-lambda-warm:latest", warm = false},
 })
@@ -363,7 +363,7 @@ Create a queue and function together, then enable partial batch failure reportin
 
 ```lua
 local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
-local worker = roto.lambda.function_("process-orders", {
+local worker = roto.lambda.fn("process-orders", {
   timeout = 10,
   handler = function(event, context)
     local failures = {}
@@ -411,7 +411,7 @@ curl 'http://localhost:5070/roto-http/echo/orders/42?tag=one&tag=two'
 For a custom route handler, create the function in Lua setup:
 
 ```lua
-roto.lambda.function_("process-order", {
+roto.lambda.fn("process-order", {
   handler = function(event, context)
     return {
       statusCode = 201,

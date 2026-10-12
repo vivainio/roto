@@ -2,10 +2,10 @@
 -- Uses the installed services' normal APIs; no database writes or network setup calls.
 local tags = { purpose = "demo-fixtures", owner = "local" }
 local function s3(method, path, body, query, headers)
-  return roto.request("s3", method, path, { body = body, query = query, headers = headers })
+  return roto.wire("s3", method, path, { body = body, query = query, headers = headers })
 end
 local function query(service, body)
-  return roto.request(service, "POST", "/", {
+  return roto.wire(service, "POST", "/", {
     headers = { ["content-type"] = "application/x-www-form-urlencoded" }, body = body,
   })
 end
@@ -67,17 +67,17 @@ end
 roto.call("sqs", "SendMessage", { QueueUrl = dead.url, MessageBody = '{"order_id":"ORDER-0999","error":"payment declined"}' })
 
 -- Real invocations with readable results and logs, including an intentional failure.
-local echo = roto.lambda.function_("demo-echo", {
+local echo = roto.lambda.fn("demo-echo", {
   description = "Echoes events and records a demo log", timeout = 5, environment = { MODE = "demo" },
   executor = { command = { "sh", "-c", "echo 'demo-echo: processing event' >&2; cat" } },
 })
-local fail = roto.lambda.function_("demo-fail", {
+local fail = roto.lambda.fn("demo-fail", {
   description = "Intentional failure for inspecting error logs", timeout = 5,
   executor = { command = { "sh", "-c", "echo 'Demo failure: payment service unavailable' >&2; exit 1" } },
 })
 roto.lambda.event_source(orders, echo, { enabled = false, batch_size = 3 })
-roto.request("lambda", "POST", "/2015-03-31/functions/" .. echo.name .. "/invocations", { body = { greeting = "Hello from Lua", orders = 6 } })
-roto.request("lambda", "POST", "/2015-03-31/functions/" .. fail.name .. "/invocations", { body = { order_id = "ORDER-0999" } })
+roto.wire("lambda", "POST", "/2015-03-31/functions/" .. echo.name .. "/invocations", { body = { greeting = "Hello from Lua", orders = 6 } })
+roto.wire("lambda", "POST", "/2015-03-31/functions/" .. fail.name .. "/invocations", { body = { order_id = "ORDER-0999" } })
 
 -- EventBridge deliveries complete after startup, while the queue retains the events.
 roto.call("events", "CreateEventBus", { Name = "demo-shop" })

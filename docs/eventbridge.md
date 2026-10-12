@@ -9,7 +9,7 @@ The setup script is:
 
 ```lua
 local queue = roto.sqs.queue("events")
-local handler = roto.lambda.function_("events", {
+local handler = roto.lambda.fn("events", {
     executor = {command = {"sh", "-c", "cat"}}, timeout = 5
 })
 roto.call("events", "PutRule", {
@@ -21,8 +21,8 @@ roto.call("events", "PutTargets", {
         {Id = "lambda", Arn = handler.arn}
     }
 })
-roto.request("s3", "PUT", "/uploads")
-roto.request("s3", "PUT", "/uploads", {query = "notification",
+roto.wire("s3", "PUT", "/uploads")
+roto.wire("s3", "PUT", "/uploads", {query = "notification",
     body = "<NotificationConfiguration><EventBridgeConfiguration/></NotificationConfiguration>"})
 ```
 

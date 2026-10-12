@@ -27,7 +27,7 @@ local queue = roto.sqs.queue("jobs", {
   tags = { owner = "local" },
 })
 
-local handler = roto.lambda.function_("process-job", {
+local handler = roto.lambda.fn("process-job", {
   timeout = 10,
   memory_size = 128,
   description = "Process local jobs",
@@ -43,9 +43,8 @@ local mapping = roto.lambda.event_source(queue, handler, {
 })
 ```
 
-`queue` returns `{name, url, arn}`; `function_` returns `{name, arn}`; `event_source` returns
-the AWS mapping configuration, including `UUID`. `function_` avoids Lua's reserved word
-`function`. Unknown helper options cause a setup error.
+`queue` returns `{name, url, arn}`; `fn` returns `{name, arn}`; `event_source` returns
+the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Lua keyword). Unknown helper options cause a setup error.
 
 The helpers create missing resources and update existing ones. Repeating setup preserves
 queue messages and mapping UUIDs. Queue attributes/tags supplied by the script are merged;
@@ -76,15 +75,15 @@ roto.call("ssm", "PutParameter", {
 
 Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON null.
 
-`roto.request(service, method, path, options)` calls any installed service through its normal
+`roto.wire(service, method, path, options)` calls any installed service through its normal
 wire handler, without waiting for the listener. Options are `headers`, `query` (raw query
 string), and `body` (a string or a Lua table encoded as JSON). It returns
 `{status, headers, body}` with a raw string body. HTTP errors raise a Lua error.
 
 ```lua
-roto.request("s3", "PUT", "/fixtures")
-roto.request("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
-roto.request("sns", "POST", "/", {
+roto.wire("s3", "PUT", "/fixtures")
+roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
+roto.wire("sns", "POST", "/", {
   headers = { ["content-type"] = "application/x-www-form-urlencoded" },
   body = "Action=CreateTopic&Version=2010-03-31&Name=events",
 })
