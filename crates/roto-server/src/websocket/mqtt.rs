@@ -56,11 +56,10 @@ async fn serve(mut socket: WebSocket, app: Arc<App>, mut request: Value) {
                                 Ok(response) => response,
                                 Err(()) => break 'connection,
                             };
-                            if let Some(response) = response {
-                                if socket.send(Message::Binary(response.into())).await.is_err() {
+                            if let Some(response) = response
+                                && socket.send(Message::Binary(response.into())).await.is_err() {
                                     break 'connection;
                                 }
-                            }
                             if close { break 'connection; }
                         }
                         buffer.drain(..consumed);

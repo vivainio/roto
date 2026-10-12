@@ -159,6 +159,7 @@ pub fn response_error_code(response: &roto_core::RawResponse) -> Option<String> 
         .map(str::to_owned)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn entry(
     req: &RawRequest,
     ctx: &RequestContext,

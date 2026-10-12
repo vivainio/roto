@@ -181,7 +181,7 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
             let context = json!({"function_arn": job.arn, "request_id": job.request_id, "region": job.region, "environment": job.environment, "timeout": job.timeout});
             match tokio::task::spawn_blocking(move || handler(event, context)).await {
                 Ok(Ok(payload))
-                    if serde_json::to_vec(&payload).map_or(false, |p| p.len() <= OUTPUT_LIMIT) =>
+                    if serde_json::to_vec(&payload).is_ok_and(|p| p.len() <= OUTPUT_LIMIT) =>
                 {
                     Outcome {
                         payload,

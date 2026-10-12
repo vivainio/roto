@@ -251,6 +251,7 @@ async fn apigateway_upgrade(
     .into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_api_gateway(
     mut socket: WebSocket,
     app: Arc<App>,
@@ -298,8 +299,8 @@ async fn serve_api_gateway(
                 match frame {
                     Message::Text(text) => {
                         let raw = text.as_str().as_bytes();
-                        if let Some(route_key) = selected_route(&api, raw) {
-                            if let Some(integration_uri) = integration_uri(&api, &route_key) {
+                        if let Some(route_key) = selected_route(&api, raw)
+                            && let Some(integration_uri) = integration_uri(&api, &route_key) {
                                 let event = api_event(
                                     &api, &route_key, "MESSAGE", &connection_id, &host,
                                     &source_ip, &headers, &query, &query_string, connected_at, Some(raw),
@@ -316,11 +317,10 @@ async fn serve_api_gateway(
                                     let _ = invoke_lambda(&app, &integration_uri, event).await;
                                 }
                             }
-                        }
                     }
                     Message::Binary(bytes) => {
-                        if let Some(integration_id) = api.routes.get("$default") {
-                            if let Some(integration_uri) = api.integrations.get(integration_id) {
+                        if let Some(integration_id) = api.routes.get("$default")
+                            && let Some(integration_uri) = api.integrations.get(integration_id) {
                                 let event = api_event(
                                     &api, "$default", "MESSAGE", &connection_id, &host,
                                     &source_ip, &headers, &query, &query_string, connected_at, Some(&bytes),
@@ -337,7 +337,6 @@ async fn serve_api_gateway(
                                     let _ = invoke_lambda(&app, integration_uri, event).await;
                                 }
                             }
-                        }
                     }
                     Message::Ping(payload) => {
                         if socket.send(Message::Pong(payload)).await.is_err() { break; }
@@ -417,6 +416,7 @@ fn integration_uri(api: &crate::apigateway_v2::RuntimeApi, route_key: &str) -> O
         .cloned()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn api_event(
     api: &crate::apigateway_v2::RuntimeApi,
     route_key: &str,
