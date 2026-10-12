@@ -6,6 +6,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-roto-core = { version = "0.2.1", path = "../roto-core" }
+roto-core = { version = "0.0.0-dev", path = "../roto-core" }
 roxmltree = "0.21.1"
 serde_json = "1.0.151"

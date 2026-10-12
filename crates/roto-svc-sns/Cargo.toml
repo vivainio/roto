@@ -7,8 +7,8 @@ repository.workspace = true
 
 [dependencies]
 diesel = { version = "2.3.14", default-features = false, features = ["sqlite", "32-column-tables", "returning_clauses_for_sqlite_3_35"] }
-roto-core = { version = "0.2.1", path = "../roto-core" }
-roto-protocol = { version = "0.2.1", path = "../roto-protocol" }
-roto-svc-sqs = { version = "0.2.1", path = "../roto-svc-sqs" }
+roto-core = { version = "0.0.0-dev", path = "../roto-core" }
+roto-protocol = { version = "0.0.0-dev", path = "../roto-protocol" }
+roto-svc-sqs = { version = "0.0.0-dev", path = "../roto-svc-sqs" }
 serde_json = "1.0.151"
 uuid = { version = "1.27.0", features = ["v4"] }
