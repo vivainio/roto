@@ -1,3 +1,139 @@
+# Handover: S3 object links (serve bodies from their original file)
+
+Written 2026-10-12 and implemented the same day (see "As built" below). Requested by the dh-core
+project, which seeds its buckets from `Assets/demodata/*` (including a 1M-row
+`.csv.gz`) and `output/dbscripts/dbscripts.tgz` and currently has to upload, so copy,
+every file on each start.
+
+## Goal
+
+Register an object by reference: roto stores only the metadata row and a pointer to a
+host file, and serves the body from that file. No copy into `roto-data/s3`, no upload
+step, and edits to the file show up on the next read.
+
+Lua API, startup-only like the rest of `roto.*` setup:
+
+```lua
+roto.s3.link("dh-assets-bucket", "demodata/demo_data_1k.csv.gz", "Assets/demodata/demo_data_1k.csv.gz")
+roto.s3.link_dir("dh-assets-bucket", "demodata/", "Assets/demodata")  -- recursive, every file
+```
+
+- Relative host paths resolve against the setup script's directory, like `roto.lambda.bind`
+  `cwd` does (`bind_parent` in `crates/roto-server/src/setup.rs`).
+- The bucket is created if missing (same `CreateBucket` behaviour as the other helpers).
+- Optional third-arg table on `link`: `content_type`, `metadata`, `headers`. Otherwise
+  guess content type from the extension; `.gz` and `.tgz` stay `binary/octet-stream`.
+- Setup runs on every start and persisted state survives, so `link` must be idempotent:
+  find the current row for `(bucket, key)`; if it is already a link to the same path,
+  refresh size/etag/mtime; if it is a normal object, replace it with the link.
+- Missing file: `link` raises a Lua error with the setup.lua location. `link_dir` on a
+  missing directory also errors; an empty directory is fine.
+
+## Where bodies are handled today
+
+`crates/roto-svc-s3/src/blobs.rs` stores bodies at `<root>/<bucket>/<escaped key>` and the
+`objects.path` column holds that path relative to `<root>`. An empty `path` means no body
+(delete markers, folder keys). Every body touch point in `service.rs`:
+
+| Site | What it does with `o.path` |
+| --- | --- |
+| `read_body` (~341) | `blobs.read` for GET and internal reads |
+| `get_object` body (~691-698) | `blobs.read` or `blobs.read_range` |
+| `drop_row` (~252) | `blobs.remove` and prunes empty dirs |
+| `retire_latest` (~239) | `blobs.move_rel` into `.roto/<bucket>/versions/...` |
+| `promote_newest` (~274) | `blobs.relocate_live` back to the live tree |
+| `store_object` (~307) | `blobs.write_live`, then inserts the row |
+| `copy_object` (~1112) | reads the source body and stores a new object |
+| bucket delete (~39, ~843) | `remove_bucket` deletes the bucket directory |
+
+Multipart parts live under `.roto/<bucket>/uploads` and never reference a link.
+
+## Design
+
+1. **Marker.** Keep `objects.path` as a `String`. A link is `link:<absolute host path>`.
+   No schema migration, and `path.is_empty()` checks keep working. Add helpers in
+   `blobs.rs`: `is_link(&str)`, `link_target(&str) -> Option<PathBuf>`.
+2. **Reads.** `Blobs::read` and `read_range` check for the marker and open the host
+   file instead of `self.abs(rel)`. Everything above them is unchanged, so GET, HEAD,
+   Range and listings work.
+3. **Never mutate the host file.** This is the one rule that matters:
+   - `drop_row`: for a link, delete only the row. Do not call `blobs.remove`.
+   - `retire_latest` (versioning, or an overwrite): a link has nothing to move.
+     Keep the pointer on the retired row. The non-current version still serves from
+     the host file.
+   - `promote_newest`: a link has nothing to relocate; keep the pointer as is.
+   - `store_object` (PUT over a linked key): works unchanged. It writes a new body file
+     and a new row, so the link is replaced, not written through.
+   - `remove_bucket`: removes the directory tree, which holds no linked bodies, so it
+     is already safe. Add a test.
+4. **Stale links.** Size and ETag are captured at link time. On every read, `stat` the
+   file. If it is gone, return `InternalError` (not 404) with a message naming the path,
+   since a 404 hides a broken fixture. If the size changed, serve the current bytes and
+   do not rewrite the row (v1). `HEAD` and listings report the stored size, so document
+   that editing a linked file requires restarting roto, or relinking.
+5. **ETag.** v1 uses md5 of the file computed at link time, streamed in chunks. The
+   1M-row gz costs a fraction of a second, acceptable at startup. If that ever hurts,
+   switch to a lazy md5 on first HEAD or GET, or a size+mtime pseudo-ETag. Most SDKs do
+   not verify a GET ETag. Multipart-style ETags are not needed.
+6. **Lua binding.** Add `roto.s3.link` and `roto.s3.link_dir` in
+   `crates/roto-server/src/setup.rs`, next to `sqs_api`/`lambda_api` (new `s3_api`
+   table). The S3 service handle needs passing into `setup::run` the way `sqs` and
+   `lambda` are. Reuse `setup_only(lua)?` and `options(&opts, &[...])` for validation.
+   S3 core gets a new method, `S3::link_object(&self, ctx, bucket, key, host_path, attrs)`,
+   in `service.rs`. It does the same transaction as `store_object` minus the body write.
+7. **Ephemeral mode.** Works the same, since linked files are outside the temp data dir.
+   Make sure the temp-dir cleanup never follows a link.
+
+## Tests
+
+- Unit (`blobs.rs`): marker round-trip, read and range through a link, missing target.
+- Service (`service.rs`): link, GET, HEAD, Range, list; delete the key and assert the host
+  file still exists; PUT over a link and assert the host file is unchanged; versioning on:
+  overwrite a link and read the old version; delete the bucket and assert the host files.
+- Setup (`setup.rs`, follow `setup_can_seed_other_services_and_load_relative_modules`):
+  `link` with a relative path, `link_dir` recursion and prefix, rerun is idempotent,
+  missing file error has `setup.lua:N`.
+- Smoke: add a link to `tests/smoke-*.py` or a small demo using `aws s3 cp` and `aws s3 ls`.
+
+## Docs
+
+`docs/storage.md` currently says copying files into a bucket directory does not register
+objects; add a section pointing to `roto.s3.link` as the supported way. Add the two
+functions to `docs/lua-api.md` and a note in `docs/s3.md`.
+
+## Open questions
+
+- Windows: `link:` plus drive-letter paths. Probably fine as an opaque string, but test.
+- Should `link_dir` skip dotfiles and obey a glob filter? dh-core needs neither yet.
+- Should linked objects show a header like `x-roto-linked: true` in `/roto-api`
+  inspection output? Cheap and helpful when debugging.
+
+## dh-core usage once this lands
+
+`dolib/roto-setup.lua` in dh-core would end with:
+
+```lua
+roto.s3.link_dir("dh-assets-bucket", "demodata/", "../Assets/demodata")
+roto.s3.link("dh-assets-bucket", "dbscripts.tgz", "../output/dbscripts/dbscripts.tgz")
+```
+
+Until then dh-core uses `io.open` + `roto.request("s3", "PUT", ...)` in setup.
+
+## As built
+
+- `roto.s3.link` / `link_dir` are in `crates/roto-server/src/setup.rs`; `S3::link_object`,
+  `LinkAttrs` and the `Body::Link` path are in `crates/roto-svc-s3/src/service.rs`; the
+  `link:` marker helpers and link-aware reads are in `blobs.rs`.
+- **ETag differs from the design:** size, plus an md5 of path+size+mtime, taken from `stat`;
+  the file is never read at link time. Size/ETag are still not refreshed on HEAD.
+- `setup::run` now takes an `Arc<S3>`.
+- Not done: the `x-roto-linked` inspection header, dotfile/glob filters, Windows testing,
+  and the `tests/smoke-*.py` link case.
+- Also added: `--enable-lua-api` and `POST /roto-api/lua` (`crates/roto-server/src/lua_api.rs`)
+  to run setup-API scripts against a live server; loopback only, rejects `Origin` requests.
+
+---
+
 # Handover: minimal MQTT-over-WebSocket for IoT
 
 Implemented 2026-10-11 on `feat/iot-mqtt-websocket`.

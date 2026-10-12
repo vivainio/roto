@@ -51,6 +51,70 @@ fn lambda_call(
     )
 }
 
+const LINK_HEADERS: &[&str] = &[
+    "cache_control",
+    "content_disposition",
+    "content_encoding",
+    "content_language",
+    "expires",
+    "website_redirect_location",
+];
+
+fn string_map(
+    lua: &Lua,
+    table: &Table,
+    name: &str,
+) -> mlua::Result<std::collections::BTreeMap<String, String>> {
+    match table.get::<LuaValue>(name)? {
+        LuaValue::Nil => Ok(Default::default()),
+        value => lua.from_value(value),
+    }
+}
+
+fn link_attrs(lua: &Lua, opts: Option<Table>) -> mlua::Result<roto_svc_s3::LinkAttrs> {
+    let Some(opts) = opts else {
+        return Ok(Default::default());
+    };
+    options(&opts, &["content_type", "metadata", "headers"])?;
+    let mut headers = std::collections::BTreeMap::new();
+    for (name, value) in string_map(lua, &opts, "headers")? {
+        let normalized = name.to_ascii_lowercase().replace('-', "_");
+        if !LINK_HEADERS.contains(&normalized.as_str()) {
+            return Err(mlua::Error::external(format!(
+                "Unknown link header: {name}"
+            )));
+        }
+        headers.insert(normalized, value);
+    }
+    Ok(roto_svc_s3::LinkAttrs {
+        content_type: opts.get("content_type")?,
+        metadata: string_map(lua, &opts, "metadata")?,
+        headers,
+    })
+}
+
+/// Every regular file below `dir` as `(path relative to dir, absolute path)`, sorted.
+fn walk_files(
+    dir: &Path,
+    rel: &str,
+    out: &mut Vec<(String, std::path::PathBuf)>,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        // Follow links to files, but not to directories, so a cycle cannot recurse forever.
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            walk_files(&path, &format!("{rel}{name}/"), out)?;
+        } else if kind.is_file() || (kind.is_symlink() && std::fs::metadata(&path)?.is_file()) {
+            out.push((format!("{rel}{name}"), path));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct Hooks(Arc<std::sync::Mutex<HashMap<HookKey, Callback>>>);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -92,6 +156,12 @@ fn timed_call(
 }
 
 impl Hooks {
+    /// Adds the hooks of `other`, replacing registrations for the same service and operation.
+    pub fn extend(&self, other: Hooks) {
+        let added = other.0.lock().unwrap().clone();
+        self.0.lock().unwrap().extend(added);
+    }
+
     pub fn matches(&self, service: &str, operation: Option<&str>) -> bool {
         operation.is_some_and(|operation| {
             self.0
@@ -201,16 +271,52 @@ fn setup_only(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Extra controls for a script posted to a running server rather than run at startup.
+pub struct Posted {
+    /// Wall-clock limit for Lua instructions.
+    pub limit: std::time::Duration,
+    /// Receives each `print(...)` line.
+    pub output: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// A Lua chunk to run with the setup API. `dir` anchors relative paths and `require`.
+pub struct Source {
+    pub name: String,
+    pub code: String,
+    pub dir: std::path::PathBuf,
+    pub posted: Option<Posted>,
+}
+
 pub fn run(
     path: &Path,
     ctx: RequestContext,
     vars: &[(String, String)],
     sqs: Arc<roto_svc_sqs::Sqs>,
     lambda: Arc<roto_svc_lambda::Lambda>,
+    s3: Arc<roto_svc_s3::S3>,
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
 ) -> mlua::Result<Hooks> {
     let path = std::fs::canonicalize(path).map_err(mlua::Error::external)?;
-    let parent = path.parent().unwrap().to_path_buf();
+    let source = Source {
+        name: format!("@{}", path.display()),
+        code: std::fs::read_to_string(&path).map_err(mlua::Error::external)?,
+        dir: path.parent().unwrap().to_path_buf(),
+        posted: None,
+    };
+    run_source(source, ctx, vars, sqs, lambda, s3, services).map(|(hooks, _)| hooks)
+}
+
+/// Runs `source`; returns the hooks it registered and, for posted scripts, its return value.
+pub fn run_source(
+    source: Source,
+    ctx: RequestContext,
+    vars: &[(String, String)],
+    sqs: Arc<roto_svc_sqs::Sqs>,
+    lambda: Arc<roto_svc_lambda::Lambda>,
+    s3: Arc<roto_svc_s3::S3>,
+    services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
+) -> mlua::Result<(Hooks, Value)> {
+    let parent = source.dir.clone();
     let lua = Lua::new();
     let hooks = Hooks::default();
     let runtime_lock = Arc::new(std::sync::Mutex::new(()));
@@ -268,6 +374,53 @@ pub fn run(
         if !tags.is_empty() { sqs_call(&q_service,&q_ctx,"TagQueue",json!({"QueueUrl":url,"Tags":tags}))?; }
         lua.to_value(&json!({"name":name,"url":url,"arn":format!("arn:aws:sqs:{}:{}:{name}",q_ctx.region,q_ctx.account_id)}))
     })?)?;
+
+    let s3_api = lua.create_table()?;
+    let (link_s3, link_ctx, link_parent) = (s3.clone(), ctx.clone(), parent.clone());
+    s3_api.set(
+        "link",
+        lua.create_function(
+            move |lua, (bucket, key, file, opts): (String, String, String, Option<Table>)| {
+                setup_only(lua)?;
+                let attrs = link_attrs(lua, opts)?;
+                link_s3
+                    .link_object(&link_ctx, &bucket, &key, &link_parent.join(&file), attrs)
+                    .map_err(mlua::Error::external)?;
+                lua.to_value(&json!({"bucket":bucket,"key":key}))
+            },
+        )?,
+    )?;
+    let (link_s3, link_ctx, link_parent) = (s3, ctx.clone(), parent.clone());
+    s3_api.set(
+        "link_dir",
+        lua.create_function(
+            move |lua, (bucket, prefix, dir, opts): (String, String, String, Option<Table>)| {
+                setup_only(lua)?;
+                let attrs = link_attrs(lua, opts)?;
+                let dir = link_parent.join(&dir);
+                let mut files = Vec::new();
+                if !dir.is_dir() {
+                    return Err(mlua::Error::external(format!(
+                        "Cannot link directory {}: not a directory",
+                        dir.display()
+                    )));
+                }
+                walk_files(&dir, "", &mut files).map_err(mlua::Error::external)?;
+                for (rel, file) in &files {
+                    link_s3
+                        .link_object(
+                            &link_ctx,
+                            &bucket,
+                            &format!("{prefix}{rel}"),
+                            file,
+                            attrs.clone(),
+                        )
+                        .map_err(mlua::Error::external)?;
+                }
+                Ok(files.len())
+            },
+        )?,
+    )?;
 
     let (l_service, l_ctx, bind_parent) = (lambda.clone(), ctx.clone(), parent.clone());
     lambda_api.set(
@@ -465,12 +618,40 @@ pub fn run(
     roto.set("mqtt", mqtt_api)?;
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;
+    roto.set("s3", s3_api)?;
     lua.globals().set("roto", roto)?;
-    let source = std::fs::read_to_string(&path).map_err(mlua::Error::external)?;
-    lua.load(&source)
-        .set_name(format!("@{}", path.display()))
-        .exec()?;
-    Ok(hooks)
+    let chunk = lua.load(&source.code).set_name(source.name);
+    let Some(posted) = source.posted else {
+        chunk.exec()?;
+        return Ok((hooks, Value::Null));
+    };
+    let output = posted.output;
+    lua.globals().set(
+        "print",
+        lua.create_function(move |lua, args: mlua::Variadic<LuaValue>| {
+            let tostring: mlua::Function = lua.globals().get("tostring")?;
+            let line = args
+                .into_iter()
+                .map(|value| tostring.call::<String>(value))
+                .collect::<mlua::Result<Vec<_>>>()?
+                .join("\t");
+            output.lock().unwrap().push(line);
+            Ok(())
+        })?,
+    )?;
+    let deadline = std::time::Instant::now() + posted.limit;
+    lua.set_hook(
+        mlua::HookTriggers::new().every_nth_instruction(1000),
+        move |_, _| {
+            if std::time::Instant::now() >= deadline {
+                return Err(mlua::Error::external("Lua script timed out"));
+            }
+            Ok(mlua::VmState::Continue)
+        },
+    )?;
+    let result: LuaValue = chunk.eval()?;
+    lua.remove_hook();
+    Ok((hooks, lua.from_value(result).unwrap_or(Value::Null)))
 }
 
 #[cfg(test)]
@@ -523,6 +704,7 @@ roto.intercept_request("sqs", "Loop", function() while true do end end)
             &[],
             sqs,
             lambda.clone(),
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
             Default::default(),
         )
         .unwrap();
@@ -631,6 +813,7 @@ assert(#result.EventSourceMappings == 1)
                 &[],
                 sqs.clone(),
                 lambda.clone(),
+                Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
                 Default::default(),
             )
             .unwrap();
@@ -689,6 +872,7 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
             &vars,
             sqs.clone(),
             lambda,
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
             Default::default(),
         )
         .unwrap();
@@ -720,6 +904,7 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
             &[],
             sqs.clone(),
             lambda.clone(),
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
             Default::default(),
         )
         .unwrap_err()
@@ -785,7 +970,144 @@ roto.call("sqs", "ReceiveMessage", {QueueUrl=queue.url, MessageAttributeNames=ro
             "return { value = 'hello' }",
         )
         .unwrap();
-        run(&path, context(), &[], sqs, lambda, services).unwrap();
+        run(
+            &path,
+            context(),
+            &[],
+            sqs,
+            lambda,
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
+            services,
+        )
+        .unwrap();
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn setup_links_host_files_into_s3() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        let handler = roto_svc_s3::S3Handler(s3.clone());
+        let path = script(
+            r#"
+assert(roto.s3.link("links", "one.txt", "data/one.txt").key == "one.txt")
+assert(roto.s3.link_dir("links", "demo/", "data") == 3)
+roto.s3.link("links", "typed", "data/one.txt", {content_type="text/x-t", headers={["Cache-Control"]="no-cache"}})
+assert(roto.request("s3", "GET", "/links/demo/sub/two.txt").body == "two")
+"#,
+        );
+        let dir = path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(dir.join("data/sub")).unwrap();
+        std::fs::write(dir.join("data/one.txt"), "one").unwrap();
+        std::fs::write(dir.join("data/sub/two.txt"), "two").unwrap();
+        std::fs::write(dir.join("data/three.bin"), "three").unwrap();
+        let services: HashMap<&'static str, Arc<dyn ServiceHandler>> =
+            HashMap::from([("s3", Arc::new(handler) as Arc<dyn ServiceHandler>)]);
+        for _ in 0..2 {
+            run(
+                &path,
+                context(),
+                &[],
+                sqs.clone(),
+                lambda.clone(),
+                s3.clone(),
+                services.clone(),
+            )
+            .unwrap();
+        }
+        let list = services["s3"]
+            .handle(
+                &context(),
+                &RawRequest {
+                    method: "GET".into(),
+                    path: "/links".into(),
+                    query: "list-type=2".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let list = String::from_utf8_lossy(&list.body);
+        assert_eq!(list.matches("<Key>").count(), 5, "{list}");
+        assert!(list.contains("<Key>demo/three.bin</Key>"), "{list}");
+
+        for (source, expected) in [
+            (
+                "roto.s3.link('links', 'x', 'data/missing.txt')\n",
+                "data/missing.txt",
+            ),
+            ("roto.s3.link_dir('links', 'x/', 'nodir')\n", "nodir"),
+            (
+                "roto.s3.link('links', 'x', 'data/one.txt', {bogus=1})\n",
+                "bogus",
+            ),
+        ] {
+            let path = script(source);
+            let error = run(
+                &path,
+                context(),
+                &[],
+                sqs.clone(),
+                lambda.clone(),
+                s3.clone(),
+                services.clone(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("setup.lua:1") && error.contains(expected),
+                "{error}"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn posted_scripts_return_values_capture_output_and_time_out() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(roto_svc_lambda::Lambda::new(&store, Default::default()).unwrap());
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let source = |code: &str, limit| Source {
+            name: "=posted.lua".into(),
+            code: code.into(),
+            dir: std::env::temp_dir(),
+            posted: Some(Posted {
+                limit: std::time::Duration::from_millis(limit),
+                output: output.clone(),
+            }),
+        };
+        let call = |source| {
+            run_source(
+                source,
+                context(),
+                &[],
+                sqs.clone(),
+                lambda.clone(),
+                s3.clone(),
+                Default::default(),
+            )
+        };
+        let (_, value) = call(source(
+            "print('a', 1)\nreturn {n = roto.sqs.queue('posted').name}",
+            5000,
+        ))
+        .unwrap();
+        assert_eq!(value, json!({"n": "posted"}));
+        assert_eq!(*output.lock().unwrap(), vec!["a\t1".to_string()]);
+        let error = call(source("while true do end", 100))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("timed out"), "{error}");
+        let error = call(source("\nerror('boom')", 5000))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("posted.lua:2"), "{error}");
     }
 }

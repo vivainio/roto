@@ -18,6 +18,8 @@ mod blobs;
 mod chunked;
 mod config;
 mod keypath;
+#[cfg(test)]
+mod link_tests;
 mod multipart;
 mod notifications;
 mod service;
@@ -30,7 +32,7 @@ use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandle
 use roto_protocol::restxml::rest_xml_error;
 
 pub use generated::{OPERATIONS, Service, dispatch, route};
-pub use service::S3;
+pub use service::{LinkAttrs, S3};
 
 /// Resolve a modelled S3 REST-XML operation without decoding its payload.
 pub fn operation_name(request: &RawRequest) -> Option<&'static str> {

@@ -17,6 +17,7 @@ roto-server --ephemeral --trace moto-trace.jsonl
 | `--durable` | Off | SQLite `synchronous=FULL`, syncing each commit |
 | `--setup` | None | Lua resource setup and local Lambda executor bindings before listening or processing events |
 | `--lua-services <path>` | None | Optional Lua service directory or ZIP; also `ROTO_LUA_SERVICES` |
+| `--enable-lua-api` | Off | Accept Lua scripts at `POST /roto-api/lua` from loopback clients; see [Lua API](lua-api.md#running-scripts-on-a-live-server) |
 | `--setup-region` | `us-east-1` | Region used by Lua setup |
 | `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
@@ -48,6 +49,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
+| `POST` | `/roto-api/lua` | Runs a Lua script with the setup API; needs `--enable-lua-api`, loopback only |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |

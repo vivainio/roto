@@ -118,6 +118,18 @@ Setup errors include a source location and stop startup. Changes from earlier su
 operations remain persisted. Setup scripts are trusted local code; executor bindings are local
 configuration and cannot be submitted through AWS APIs.
 
+## S3 fixtures from host files
+
+`roto.s3.link(bucket, key, file)` and `roto.s3.link_dir(bucket, prefix, dir)` register
+existing host files as objects without copying or uploading them, which suits large fixtures
+that every start would otherwise re-upload. See the [Lua API reference](lua-api.md#s3-helpers)
+and [Storage](storage.md).
+
+## Running scripts against a live server
+
+With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
+[Lua API reference](lua-api.md#running-scripts-on-a-live-server).
+
 ## Other service operations
 
 `roto.call(service, operation, input)` accepts AWS-shaped input and returns decoded JSON.

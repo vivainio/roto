@@ -80,6 +80,29 @@ roto.call("sqs", "SendMessage", {
 })
 ```
 
+## S3 helpers
+
+### `roto.s3.link(bucket, key, file, options?)`
+
+Registers `key` as a reference to a host file. The body is not copied; GET, HEAD, Range
+and listings are served from `file`. Relative paths resolve against the setup script's
+directory. The bucket is created if missing. Running setup again refreshes an existing
+link to the same file. A missing file is a setup error.
+
+Options: `content_type` (otherwise guessed from the extension; `.gz` and `.tgz` stay
+`binary/octet-stream`), `metadata` (user metadata table) and `headers` (`cache_control`,
+`content_disposition`, `content_encoding`, `content_language`, `expires`,
+`website_redirect_location`).
+
+```lua
+roto.s3.link("assets", "demodata/rows.csv.gz", "Assets/demodata/rows.csv.gz")
+```
+
+### `roto.s3.link_dir(bucket, prefix, dir, options?)`
+
+Links every regular file below `dir`, recursively, as `prefix` plus the relative path.
+Returns the number of files linked. An empty directory is fine; a missing one is an error.
+
 ## Lambda helpers
 
 ### `roto.lambda.function_(name, options)`
@@ -174,6 +197,27 @@ print(mapping.UUID)
 Sources must be standard queues in the same account and region. Queue visibility
 timeout must be at least the function timeout. Unknown options fail. See
 [SQS delivery behavior](lua.md#sqs-delivery-behavior) for retry and deletion rules.
+
+## Running scripts on a live server
+
+Start roto with `--enable-lua-api` to accept scripts at `POST /roto-api/lua`. The body is
+the Lua source. The script gets the same `roto.*` setup API as `--setup` (including
+`roto.s3.link`), with the `--setup-region` region and any `--set` variables. Relative paths
+and `require` resolve against the server's working directory.
+
+```sh
+curl -X POST localhost:5070/roto-api/lua --data-binary @seed.lua
+curl -X POST localhost:5070/roto-api/lua --data-binary 'return roto.call("sqs", "ListQueues")'
+```
+
+Success returns `{"result": <return value>, "output": [<print lines>]}`. A failure returns
+status 400 with `{"error": "...name:line: message...", "output": [...]}`. Query `name=`
+labels the chunk in errors and `timeout=` sets the Lua time limit in seconds (default 30,
+at most 600). Scripts run one at a time. `roto.intercept_request` hooks a script registers
+stay active.
+
+This executes arbitrary code as the server's user, so it is off by default, answers only
+loopback peers, and rejects any request carrying an `Origin` header (browsers).
 
 ## Service calls
 
