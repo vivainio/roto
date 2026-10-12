@@ -8,34 +8,34 @@ repository.workspace = true
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
-roto-svc-cloudformation = { version = "0.2.1", path = "../roto-svc-cloudformation" }
-roto-core = { version = "0.2.1", path = "../roto-core" }
-roto-svc-dynamodb = { version = "0.2.1", path = "../roto-svc-dynamodb" }
-roto-svc-iam = { version = "0.2.1", path = "../roto-svc-iam" }
-roto-svc-lambda = { version = "0.2.1", path = "../roto-svc-lambda" }
-roto-svc-logs = { version = "0.2.1", path = "../roto-svc-logs" }
-roto-svc-s3 = { version = "0.2.1", path = "../roto-svc-s3" }
-roto-svc-secretsmanager = { version = "0.2.1", path = "../roto-svc-secretsmanager" }
-roto-svc-sns = { version = "0.2.1", path = "../roto-svc-sns" }
-roto-svc-sqs = { version = "0.2.1", path = "../roto-svc-sqs" }
-roto-svc-ssm = { version = "0.2.1", path = "../roto-svc-ssm" }
-roto-svc-sts = { version = "0.2.1", path = "../roto-svc-sts" }
+roto-svc-cloudformation = { version = "0.0.0-dev", path = "../roto-svc-cloudformation" }
+roto-core = { version = "0.0.0-dev", path = "../roto-core" }
+roto-svc-dynamodb = { version = "0.0.0-dev", path = "../roto-svc-dynamodb" }
+roto-svc-iam = { version = "0.0.0-dev", path = "../roto-svc-iam" }
+roto-svc-lambda = { version = "0.0.0-dev", path = "../roto-svc-lambda" }
+roto-svc-logs = { version = "0.0.0-dev", path = "../roto-svc-logs" }
+roto-svc-s3 = { version = "0.0.0-dev", path = "../roto-svc-s3" }
+roto-svc-secretsmanager = { version = "0.0.0-dev", path = "../roto-svc-secretsmanager" }
+roto-svc-sns = { version = "0.0.0-dev", path = "../roto-svc-sns" }
+roto-svc-sqs = { version = "0.0.0-dev", path = "../roto-svc-sqs" }
+roto-svc-ssm = { version = "0.0.0-dev", path = "../roto-svc-ssm" }
+roto-svc-sts = { version = "0.0.0-dev", path = "../roto-svc-sts" }
 tokio = { version = "1.53.2", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "serde", "send"] }
 serde_json = "1.0.151"
-roto-protocol = { version = "0.2.1", path = "../roto-protocol" }
+roto-protocol = { version = "0.0.0-dev", path = "../roto-protocol" }
 
-roto-svc-eventbridge = { version = "0.2.1", path = "../roto-svc-eventbridge" }
+roto-svc-eventbridge = { version = "0.0.0-dev", path = "../roto-svc-eventbridge" }
 
-roto-svc-kinesis = { version = "0.2.1", path = "../roto-svc-kinesis" }
+roto-svc-kinesis = { version = "0.0.0-dev", path = "../roto-svc-kinesis" }
 
-roto-svc-kms = { version = "0.2.1", path = "../roto-svc-kms" }
+roto-svc-kms = { version = "0.0.0-dev", path = "../roto-svc-kms" }
 
 base64 = "0.22.1"
 sha2 = "0.11.0"
 
 zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-roto-mqtt = { version = "0.2.1", path = "../roto-mqtt" }
+roto-mqtt = { version = "0.0.0-dev", path = "../roto-mqtt" }

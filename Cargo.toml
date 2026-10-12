@@ -3,7 +3,9 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.1"
+# NEVER bump this version in git. It stays 0.0.0-dev; the release GitHub Action sets the real
+# version from the pushed tag (`cargo set-version`) at build time.
+version = "0.0.0-dev"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/vivainio/roto"
