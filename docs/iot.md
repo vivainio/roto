@@ -20,6 +20,19 @@ client.on("connect", () => client.subscribe("devices/123/state", { qos: 1 }));
 client.on("message", (topic, payload) => console.log(topic, payload.toString()));
 ```
 
+Send a message to that subscriber with boto3's IoT Data Plane client, pointed at
+Roto's HTTP endpoint (not the WebSocket):
+
+```python
+import boto3
+
+iot = boto3.client("iot-data", endpoint_url="http://localhost:5070",
+                   region_name="us-east-1")
+iot.publish(topic="devices/123/state", qos=0, payload=b"online")
+```
+
+The MQTT.js client above receives this as a PUBLISH on `devices/123/state`.
+
 Subscriptions support exact topics and `+`/`#` filters through the same registry
 as the JSON endpoint. HTTP IoT publishes arrive as MQTT PUBLISH packets with
 unchanged payload bytes, always at QoS 0. SUBACK grants requested QoS 0/1;
