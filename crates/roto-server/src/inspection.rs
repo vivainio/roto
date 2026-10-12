@@ -589,10 +589,9 @@ pub async fn object(
         Ok(Ok(mut raw)) => {
             if (200..300).contains(&raw.status) {
                 raw.headers.retain(|(name, _)| {
-                    !matches!(
-                        name.as_str(),
-                        "content-type" | "content-disposition" | "content-encoding"
-                    )
+                    !["content-type", "content-disposition", "content-encoding"]
+                        .iter()
+                        .any(|h| name.eq_ignore_ascii_case(h))
                 });
                 // Never execute uploaded HTML/SVG on the inspection origin.
                 raw.headers
