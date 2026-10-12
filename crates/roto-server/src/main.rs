@@ -24,6 +24,14 @@ use roto_core::sigv4::CredentialScope;
 use roto_core::store::{Store, StoreOptions};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler, ids};
 
+/// Parses `KEY=VALUE` for `--set`; the value may be empty or contain further `=`.
+fn parse_set_var(raw: &str) -> Result<(String, String), String> {
+    match raw.split_once('=') {
+        Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+        _ => Err(format!("expected KEY=VALUE, got `{raw}`")),
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about = "roto: an AWS simulator")]
 struct Args {
@@ -51,6 +59,9 @@ struct Args {
     /// Region used by the Lua setup script.
     #[arg(long, default_value = "us-east-1")]
     setup_region: String,
+    /// String variable exposed to the Lua setup script as `roto.vars.KEY`; repeatable.
+    #[arg(long = "set", value_name = "KEY=VALUE", value_parser = parse_set_var)]
+    set: Vec<(String, String)>,
     /// Optional Lua service bundle directory or ZIP with a root manifest.json.
     #[arg(long, env = "ROTO_LUA_SERVICES")]
     lua_services: Option<PathBuf>,
@@ -240,6 +251,7 @@ async fn main() {
         args.port
     );
     if let Some(path) = args.setup {
+        let set_vars = args.set;
         let ctx = RequestContext {
             account_id: app.account_id.clone(),
             region: args.setup_region,
@@ -249,7 +261,8 @@ async fn main() {
         };
         let services = app.services.clone();
         let hooks = tokio::task::spawn_blocking(move || {
-            setup::run(&path, ctx, setup_sqs, setup_lambda, services).map_err(|e| e.to_string())
+            setup::run(&path, ctx, &set_vars, setup_sqs, setup_lambda, services)
+                .map_err(|e| e.to_string())
         })
         .await
         .expect("setup task failed")
@@ -1039,11 +1052,12 @@ roto.intercept_request("iotdata", "Publish", function() return {status=429, body
         };
         let services = app.services.clone();
         let script = path.clone();
-        let hooks =
-            tokio::task::spawn_blocking(move || setup::run(&script, ctx, sqs, lambda, services))
-                .await
-                .unwrap()
-                .unwrap();
+        let hooks = tokio::task::spawn_blocking(move || {
+            setup::run(&script, ctx, &[], sqs, lambda, services)
+        })
+        .await
+        .unwrap()
+        .unwrap();
         *app.hooks.lock().unwrap() = hooks;
         let response = request(
             &app,

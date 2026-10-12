@@ -204,6 +204,7 @@ fn setup_only(lua: &Lua) -> mlua::Result<()> {
 pub fn run(
     path: &Path,
     ctx: RequestContext,
+    vars: &[(String, String)],
     sqs: Arc<roto_svc_sqs::Sqs>,
     lambda: Arc<roto_svc_lambda::Lambda>,
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
@@ -217,6 +218,11 @@ pub fn run(
     roto.set("account_id", ctx.account_id.clone())?;
     roto.set("region", ctx.region.clone())?;
     roto.set("endpoint", ctx.base_url.clone())?;
+    let roto_vars = lua.create_table()?;
+    for (key, value) in vars {
+        roto_vars.set(key.as_str(), value.as_str())?;
+    }
+    roto.set("vars", roto_vars)?;
     roto.set("null", lua.null())?;
     roto.set(
         "array",
@@ -511,7 +517,15 @@ roto.intercept_request("sqs", "BadHook", function() return {status=999, body=""}
 roto.intercept_request("sqs", "Loop", function() while true do end end)
 "#,
         );
-        let hooks = run(&path, context(), sqs, lambda.clone(), Default::default()).unwrap();
+        let hooks = run(
+            &path,
+            context(),
+            &[],
+            sqs,
+            lambda.clone(),
+            Default::default(),
+        )
+        .unwrap();
         let handler = roto_svc_lambda::LambdaHandler(lambda.clone());
         let invoke = |body: &str| {
             handler
@@ -614,6 +628,7 @@ assert(#result.EventSourceMappings == 1)
             run(
                 &path,
                 context(),
+                &[],
                 sqs.clone(),
                 lambda.clone(),
                 Default::default(),
@@ -650,6 +665,45 @@ assert(#result.EventSourceMappings == 1)
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[test]
+    fn setup_exposes_set_variables_as_roto_vars() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(roto_svc_lambda::Lambda::new(&store, Default::default()).unwrap());
+        let path = script(
+            r#"
+assert(roto.vars.mode == "devhost")
+assert(roto.vars.url == "http://x/?a=b")
+assert(roto.vars.empty == "")
+assert(roto.vars.missing == nil)
+roto.sqs.queue(roto.vars.mode .. "-queue")
+"#,
+        );
+        let vars = [
+            ("mode".to_string(), "devhost".to_string()),
+            ("url".to_string(), "http://x/?a=b".to_string()),
+            ("empty".to_string(), String::new()),
+        ];
+        run(
+            &path,
+            context(),
+            &vars,
+            sqs.clone(),
+            lambda,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(
+            sqs_call(
+                &sqs,
+                &context(),
+                "GetQueueUrl",
+                json!({"QueueName":"devhost-queue"})
+            )
+            .is_ok()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[test]
     fn setup_errors_have_source_locations_and_do_not_start_workers() {
         let store = Store::ephemeral();
         let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
@@ -663,6 +717,7 @@ assert(#result.EventSourceMappings == 1)
         let error = run(
             &path,
             context(),
+            &[],
             sqs.clone(),
             lambda.clone(),
             Default::default(),
@@ -730,7 +785,7 @@ roto.call("sqs", "ReceiveMessage", {QueueUrl=queue.url, MessageAttributeNames=ro
             "return { value = 'hello' }",
         )
         .unwrap();
-        run(&path, context(), sqs, lambda, services).unwrap();
+        run(&path, context(), &[], sqs, lambda, services).unwrap();
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
