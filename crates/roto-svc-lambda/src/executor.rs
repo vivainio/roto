@@ -233,8 +233,13 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
             let stdout = child.stdout.take().unwrap();
             let stderr = child.stderr.take().unwrap();
             let io = async {
-                stdin.write_all(&payload).await.map_err(|e| e.to_string())?;
-                stdin.shutdown().await.map_err(|e| e.to_string())?;
+                // A command may exit without reading stdin; its exit status reports that.
+                let ignore_closed = |r: std::io::Result<()>| match r {
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    other => other.map_err(|e| e.to_string()),
+                };
+                ignore_closed(stdin.write_all(&payload).await)?;
+                ignore_closed(stdin.shutdown().await)?;
                 drop(stdin);
                 Ok::<_, String>(())
             };
