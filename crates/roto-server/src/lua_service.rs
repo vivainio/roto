@@ -285,6 +285,10 @@ impl LuaService {
         let source = self.bundle.read(&self.definition.script)?;
         let lua = Lua::new();
         let api = lua.create_table().map_err(lua_error)?;
+        api.set("version", env!("CARGO_PKG_VERSION"))
+            .map_err(lua_error)?;
+        api.set("api_version", crate::setup::LUA_API_VERSION)
+            .map_err(lua_error)?;
         api.set(
             "array",
             lua.create_function(|lua, ()| lua.to_value(&Vec::<Value>::new()))
