@@ -104,11 +104,7 @@ fn linked_object_is_readable_listable_and_ranged() {
     );
     assert_eq!(header(&got, "content-type"), Some("text/csv"));
     let etag = header(&got, "etag").unwrap().to_string();
-    assert_eq!(etag.len(), 34, "{etag}");
-    assert_ne!(
-        etag, "\"781e5e245d69b566979b86e28d23f2c7\"",
-        "not the body md5"
-    );
+    assert_eq!(etag, "\"781e5e245d69b566979b86e28d23f2c7\"", "the body md5");
 
     let head = f.call("HEAD", "/bkt/demo/data.csv", "", &[], "");
     assert_eq!(header(&head, "content-length"), Some("10"));

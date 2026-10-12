@@ -225,21 +225,26 @@ enum Body<'a> {
     Link(String, i64),
 }
 
-/// Size and a pseudo-ETag for a file, from `stat` alone so the body is never read. The ETag is
-/// the md5 of path, size and mtime, so it changes when the file does but is not the body's md5.
+/// Size and the real ETag (the body's md5) for a file, streamed so it is never held in memory.
 fn file_fingerprint(path: &std::path::Path) -> std::io::Result<(i64, String)> {
-    let meta = std::fs::metadata(path)?;
-    if !meta.is_file() {
+    use md5::{Digest, Md5};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
         return Err(std::io::Error::other("not a regular file"));
     }
-    let mtime = meta
-        .modified()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let size = meta.len();
-    let seed = format!("{}:{size}:{mtime}", path.display());
-    Ok((size as i64, md5_hex(seed.as_bytes())))
+    let mut hasher = Md5::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut size = 0u64;
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        size += n as u64;
+    }
+    Ok((size as i64, hex::encode(hasher.finalize())))
 }
 
 /// Content type from the extension. Archives (`.gz`, `.tgz`) stay `binary/octet-stream`.
