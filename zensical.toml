@@ -33,6 +33,7 @@ nav = [
     { "EventBridge" = "eventbridge.md" },
     { "CloudFormation" = "cloudformation.md" },
     { "Kinesis" = "kinesis.md" },
+    { "IoT and MQTT" = "iot.md" },
   ] },
   { "Storage" = "storage.md" },
   { "Architecture" = "architecture.md" },
