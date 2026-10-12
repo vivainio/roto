@@ -29,8 +29,8 @@ copying them using `roto.s3.link` (see [Lua API](lua-api.md#s3-helpers)).
 A linked object stores `link:<absolute host path>` instead of a body path. Reads are
 served from the host file; roto never writes, moves or deletes it, so deleting the key,
 overwriting it, or deleting the bucket only affects roto's metadata. Size and ETag are
-captured from `stat` when the link is made (the file is never read; the ETag is a hash of
-path, size and mtime, not the body's MD5), so edit a linked file and restart (or relink) to refresh
+captured when the link is made: the file is streamed once to compute the real MD5 ETag, so
+linking cost grows with file size. Edit a linked file and relink (or restart) to refresh
 `HEAD` and listings. If the file disappears, reads fail with `InternalFailure` naming it.
 
 ## Current limits
