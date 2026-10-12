@@ -9,8 +9,8 @@ repository.workspace = true
 diesel = { version = "2.3.14", default-features = false, features = ["sqlite", "32-column-tables", "returning_clauses_for_sqlite_3_35"] }
 base64 = "0.22"
 flate2 = "1"
-roto-core = { version = "0.0.1", path = "../roto-core" }
-roto-protocol = { version = "0.0.1", path = "../roto-protocol" }
+roto-core = { version = "0.2.1", path = "../roto-core" }
+roto-protocol = { version = "0.2.1", path = "../roto-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
 serde_yaml = "0.9.34"
@@ -18,4 +18,4 @@ sha2 = "0.11.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
 [dev-dependencies]
-roto-svc-sqs = { version = "0.0.1", path = "../roto-svc-sqs" }
+roto-svc-sqs = { version = "0.2.1", path = "../roto-svc-sqs" }

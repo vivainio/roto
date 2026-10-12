@@ -1488,14 +1488,14 @@ dependencies = [
 
 [[package]]
 name = "roto-codegen"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "roto-core"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "rusqlite",
@@ -1505,11 +1505,11 @@ dependencies = [
 
 [[package]]
 name = "roto-mqtt"
-version = "0.0.1"
+version = "0.2.1"
 
 [[package]]
 name = "roto-protocol"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "roto-core",
  "roxmltree",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "roto-server"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-cloudformation"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "diesel",
@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-dynamodb"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "bigdecimal",
  "diesel",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-eventbridge"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-iam"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-kinesis"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "diesel",
@@ -1618,7 +1618,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-kms"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "diesel",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-lambda"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "libc",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-logs"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1658,7 +1658,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-s3"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "hex",
@@ -1675,7 +1675,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-secretsmanager"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-sns"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-sqs"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "hex",
@@ -1713,7 +1713,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-ssm"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "roto-svc-sts"
-version = "0.0.1"
+version = "0.2.1"
 dependencies = [
  "diesel",
  "roto-core",
