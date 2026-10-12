@@ -24,6 +24,8 @@ setup script first, including `module.lua` and `module/init.lua`.
 
 | Value or function | Meaning |
 | --- | --- |
+| `roto.version` | Server version string (informational) |
+| `roto.api_version` | Integer Lua API level; bumped only on breaking changes. Additive changes keep it, so feature-detect new functions with `if roto.s3.link_dir then` |
 | `roto.account_id` | Setup account ID string |
 | `roto.region` | Setup region string |
 | `roto.endpoint` | Server base URL string |

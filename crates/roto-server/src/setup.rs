@@ -7,6 +7,9 @@ use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
 use roto_core::{RawRequest, RequestContext, ServiceHandler};
 use serde_json::{Value, json};
 
+/// Lua API level, exposed as `roto.api_version`; bump only on a breaking change.
+pub(crate) const LUA_API_VERSION: u32 = 1;
+
 fn options(table: &Table, allowed: &[&str]) -> mlua::Result<()> {
     for pair in table.clone().pairs::<String, LuaValue>() {
         let (key, _) = pair?;
@@ -321,6 +324,8 @@ pub fn run_source(
     let hooks = Hooks::default();
     let runtime_lock = Arc::new(std::sync::Mutex::new(()));
     let roto = lua.create_table()?;
+    roto.set("version", env!("CARGO_PKG_VERSION"))?;
+    roto.set("api_version", LUA_API_VERSION)?;
     roto.set("account_id", ctx.account_id.clone())?;
     roto.set("region", ctx.region.clone())?;
     roto.set("endpoint", ctx.base_url.clone())?;
