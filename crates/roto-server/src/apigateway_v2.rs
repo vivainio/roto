@@ -101,7 +101,7 @@ impl Registry {
             .path
             .split('/')
             .filter(|segment| !segment.is_empty())
-            .map(|segment| roto_protocol::restxml::percent_decode_path(segment))
+            .map(roto_protocol::restxml::percent_decode_path)
             .collect();
         if path.as_slice() == ["v2", "apis"] {
             return match request.method.as_str() {

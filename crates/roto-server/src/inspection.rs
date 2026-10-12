@@ -83,19 +83,19 @@ pub async fn sqs_messages(
 }
 
 fn invalid_account(query: &HashMap<String, String>) -> Option<Response> {
-    if let Some(account) = query.get("account") {
-        if account.len() != 12 || !account.bytes().all(|b| b.is_ascii_digit()) {
-            return Some(
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "__type": "InvalidAccountID",
-                        "message": format!("Account ID must be 12 digits, got: {account}"),
-                    })),
-                )
-                    .into_response(),
-            );
-        }
+    if let Some(account) = query.get("account")
+        && (account.len() != 12 || !account.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "__type": "InvalidAccountID",
+                    "message": format!("Account ID must be 12 digits, got: {account}"),
+                })),
+            )
+                .into_response(),
+        );
     }
     None
 }

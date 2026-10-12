@@ -288,12 +288,11 @@ impl Lambda {
                 .execute(tx)?;
             Ok(())
         })?;
-        if let Some(logs) = self.logs.read().unwrap().as_ref() {
-            if let Err(error) =
+        if let Some(logs) = self.logs.read().unwrap().as_ref()
+            && let Err(error) =
                 logs.record_lambda_invocation(&job.arn, &job.request_id, &outcome.logs)
-            {
-                eprintln!("Lambda log delivery failed: {error}");
-            }
+        {
+            eprintln!("Lambda log delivery failed: {error}");
         }
         Ok(())
     }

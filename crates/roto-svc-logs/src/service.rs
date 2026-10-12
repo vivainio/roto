@@ -504,6 +504,7 @@ fn ensure_group(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_event(
     tx: &mut diesel::sqlite::SqliteConnection,
     account: &str,
