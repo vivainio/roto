@@ -20,12 +20,14 @@ Setup runs once on startup, after service initialization and before the listener
 and delivery workers start. `--account-id` and `--setup-region` select its scope
 (the default region is `us-east-1`). `require("module")` searches beside the
 setup script first, including `module.lua` and `module/init.lua`.
+`--set KEY=VALUE` (repeatable) passes string parameters to the script as `roto.vars.KEY`.
 
 | Value or function | Meaning |
 | --- | --- |
 | `roto.account_id` | Setup account ID string |
 | `roto.region` | Setup region string |
 | `roto.endpoint` | Server base URL string |
+| `roto.vars` | Table of strings from repeatable `--set KEY=VALUE` flags; unset keys are `nil` |
 | `roto.null` | Explicit JSON null |
 | `roto.array(table)` | Marks and returns the supplied table as a JSON array |
 
