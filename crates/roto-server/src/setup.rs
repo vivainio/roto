@@ -8,7 +8,7 @@ use roto_core::{RawRequest, RequestContext, ServiceHandler};
 use serde_json::{Value, json};
 
 /// Lua API level, exposed as `roto.api_version`; bump only on a breaking change.
-pub(crate) const LUA_API_VERSION: u32 = 1;
+pub(crate) const LUA_API_VERSION: u32 = 2;
 
 fn options(table: &Table, allowed: &[&str]) -> mlua::Result<()> {
     for pair in table.clone().pairs::<String, LuaValue>() {
@@ -342,6 +342,13 @@ pub fn run_source(
             Ok(table)
         })?,
     )?;
+    roto.set(
+        "json_decode",
+        lua.create_function(|lua, text: String| {
+            let value: Value = serde_json::from_str(&text).map_err(mlua::Error::external)?;
+            lua.to_value(&value)
+        })?,
+    )?;
     // Make require("module") resolve beside the setup script before the default search paths.
     let package: Table = lua.globals().get("package")?;
     let search: String = package.get("path")?;
@@ -422,7 +429,7 @@ pub fn run_source(
                         )
                         .map_err(mlua::Error::external)?;
                 }
-                Ok(files.len())
+                lua.to_value(&json!({"bucket":bucket,"prefix":prefix,"count":files.len()}))
             },
         )?,
     )?;
@@ -449,7 +456,7 @@ pub fn run_source(
 
     let (l_service, l_ctx) = (lambda.clone(), ctx.clone());
     let handler_lock = runtime_lock.clone();
-    lambda_api.set("function_",lua.create_function(move |lua,(name,opts): (String,Table)| {
+    lambda_api.set("fn",lua.create_function(move |lua,(name,opts): (String,Table)| {
         setup_only(lua)?;
         options(&opts,&["timeout","executor","handler","environment","description","memory_size"])?;
         let mut executor = match opts.get::<Option<mlua::Function>>("handler")? {
@@ -529,7 +536,7 @@ pub fn run_source(
                     "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
                     "dynamodb" | "ssm" | "secretsmanager" | "events" | "eventbridge"
-                    | "kinesis" => {
+                    | "kinesis" | "kms" | "logs" => {
                         let service = if service == "eventbridge" {
                             "events"
                         } else {
@@ -556,7 +563,7 @@ pub fn run_source(
                     }
                     _ => {
                         return Err(mlua::Error::external(
-                            "Use roto.request for services using Query/XML protocols",
+                            "Use roto.wire for services using Query/XML protocols",
                         ));
                     }
                 };
@@ -565,7 +572,7 @@ pub fn run_source(
         )?,
     )?;
     // Escape hatch for every AWS service/protocol, without requiring the listener to be running.
-    roto.set("request",lua.create_function(move |lua,(service,method,path,opts): (String,String,String,Option<Table>)| {
+    roto.set("wire",lua.create_function(move |lua,(service,method,path,opts): (String,String,String,Option<Table>)| {
         setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
         options(&opts,&["headers","body","query"])?;
@@ -583,8 +590,9 @@ pub fn run_source(
     })?)?;
     let registrations = hooks.clone();
     let hook_lock = runtime_lock.clone();
-    roto.set(
-        "intercept_request",
+    let hooks_api = lua.create_table()?;
+    hooks_api.set(
+        "request",
         lua.create_function(
             move |lua, (service, operation, callback): (String, String, mlua::Function)| {
                 setup_only(lua)?;
@@ -600,11 +608,10 @@ pub fn run_source(
             },
         )?,
     )?;
-    let mqtt_api = lua.create_table()?;
-    for (name, operation) in [("on_connect", "Connect"), ("on_subscribe", "Subscribe")] {
+    for (name, operation) in [("mqtt_connect", "Connect"), ("mqtt_subscribe", "Subscribe")] {
         let registrations = hooks.clone();
         let hook_lock = runtime_lock.clone();
-        mqtt_api.set(
+        hooks_api.set(
             name,
             lua.create_function(move |lua, callback: mlua::Function| {
                 setup_only(lua)?;
@@ -620,7 +627,7 @@ pub fn run_source(
             })?,
         )?;
     }
-    roto.set("mqtt", mqtt_api)?;
+    roto.set("hooks", hooks_api)?;
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;
     roto.set("s3", s3_api)?;
@@ -688,19 +695,19 @@ mod tests {
         let path = script(
             r#"
 local count = 0
-roto.lambda.function_("inline", {timeout=1, handler=function(event, ctx)
+roto.lambda.fn("inline", {timeout=1, handler=function(event, ctx)
   count = count + 1
   if event.fail then error("placeholder failure") end
   if event.loop then while true do end end
   if event.reenter then roto.call("lambda", "ListFunctions", {}) end
   return {count=count, name=event.name, region=ctx.region}
 end})
-roto.intercept_request("sqs", "SendMessage", function(req, ctx)
+roto.hooks.request("sqs", "SendMessage", function(req, ctx)
   if req.input.pass then return nil end
   return {status=503, headers={["content-type"]="application/json"}, body='{"message":"injected"}'}
 end)
-roto.intercept_request("sqs", "BadHook", function() return {status=999, body=""} end)
-roto.intercept_request("sqs", "Loop", function() while true do end end)
+roto.hooks.request("sqs", "BadHook", function() return {status=999, body=""} end)
+roto.hooks.request("sqs", "Loop", function() while true do end end)
 "#,
         );
         let hooks = run(
@@ -801,11 +808,11 @@ roto.intercept_request("sqs", "Loop", function() while true do end end)
             r#"
 local queue = roto.sqs.queue("jobs", {visibility_timeout=30, tags={owner="lua"}})
 assert(queue.url == roto.endpoint .. "/" .. roto.account_id .. "/jobs")
-local handler = roto.lambda.function_("consume", {timeout=3, executor={command={"sh", "-c", "cat"}},environment={SOURCE="lua"}})
+local handler = roto.lambda.fn("consume", {timeout=3, executor={command={"sh", "-c", "cat"}},environment={SOURCE="lua"}})
 local mapping = roto.lambda.event_source(queue, handler, {batch_size=2,enabled=false,report_batch_item_failures=true})
 assert(mapping.State == "Disabled")
 roto.lambda.event_source(queue, handler, {batch_size=1,enabled=false})
-local http = roto.lambda.function_("http", {executor={url="http://localhost:8080/jobs",headers={Authorization="local"}}})
+local http = roto.lambda.fn("http", {executor={url="http://localhost:8080/jobs",headers={Authorization="local"}}})
 assert(http.name == "http")
 local result = roto.call("lambda", "ListEventSourceMappings", {})
 assert(#result.EventSourceMappings == 1)
@@ -955,19 +962,32 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
                 Arc::new(roto_svc_sns::SnsHandler::new(&store, sqs.clone()).unwrap())
                     as Arc<dyn ServiceHandler>,
             ),
+            (
+                "kms",
+                Arc::new(roto_svc_kms::KmsHandler::new(&store).unwrap()) as Arc<dyn ServiceHandler>,
+            ),
+            (
+                "logs",
+                Arc::new(roto_svc_logs::CloudWatchLogsHandler::new(&store).unwrap())
+                    as Arc<dyn ServiceHandler>,
+            ),
         ]);
         let path = script(
             r#"
 assert(require("fixture").value == "hello")
 roto.call("ssm", "PutParameter", {Name="/app/mode",Value="development",Type="String"})
 assert(roto.call("ssm", "GetParameter", {Name="/app/mode"}).Parameter.Value == "development")
-roto.request("s3", "PUT", "/fixtures")
-roto.request("s3", "PUT", "/fixtures/hello.txt", {body="hello",headers={["Content-Type"]="text/plain"}})
-assert(roto.request("s3", "GET", "/fixtures/hello.txt").body == "hello")
-local topic = roto.request("sns", "POST", "/", {headers={["Content-Type"]="application/x-www-form-urlencoded"},body="Action=CreateTopic&Version=2010-03-31&Name=events"})
+roto.wire("s3", "PUT", "/fixtures")
+roto.wire("s3", "PUT", "/fixtures/hello.txt", {body="hello",headers={["Content-Type"]="text/plain"}})
+assert(roto.wire("s3", "GET", "/fixtures/hello.txt").body == "hello")
+local topic = roto.wire("sns", "POST", "/", {headers={["Content-Type"]="application/x-www-form-urlencoded"},body="Action=CreateTopic&Version=2010-03-31&Name=events"})
 assert(topic.body:find("arn:aws:sns:us%-east%-1:123456789012:events"))
 local queue = roto.sqs.queue("empty")
 roto.call("sqs", "ReceiveMessage", {QueueUrl=queue.url, MessageAttributeNames=roto.array({})})
+assert(roto.call("kms", "CreateKey", {}).KeyMetadata.KeyId)
+roto.call("logs", "CreateLogGroup", {logGroupName = "/app"})
+assert(roto.json_decode('{"a":[1,2]}').a[2] == 2)
+assert(not pcall(roto.json_decode, "{"))
 "#,
         );
         std::fs::write(
@@ -1002,9 +1022,9 @@ roto.call("sqs", "ReceiveMessage", {QueueUrl=queue.url, MessageAttributeNames=ro
         let path = script(
             r#"
 assert(roto.s3.link("links", "one.txt", "data/one.txt").key == "one.txt")
-assert(roto.s3.link_dir("links", "demo/", "data") == 3)
+assert(roto.s3.link_dir("links", "demo/", "data").count == 3)
 roto.s3.link("links", "typed", "data/one.txt", {content_type="text/x-t", headers={["Cache-Control"]="no-cache"}})
-assert(roto.request("s3", "GET", "/links/demo/sub/two.txt").body == "two")
+assert(roto.wire("s3", "GET", "/links/demo/sub/two.txt").body == "two")
 "#,
         );
         let dir = path.parent().unwrap().to_path_buf();

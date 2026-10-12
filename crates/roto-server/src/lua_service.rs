@@ -291,10 +291,17 @@ impl LuaService {
             .map_err(lua_error)?;
         api.set(
             "array",
-            lua.create_function(|lua, ()| lua.to_value(&Vec::<Value>::new()))
-                .map_err(lua_error)?,
+            lua.create_function(|lua, table: Option<mlua::Table>| match table {
+                Some(table) => {
+                    table.set_metatable(Some(lua.array_metatable()))?;
+                    Ok(mlua::Value::Table(table))
+                }
+                None => lua.to_value(&Vec::<Value>::new()),
+            })
+            .map_err(lua_error)?,
         )
         .map_err(lua_error)?;
+        api.set("null", lua.null()).map_err(lua_error)?;
         api.set(
             "id",
             lua.create_function(|_, prefix: String| {

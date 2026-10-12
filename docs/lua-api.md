@@ -1,16 +1,47 @@
 # Lua API reference
 
-This chapter covers every Roto-provided Lua entry point: startup setup, runtime
-callbacks, and optional service modules. Roto embeds Lua 5.4; no separate Lua
-installation is required. Standard Lua libraries are available. Scripts are
-trusted local code running with the server's OS permissions.
+This chapter is the single reference for every Roto-provided Lua symbol. Roto embeds
+Lua 5.4; no separate Lua installation is required. Standard Lua libraries are
+available. Scripts are trusted local code running with the server's OS permissions.
+For a guided introduction see [Lua setup](lua.md); for worked callback examples see
+[Runtime hooks](runtime-hooks.md).
 
-There are two separate environments. `--setup setup.lua` creates resources and
-registers runtime callbacks in one shared VM. `--lua-services bundle` loads each
-service module into its own VM, with a different `roto` table and transactional
-storage. Functions from one environment are not available in the other.
+There are two separate environments with different `roto` tables:
 
-## Setup lifecycle and values
+- **Setup environment**: `--setup setup.lua` and `POST /roto-api/lua`. One shared VM that
+  creates resources, seeds services and registers runtime callbacks.
+- **Service-module environment**: `--lua-services bundle`. Each module gets its own VM and
+  transactional storage. See [Service modules](#service-modules).
+
+Everything before the Service modules section describes the setup environment.
+
+## Symbol index
+
+Availability: **setup** = startup and live scripts only (calling it from a callback
+raises an error); **any** = also safe inside runtime callbacks.
+
+| Symbol | Returns | Availability | Section |
+| --- | --- | --- | --- |
+| `roto.version`, `roto.api_version` | string, integer | any | [Context](#context-and-values) |
+| `roto.account_id`, `roto.region`, `roto.endpoint` | strings | any | [Context](#context-and-values) |
+| `roto.vars` | table of strings | any | [Context](#context-and-values) |
+| `roto.null`, `roto.array(table)` | JSON null, marked array | any | [Context](#context-and-values) |
+| `roto.json_decode(text)` | decoded value (raises on bad JSON) | any | [Reading responses](#reading-responses) |
+| `roto.sqs.queue(name, options?)` | `{name, url, arn}` | setup | [SQS](#sqs) |
+| `roto.s3.link(bucket, key, file, options?)` | `{bucket, key}` | setup | [S3](#s3) |
+| `roto.s3.link_dir(bucket, prefix, dir, options?)` | `{bucket, prefix, count}` | setup | [S3](#s3) |
+| `roto.lambda.fn(name, options)` | `{name, arn}` | setup | [Lambda](#lambda) |
+| `roto.lambda.bind(name, executor)` | `{name}` | setup | [Lambda](#lambda) |
+| `roto.lambda.event_source(queue, function, options?)` | AWS mapping configuration | setup | [Lambda](#lambda) |
+| `roto.call(service, operation, input?)` | decoded AWS response | setup | [Service access](#service-access) |
+| `roto.wire(service, method, path, options?)` | `{status, headers, body}` | setup | [Service access](#service-access) |
+| `roto.hooks.request(service, operation, callback)` | nothing | setup | [Callbacks](#runtime-callbacks) |
+| `roto.hooks.mqtt_connect(cb)`, `roto.hooks.mqtt_subscribe(cb)` | nothing | setup | [Callbacks](#runtime-callbacks) |
+
+Return shapes differ by design: the helpers return small lowercase tables, while
+`roto.call` and `event_source` return AWS-shaped (PascalCase) responses unchanged.
+
+## Context and values
 
 ```sh
 roto-server --ephemeral --port 5071 --setup setup.lua
@@ -25,13 +56,14 @@ setup script first, including `module.lua` and `module/init.lua`.
 | Value or function | Meaning |
 | --- | --- |
 | `roto.version` | Server version string (informational) |
-| `roto.api_version` | Integer Lua API level; bumped only on breaking changes. Additive changes keep it, so feature-detect new functions with `if roto.s3.link_dir then` |
+| `roto.api_version` | Integer Lua API level; bumped only on breaking changes (currently 2: version 1 had `roto.lambda.function_`, `roto.request`, `roto.intercept_request` and `roto.mqtt.on_*`, now `roto.lambda.fn`, `roto.wire` and `roto.hooks.*`). Additive changes keep it, so feature-detect new functions with `if roto.s3.link_dir then` |
 | `roto.account_id` | Setup account ID string |
 | `roto.region` | Setup region string |
 | `roto.endpoint` | Server base URL string |
 | `roto.vars` | Table of strings from repeatable `--set KEY=VALUE` flags; unset keys are `nil` |
 | `roto.null` | Explicit JSON null |
 | `roto.array(table)` | Marks and returns the supplied table as a JSON array |
+| `roto.json_decode(text)` | Decodes a JSON string; malformed JSON raises an error |
 
 ```lua
 local settings = {
@@ -47,16 +79,21 @@ arrays. An unmarked empty table encodes as `{}`; `roto.array({})` encodes as `[]
 `nil` omits an object field; use `roto.null` to keep a field with a null value.
 Return JSON-compatible values, without cycles or functions.
 
-All APIs below except `roto.array` and `roto.null` are startup-only. Calling them
+All APIs except `roto.array`, `roto.null`, `roto.json_decode` and the context values are startup-only. Calling them
 inside a Lambda, interceptor, or MQTT callback raises an error. Setup failures
 stop startup and include source locations; earlier successful service changes
 are not rolled back as a group. Bindings and callbacks are local configuration:
 rerun setup after restart. Resource reset retains registrations and bindings,
 but does not rerun setup.
 
-## Queue helper
+## Resource helpers
 
-### `roto.sqs.queue(name, options?)`
+Helpers create a missing resource or reconcile an existing one, so rerunning setup is
+safe. Omitting a resource from the script does not delete it. Unknown options raise
+an error. Services without a helper are seeded through [Service access](#service-access).
+
+### SQS
+#### `roto.sqs.queue(name, options?)`
 
 Creates a missing queue or updates an existing queue. Returns
 `{name = string, url = string, arn = string}`.
@@ -82,9 +119,9 @@ roto.call("sqs", "SendMessage", {
 })
 ```
 
-## S3 helpers
+### S3
 
-### `roto.s3.link(bucket, key, file, options?)`
+#### `roto.s3.link(bucket, key, file, options?)`
 
 Registers `key` as a reference to a host file. The body is not copied; GET, HEAD, Range
 and listings are served from `file`. Relative paths resolve against the setup script's
@@ -94,24 +131,29 @@ link to the same file. A missing file is a setup error.
 Options: `content_type` (otherwise guessed from the extension; `.gz` and `.tgz` stay
 `binary/octet-stream`), `metadata` (user metadata table) and `headers` (`cache_control`,
 `content_disposition`, `content_encoding`, `content_language`, `expires`,
-`website_redirect_location`).
+`website_redirect_location`). Returns `{bucket = string, key = string}`.
 
 ```lua
 roto.s3.link("assets", "demodata/rows.csv.gz", "Assets/demodata/rows.csv.gz")
 ```
 
-### `roto.s3.link_dir(bucket, prefix, dir, options?)`
+#### `roto.s3.link_dir(bucket, prefix, dir, options?)`
 
 Links every regular file below `dir`, recursively, as `prefix` plus the relative path.
-Returns the number of files linked. An empty directory is fine; a missing one is an error.
+Returns `{bucket, prefix, count}`, where `count` is the number of files linked. An empty directory is fine; a missing one is an error.
 
-## Lambda helpers
+```lua
+local linked = roto.s3.link_dir("assets", "static/", "public")  -- static/<relative path>
+print(linked.count .. " files linked")
+```
 
-### `roto.lambda.function_(name, options)`
+### Lambda
+
+#### `roto.lambda.fn(name, options)`
 
 Creates or updates function metadata and binds its local implementation. Returns
-`{name = string, arn = string}`. The trailing underscore avoids Lua's reserved
-word `function`. Supply exactly one of `executor` or `handler`.
+`{name = string, arn = string}`. The name is `fn` because `function` is a Lua
+keyword. Supply exactly one of `executor` or `handler`.
 
 | Option | Type | Default |
 | --- | --- | --- |
@@ -127,7 +169,7 @@ including replacing the function environment. Unknown helper options fail.
 New metadata uses runtime `provided.al2023`, handler `external`, and a local
 placeholder role; uploaded packages are not executed by these bindings.
 
-### Executor tables
+#### Executor tables
 
 Choose one executor form:
 
@@ -138,7 +180,7 @@ Choose one executor form:
 | Container | `container`: local RIE image name; optional `warm`: boolean, default `false` |
 
 ```lua
-local worker = roto.lambda.function_("echo", {
+local worker = roto.lambda.fn("echo", {
   timeout = 5,
   executor = {command = {"sh", "-c", "cat"}, env = {MODE = "demo"}},
 })
@@ -154,7 +196,7 @@ executors POST event JSON and require a 2xx JSON response. Containers must alrea
 contain RIE. See [Lambda execution](lambda.md) for environment precedence,
 output limits, container lifecycle, and timeout behavior.
 
-### `roto.lambda.bind(name, executor)`
+#### `roto.lambda.bind(name, executor)`
 
 Binds an executor to existing function metadata without creating or updating
 that metadata. Accepts the same executor forms and path resolution as above;
@@ -165,7 +207,7 @@ returns `{name = string}`.
 roto.lambda.bind("existing-worker", {command = {"sh", "-c", "cat"}})
 ```
 
-### `roto.lambda.event_source(queue, function, options?)`
+#### `roto.lambda.event_source(queue, function, options?)`
 
 Accepts the helper return tables (or tables with their `arn` fields). Creates or
 updates the SQS mapping for that source/function pair and returns the AWS mapping
@@ -179,7 +221,7 @@ configuration, including `UUID`. Repeated setup preserves the mapping UUID.
 
 ```lua
 local queue = roto.sqs.queue("tasks", {visibility_timeout = 30})
-local worker = roto.lambda.function_("task-worker", {
+local worker = roto.lambda.fn("task-worker", {
   handler = function(event, context)
     local failures = roto.array({})
     for _, record in ipairs(event.Records) do
@@ -200,34 +242,24 @@ Sources must be standard queues in the same account and region. Queue visibility
 timeout must be at least the function timeout. Unknown options fail. See
 [SQS delivery behavior](lua.md#sqs-delivery-behavior) for retry and deletion rules.
 
-## Running scripts on a live server
+## Service access
 
-Start roto with `--enable-lua-api` to accept scripts at `POST /roto-api/lua`. The body is
-the Lua source. The script gets the same `roto.*` setup API as `--setup` (including
-`roto.s3.link`), with the `--setup-region` region and any `--set` variables. Relative paths
-and `require` resolve against the server's working directory.
+Three tiers reach a service, from most to least convenient:
 
-```sh
-curl -X POST localhost:5070/roto-api/lua --data-binary @seed.lua
-curl -X POST localhost:5070/roto-api/lua --data-binary 'return roto.call("sqs", "ListQueues")'
-```
+| Need | Use |
+| --- | --- |
+| Create an SQS queue, Lambda function or mapping, or link S3 files | [Resource helpers](#resource-helpers) |
+| Call an operation of a JSON-protocol service | `roto.call` |
+| Anything else (S3, SNS, IAM, STS, CloudFormation, Lambda invoke, ...) | `roto.wire` |
 
-Success returns `{"result": <return value>, "output": [<print lines>]}`. A failure returns
-status 400 with `{"error": "...name:line: message...", "output": [...]}`. Query `name=`
-labels the chunk in errors and `timeout=` sets the Lua time limit in seconds (default 30,
-at most 600). Scripts run one at a time. `roto.intercept_request` hooks a script registers
-stay active.
-
-This executes arbitrary code as the server's user, so it is off by default, answers only
-loopback peers, and rejects any request carrying an `Origin` header (browsers).
-
-## Service calls
+`roto.call` services: `sqs`, `lambda`, `dynamodb`, `ssm`, `secretsmanager`, `kinesis`,
+`kms`, `logs` (CloudWatch Logs) and `events` (alias `eventbridge`). Services that speak
+REST or Query/XML protocols (S3, SNS, IAM, STS, CloudFormation, ...) need `roto.wire`.
 
 ### `roto.call(service, operation, input?)`
 
 Calls a supported service operation with AWS-shaped input and returns decoded
-JSON. Omitted input becomes `{}`. Supported service names are `sqs`, `lambda`,
-`dynamodb`, `ssm`, `secretsmanager`, `events` (alias `eventbridge`), and `kinesis`.
+JSON. Omitted input becomes `{}`. Supported service names are listed above.
 Service errors raise Lua errors; operation coverage follows the service's
 implementation.
 
@@ -244,7 +276,7 @@ end)
 if not ok then print(tostring(err)) end
 ```
 
-### `roto.request(service, method, path, options?)`
+### `roto.wire(service, method, path, options?)`
 
 Calls any installed service directly through its wire handler, before the HTTP
 listener starts. Use the registered service name; the `eventbridge` alias belongs
@@ -259,12 +291,12 @@ Handler errors and HTTP status codes of 400 or higher raise Lua errors.
 | `body` | String bytes or JSON-compatible Lua value | Empty body |
 
 ```lua
-roto.request("s3", "PUT", "/fixtures")
-roto.request("s3", "PUT", "/fixtures/hello.txt", {body = "hello"})
-local object = roto.request("s3", "GET", "/fixtures/hello.txt")
+roto.wire("s3", "PUT", "/fixtures")
+roto.wire("s3", "PUT", "/fixtures/hello.txt", {body = "hello"})
+local object = roto.wire("s3", "GET", "/fixtures/hello.txt")
 assert(object.status == 200 and object.body == "hello")
 
-roto.request("sns", "POST", "/", {
+roto.wire("sns", "POST", "/", {
   headers = {["content-type"] = "application/x-www-form-urlencoded"},
   body = "Action=CreateTopic&Version=2010-03-31&Name=updates",
 })
@@ -274,6 +306,52 @@ Supply protocol headers, escaping, and payload shape yourself. Table bodies are
 JSON encoded; strings are sent unchanged. Neither call API invokes request
 interceptors. For a larger runnable seed, use
 [the demo fixtures](lua.md#quick-test-data).
+
+### Reading responses
+
+`roto.wire` bodies are raw strings. Decode JSON ones with `roto.json_decode`:
+
+```lua
+local fn = roto.lambda.fn("greeter", {handler = function(e) return {hi = e.name} end})
+local out = roto.wire("lambda", "POST",
+  "/2015-03-31/functions/" .. fn.name .. "/invocations", {body = {name = "ada"}})
+assert(roto.json_decode(out.body).hi == "ada")
+```
+
+### Seeding a service without a helper
+
+```lua
+-- KMS and Logs go through roto.call
+local key = roto.call("kms", "CreateKey", {Description = "demo"})
+roto.call("logs", "CreateLogGroup", {logGroupName = "/app/web"})
+-- S3 objects and SNS topics go through roto.wire
+roto.wire("s3", "PUT", "/assets")
+roto.wire("s3", "PUT", "/assets/hello.txt", {body = "hello"})
+```
+
+For a full seed across eleven services, see the
+[demo fixtures](lua.md#quick-test-data).
+
+## Running scripts on a live server
+
+Start roto with `--enable-lua-api` to accept scripts at `POST /roto-api/lua`. The body is
+the Lua source. The script gets the same `roto.*` setup API as `--setup` (including
+`roto.s3.link`), with the `--setup-region` region and any `--set` variables. Relative paths
+and `require` resolve against the server's working directory.
+
+```sh
+curl -X POST localhost:5070/roto-api/lua --data-binary @seed.lua
+curl -X POST localhost:5070/roto-api/lua --data-binary 'return roto.call("sqs", "ListQueues")'
+```
+
+Success returns `{"result": <return value>, "output": [<print lines>]}`. A failure returns
+status 400 with `{"error": "...name:line: message...", "output": [...]}`. Query `name=`
+labels the chunk in errors and `timeout=` sets the Lua time limit in seconds (default 30,
+at most 600). Scripts run one at a time. `roto.hooks.request` hooks a script registers
+stay active.
+
+This executes arbitrary code as the server's user, so it is off by default, answers only
+loopback peers, and rejects any request carrying an `Origin` header (browsers).
 
 ## Runtime callbacks
 
@@ -286,7 +364,7 @@ limited to 6 MiB. `print` writes to the server console, not Lambda invocation lo
 
 ```lua
 local invocations = 0
-roto.lambda.function_("greet", {
+roto.lambda.fn("greet", {
   handler = function(event, context)
     invocations = invocations + 1
     return {message = "Hello " .. event.name, count = invocations,
@@ -295,7 +373,7 @@ roto.lambda.function_("greet", {
 })
 ```
 
-### `roto.intercept_request(service, operation, callback)`
+### `roto.hooks.request(service, operation, callback)`
 
 Registers `callback(request, context)` for an exact service/operation pair;
 a later registration replaces the earlier one. Returns no value. The callback
@@ -307,7 +385,7 @@ raw string `body`, and `input` when the body parses as JSON. Authorization is
 omitted from headers. `context` contains `account_id`, `region`, and `request_id`.
 
 ```lua
-roto.intercept_request("sqs", "SendMessage", function(request, context)
+roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {status = 503,
       headers = {["content-type"] = "application/x-amz-json-1.0"},
@@ -321,7 +399,7 @@ Interception applies to external AWS HTTP requests. Internal service calls bypas
 it. Callback failures produce an internal AWS error. See
 [runtime interception](runtime-hooks.md#request-interception) for tracing details.
 
-### `roto.mqtt.on_connect(callback)` and `roto.mqtt.on_subscribe(callback)`
+### `roto.hooks.mqtt_connect(callback)` and `roto.hooks.mqtt_subscribe(callback)`
 
 Register `callback(request, context)` for MQTT lifecycle decisions; return no
 value. Later registration replaces the same hook. Callback `nil` applies normal
@@ -331,10 +409,10 @@ authorized). Subscribe returns `{return_codes = roto.array(codes)}` with one
 entry per filter: 0 or 1 grants up to the requested QoS; 128 rejects.
 
 ```lua
-roto.mqtt.on_connect(function(request, context)
+roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then return {return_code = 5} end
 end)
-roto.mqtt.on_subscribe(function(request, context)
+roto.hooks.mqtt_subscribe(function(request, context)
   local codes = {}
   for i, filter in ipairs(request.filters) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
@@ -363,7 +441,7 @@ configured timeout for Lambdas. Blocking native calls such as file I/O or
 `os.execute` cannot be interrupted by these checks. Runtime callbacks may use
 `roto.array` and `roto.null`, but cannot call setup APIs or register more hooks.
 
-## Optional service module API
+## Service modules
 
 Service modules return an operation table. Each operation receives
 `(context, input, db)` and returns a JSON-compatible response object. Context
@@ -381,7 +459,8 @@ Durable state belongs in `db`, since mutable module globals are not rolled back.
 | `db.put(namespace, id, value)` | Insert or replace a JSON document; no return value |
 | `db.delete(namespace, id)` | Remove a document, including an absent one; no return value |
 | `db.list(namespace)` | JSON array of documents ordered by document ID |
-| `roto.array()` | New marked empty JSON array; **does not accept a table to populate it** |
+| `roto.array(table?)` | Marks and returns the supplied table as a JSON array, or a new empty array |
+| `roto.null` | Explicit JSON null |
 | `roto.error(code, message, status?)` | Raise AWS client error; default HTTP status `400` |
 | `roto.id(prefix)` | Prefix plus 12 hexadecimal characters from a generated request ID |
 | `roto.uuid()` | Generated UUID string |
@@ -390,9 +469,8 @@ Durable state belongs in `db`, since mutable module globals are not rolled back.
 | `roto.json_decode(text, error_code?)` | Decoded JSON; malformed JSON raises `error_code` or `InvalidParameterException` |
 
 Namespace and ID arguments are strings. Namespaces are not automatically scoped:
-include account and region when isolation is required. Setup APIs and
-`roto.null` are not exposed here. To obtain explicit null in a module, use
-`roto.json_decode("null")`.
+include account and region when isolation is required. Setup APIs are not
+exposed here.
 
 ```lua
 -- service.lua

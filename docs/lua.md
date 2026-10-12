@@ -4,7 +4,8 @@ Lua declares resources and wires queues to Lambda functions. Functions can execu
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
 through RIE, or run an inline Lua placeholder handler.
 See [runtime Lua handlers and interception](runtime-hooks.md) for inline functions and request hooks.
-See the [complete Lua API reference](lua-api.md) for all bindings, options, and examples.
+This page is a tutorial; the [Lua API reference](lua-api.md) is the single source for every
+symbol, option and return value (start with its symbol index).
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
 ```sh
@@ -24,7 +25,7 @@ For a standalone first setup, save this as `setup.lua`:
 
 ```lua
 local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
-local handler = roto.lambda.function_("echo-job", {
+local handler = roto.lambda.fn("echo-job", {
   executor = {command = {"sh", "-c", "cat"}}, timeout = 5
 })
 roto.lambda.event_source(queue, handler)
@@ -62,7 +63,7 @@ local queue = roto.sqs.queue("jobs", {
   tags = { owner = "local" },
 })
 
-local handler = roto.lambda.function_("process-job", {
+local handler = roto.lambda.fn("process-job", {
   timeout = 10,
   memory_size = 128,
   description = "Process local jobs",
@@ -82,7 +83,7 @@ local mapping = roto.lambda.event_source(queue, handler, {
 For a quick placeholder, supply `handler` instead of `executor`:
 
 ```lua
-roto.lambda.function_("greet", {
+roto.lambda.fn("greet", {
   handler = function(event, context)
     return {message = "Hello " .. event.name}
   end,
@@ -91,12 +92,11 @@ roto.lambda.function_("greet", {
 
 The handler receives decoded JSON and returns a JSON-compatible value. Closures
 survive startup; Lua errors fail the invocation. Runtime callbacks cannot use
-resource setup APIs or `roto.call`/`roto.request`. See [runtime hooks](runtime-hooks.md)
+resource setup APIs or `roto.call`/`roto.wire`. See [runtime hooks](runtime-hooks.md)
 for context fields, timeout limits, and interception examples.
 
-`queue` returns `{name, url, arn}`; `function_` returns `{name, arn}`; `event_source` returns
-the AWS mapping configuration, including `UUID`. `function_` avoids Lua's reserved word
-`function`. Unknown helper options cause a setup error.
+`queue` returns `{name, url, arn}`; `fn` returns `{name, arn}`; `event_source` returns
+the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Lua keyword). Unknown helper options cause a setup error.
 
 The helpers create missing resources and update existing ones. Repeating setup preserves
 queue messages and mapping UUIDs. Queue attributes/tags supplied by the script are merged;
@@ -105,7 +105,7 @@ are reconciled to the supplied values or helper defaults. Omitting a resource fr
 does not delete it.
 
 Use `roto.lambda.bind(name, executor)` to bind an executor to function metadata created through
-the AWS API. `function_` creates/updates the metadata and binds in one step. Executors may be
+the AWS API. `fn` creates/updates the metadata and binds in one step. Executors may be
 commands, HTTP endpoints, or RIE container image names; see [the Lambda reference](lambda.md).
 
 The script runs once on each startup after service initialization, before the HTTP listener
@@ -122,7 +122,7 @@ configuration and cannot be submitted through AWS APIs.
 
 `roto.s3.link(bucket, key, file)` and `roto.s3.link_dir(bucket, prefix, dir)` register
 existing host files as objects without copying or uploading them, which suits large fixtures
-that every start would otherwise re-upload. See the [Lua API reference](lua-api.md#s3-helpers)
+that every start would otherwise re-upload. See the [Lua API reference](lua-api.md#s3)
 and [Storage](storage.md).
 
 ## Running scripts against a live server
@@ -130,32 +130,21 @@ and [Storage](storage.md).
 With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
 [Lua API reference](lua-api.md#running-scripts-on-a-live-server).
 
-## Other service operations
+## Other services
 
-`roto.call(service, operation, input)` accepts AWS-shaped input and returns decoded JSON.
-It supports Lambda, SQS, DynamoDB, SSM, Secrets Manager, Kinesis, and EventBridge (`events` or `eventbridge`):
+Anything without a helper is seeded with `roto.call` (JSON-protocol services: SQS, Lambda,
+DynamoDB, SSM, Secrets Manager, Kinesis, EventBridge, KMS, CloudWatch Logs) or `roto.wire`
+(everything else, such as S3 and SNS). Decode JSON response bodies with `roto.json_decode`.
+See [Service access](lua-api.md#service-access) for the signatures and examples.
 
 ```lua
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
+roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
 ```
 
 Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON null.
-
-`roto.request(service, method, path, options)` calls any installed service through its normal
-wire handler, without waiting for the listener. Options are `headers`, `query` (raw query
-string), and `body` (a string or a Lua table encoded as JSON). It returns
-`{status, headers, body}` with a raw string body. HTTP errors raise a Lua error.
-
-```lua
-roto.request("s3", "PUT", "/fixtures")
-roto.request("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
-roto.request("sns", "POST", "/", {
-  headers = { ["content-type"] = "application/x-www-form-urlencoded" },
-  body = "Action=CreateTopic&Version=2010-03-31&Name=events",
-})
-```
 
 ## EventBridge wiring
 

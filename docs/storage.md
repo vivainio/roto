@@ -24,7 +24,7 @@ Unsafe or overly long key segments are escaped.
 SQLite remains the source of truth for metadata and listings. You can browse or
 copy the file tree, but copying new files into a bucket directory does not register
 new objects. Upload fixtures through the S3 API, or register large host files without
-copying them using `roto.s3.link` (see [Lua API](lua-api.md#s3-helpers)).
+copying them using `roto.s3.link` (see [Lua API](lua-api.md#s3)).
 
 A linked object stores `link:<absolute host path>` instead of a body path. Reads are
 served from the host file; roto never writes, moves or deletes it, so deleting the key,

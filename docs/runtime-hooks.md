@@ -8,7 +8,7 @@ interceptors. Roto retains their Lua closures after startup. See
 ## Inline placeholder Lambdas
 
 ```lua
-roto.lambda.function_("greet", {
+roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
     return {message = "Hello " .. event.name}
@@ -31,7 +31,7 @@ an AWS Lua runtime. `print` writes to the server console, not invocation logs.
 ## Request interception
 
 ```lua
-roto.intercept_request("sqs", "SendMessage", function(request, context)
+roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {
       status = 503,
@@ -65,8 +65,8 @@ error. There is no global interceptor or missing-support fallback registration.
 
 ## MQTT connection and subscription hooks
 
-Register `roto.mqtt.on_connect(callback)` or
-`roto.mqtt.on_subscribe(callback)` to simulate policies.
+Register `roto.hooks.mqtt_connect(callback)` or
+`roto.hooks.mqtt_subscribe(callback)` to simulate policies.
 These MQTT lifecycle hooks are separate from AWS service request interception.
 They receive decoded MQTT dictionaries and return MQTT decisions. They share
 the Lua VM, serialization lock, and execution limits with service interceptors.
@@ -75,14 +75,14 @@ A later registration for the same MQTT hook replaces the previous callback.
 For example:
 
 ```lua
-roto.mqtt.on_connect(function(request, context)
+roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then
     return {return_code = 5} -- Not authorized.
   end
   return nil
 end)
 
-roto.mqtt.on_subscribe(function(request, context)
+roto.hooks.mqtt_subscribe(function(request, context)
   local codes = {}
   for i, filter in ipairs(request.filters) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
@@ -128,7 +128,7 @@ configured function timeout for a Lambda. These checks interrupt Lua loops;
 they cannot interrupt blocking native calls such as `os.execute` or file I/O.
 Use command or HTTP executors for workloads that need external processes.
 
-Resource setup helpers, `roto.call`, `roto.request`, and hook registration are
+Resource setup helpers, `roto.call`, `roto.wire`, and hook registration are
 startup-only and fail when called from a runtime callback. This prevents nested
 Lambda invocations from deadlocking the shared VM. Runtime callbacks may use
 `roto.array` and `roto.null`. Bindings and registrations remain after resource

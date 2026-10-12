@@ -1,5 +1,5 @@
 -- Demonstrate policy simulation using the decoded MQTT request dictionaries.
-roto.mqtt.on_connect(function(request, context)
+roto.hooks.mqtt_connect(function(request, context)
   assert(request.transport == "mqtt" and request.operation == "Connect")
   assert(request.path == "/mqtt" and request.source_ip == "127.0.0.1")
   assert(request.connection_id and request.headers and context.request_id)
@@ -20,7 +20,7 @@ roto.mqtt.on_connect(function(request, context)
   return nil -- Normal acceptance.
 end)
 
-roto.mqtt.on_subscribe(function(request, context)
+roto.hooks.mqtt_subscribe(function(request, context)
   assert(request.connect.client_id and request.packet_id and context.account_id)
   local codes = {}
   for i, filter in ipairs(request.filters) do

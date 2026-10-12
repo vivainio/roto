@@ -155,7 +155,7 @@ def main():
         log_path = Path(directory) / "server.log"
         setup_path = Path(directory) / "setup.lua"
         setup_path.write_text(
-            'roto.lambda.function_("ws-echo", { timeout = 5, '
+            'roto.lambda.fn("ws-echo", { timeout = 5, '
             'executor = { command = { "sh", "-c", "cat" } } })\n'
         )
         with log_path.open("w+") as log:

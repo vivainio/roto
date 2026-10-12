@@ -1,4 +1,4 @@
-roto.lambda.function_("container-echo", {
+roto.lambda.fn("container-echo", {
   timeout = 30,
   environment = {
     AWS_ACCESS_KEY_ID = "testing",
