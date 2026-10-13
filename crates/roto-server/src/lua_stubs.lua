@@ -14,6 +14,7 @@
 ---@field null any Explicit JSON null.
 ---@field sqs roto.sqs
 ---@field s3 roto.s3
+---@field dynamodb roto.dynamodb
 ---@field lambda roto.lambda
 ---@field hooks roto.hooks
 roto = {}
@@ -67,6 +68,40 @@ roto.sqs = {}
 ---@param options? roto.QueueOptions
 ---@return roto.Queue
 function roto.sqs.queue(name, options) end
+
+-- DynamoDB --------------------------------------------------------------------------
+
+---@class roto.dynamodb
+roto.dynamodb = {}
+
+---@class roto.Gsi
+---@field name string
+---@field hash string Hash key attribute.
+---@field range? string Range key attribute.
+---@field projection? string `ALL` (default) or `KEYS_ONLY`.
+
+---@class roto.TableOptions
+---@field hash string Hash key attribute.
+---@field range? string Range key attribute; omit for a hash-only table.
+---@field types? table<string, "S"|"N"|"B"> Key attribute types; every key attribute defaults to `S`.
+---@field gsis? roto.Gsi[] Global secondary indexes.
+
+---@class roto.Table
+---@field name string
+---@field arn string
+
+---Creates the table if missing (pay-per-request); an existing table is kept as is. Setup only.
+---@param name string
+---@param options roto.TableOptions
+---@return roto.Table
+function roto.dynamodb.table(name, options) end
+
+---Writes an item given as plain Lua values: strings, numbers, booleans, `roto.null`,
+---`roto.array` lists and nested tables. Setup only.
+---@param table string
+---@param item table<string, any>
+---@return { table: string }
+function roto.dynamodb.put(table, item) end
 
 -- S3 --------------------------------------------------------------------------------
 
