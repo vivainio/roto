@@ -4,7 +4,8 @@ This chapter is the single reference for every Roto-provided Lua symbol. Roto em
 Lua 5.4; no separate Lua installation is required. Standard Lua libraries are
 available. Scripts are trusted local code running with the server's OS permissions.
 For a guided introduction see [Lua setup](lua.md); for worked callback examples see
-[Runtime hooks](runtime-hooks.md).
+[Runtime hooks](runtime-hooks.md). Editor completion and checks for every symbol here
+are available through the [Lua type stubs](lua-types.md).
 
 There are two separate environments with different `roto` tables:
 
@@ -28,6 +29,8 @@ raises an error); **any** = also safe inside runtime callbacks.
 | `roto.null`, `roto.array(table)` | JSON null, marked array | any | [Context](#context-and-values) |
 | `roto.json_decode(text)` | decoded value (raises on bad JSON) | any | [Reading responses](#reading-responses) |
 | `roto.sqs.queue(name, options?)` | `{name, url, arn}` | setup | [SQS](#sqs) |
+| `roto.s3.bucket(name, options?)` | `{name, arn}` | setup | [S3](#s3) |
+| `roto.s3.put(bucket, key, body, options?)` | `{bucket, key}` | setup | [S3](#s3) |
 | `roto.s3.link(bucket, key, file, options?)` | `{bucket, key}` | setup | [S3](#s3) |
 | `roto.s3.link_dir(bucket, prefix, dir, options?)` | `{bucket, prefix, count}` | setup | [S3](#s3) |
 | `roto.lambda.fn(name, options)` | `{name, arn}` | setup | [Lambda](#lambda) |
@@ -120,6 +123,51 @@ roto.call("sqs", "SendMessage", {
 ```
 
 ### S3
+
+Feature-detect the bucket and put helpers with `if roto.s3.bucket then`.
+
+#### `roto.s3.bucket(name, options?)`
+
+Creates the bucket if it is missing and applies the given configuration. Running setup
+again is safe: an existing bucket is kept, and each option that you pass replaces that
+configuration. An option you leave out is left unchanged. Returns `{name, arn}`.
+
+| Option | Meaning |
+| --- | --- |
+| `cors` | List of rules `{methods, origins, headers?, expose?, max_age?, id?}`. Replaces the CORS configuration; `{}` removes it. |
+| `notify` | List of destinations, see below. Replaces the whole notification configuration, so one call must list every destination; `{}` removes it. |
+| `skip_validation` | `true` skips the check that queue destinations exist (it sends `x-amz-skip-destination-validation`). |
+
+A `notify` entry is `{queue | topic | lambda, events, prefix?, suffix?, id?}`. The
+destination is an ARN string or a helper table with an `arn` field, such as the result of
+`roto.sqs.queue`. Give exactly one destination per entry and at least one event. A queue
+must exist when the bucket is configured unless `skip_validation` is set. Queue and
+Lambda destinations are delivered; topic destinations are stored but not delivered. See
+[Object notifications](s3.md#object-notifications).
+
+```lua
+local events = roto.sqs.queue("s3-events")
+local scanner = roto.sqs.queue("scanner")
+roto.s3.bucket("attachments", {
+  cors = {{ methods = {"GET", "PUT"}, origins = {"*"}, headers = {"*"}, max_age = 3500 }},
+  notify = {
+    { queue = events, events = {"s3:ObjectTagging:Put"} },
+    { queue = scanner, events = {"s3:ObjectCreated:*"}, prefix = "unscanned/" },
+  },
+})
+```
+
+#### `roto.s3.put(bucket, key, body, options?)`
+
+Stores `body` (a Lua string, so binary-safe) as a new version of `key`, creating the
+bucket if needed. It is the inline counterpart of `link`: the bytes are copied into the
+store, versioning and notifications apply as for a normal `PutObject`, and rerunning
+setup writes a new version. Options are the same as for `link`: `content_type`,
+`metadata` and `headers`. Returns `{bucket, key}`.
+
+```lua
+roto.s3.put("attachments", "tenant1/Invoice.pdf", pdf_bytes, {content_type = "application/pdf"})
+```
 
 #### `roto.s3.link(bucket, key, file, options?)`
 

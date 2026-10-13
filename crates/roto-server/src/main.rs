@@ -4,6 +4,7 @@ mod gateway;
 mod inspection;
 mod lua_api;
 mod lua_service;
+mod lua_stubs;
 mod lua_wire;
 mod setup;
 mod trace;
@@ -39,6 +40,9 @@ fn parse_set_var(raw: &str) -> Result<(String, String), String> {
 struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
+    /// Write the Lua type stubs (`roto.d.lua`) for editors into DIR and exit.
+    #[arg(long, value_name = "DIR")]
+    lua_stubs: Option<PathBuf>,
     /// Port for the local AWS simulator.
     #[arg(long, default_value_t = 5070)]
     port: u16,
@@ -98,6 +102,15 @@ async fn main() {
         )
         .init();
     let args = Args::parse();
+    if let Some(dir) = &args.lua_stubs {
+        std::fs::create_dir_all(dir)
+            .and_then(|()| std::fs::write(dir.join("roto.d.lua"), lua_stubs::render()))
+            .unwrap_or_else(|e| {
+                eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());
+                std::process::exit(1);
+            });
+        return;
+    }
     let trace = trace::Trace::create(args.trace.as_deref()).unwrap_or_else(|e| {
         eprintln!("error opening trace file: {e}");
         std::process::exit(1);

@@ -430,23 +430,8 @@ impl S3 {
         Ok(find_obj(tx, &b.name, key, Some(&version_id))?.expect("just inserted"))
     }
 
-    /// Registers `key` as a reference to the host file `host`: no copy is made and reads are
-    /// served from the file. Safe to repeat; an existing link to the same file is refreshed.
-    pub fn link_object(
-        &self,
-        ctx: &RequestContext,
-        bucket: &str,
-        key: &str,
-        host: &std::path::Path,
-        attrs: LinkAttrs,
-    ) -> Result<(), AwsError> {
-        let host = std::fs::canonicalize(host)
-            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
-        let (size, etag) = file_fingerprint(&host)
-            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
-        let content_type = attrs
-            .content_type
-            .or_else(|| guess_content_type(&host).map(str::to_string));
+    /// Creates `bucket` in the request's region unless it already exists.
+    pub fn ensure_bucket(&self, ctx: &RequestContext, bucket: &str) -> Result<(), AwsError> {
         let known = self.db.read(|c| Ok(load_bucket(c, bucket).is_ok()))?;
         if !known {
             let location_constraint = (ctx.region != "us-east-1").then(|| ctx.region.clone());
@@ -465,6 +450,61 @@ impl S3 {
                 },
             )?;
         }
+        Ok(())
+    }
+
+    /// Stores `data` as a new version of `key`, creating the bucket if needed. Unlike
+    /// `link_object` the bytes are copied into the store; events and versioning apply as for
+    /// a normal `PutObject`.
+    pub fn put_inline(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        data: Vec<u8>,
+        attrs: LinkAttrs,
+    ) -> Result<(), AwsError> {
+        self.ensure_bucket(ctx, bucket)?;
+        let header = |name: &str| attrs.headers.get(name).cloned();
+        Service::put_object(
+            self,
+            ctx,
+            PutObjectRequest {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                body: Some(roto_protocol::Blob(data)),
+                content_type: attrs.content_type.clone(),
+                metadata: attrs.metadata.clone(),
+                cache_control: header("cache_control"),
+                content_disposition: header("content_disposition"),
+                content_encoding: header("content_encoding"),
+                content_language: header("content_language"),
+                expires: header("expires"),
+                website_redirect_location: header("website_redirect_location"),
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    }
+
+    /// Registers `key` as a reference to the host file `host`: no copy is made and reads are
+    /// served from the file. Safe to repeat; an existing link to the same file is refreshed.
+    pub fn link_object(
+        &self,
+        ctx: &RequestContext,
+        bucket: &str,
+        key: &str,
+        host: &std::path::Path,
+        attrs: LinkAttrs,
+    ) -> Result<(), AwsError> {
+        let host = std::fs::canonicalize(host)
+            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
+        let (size, etag) = file_fingerprint(&host)
+            .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
+        let content_type = attrs
+            .content_type
+            .or_else(|| guess_content_type(&host).map(str::to_string));
+        self.ensure_bucket(ctx, bucket)?;
         let link = blobs::link_path(&host);
         self.db.transaction(|tx| {
             let b = load_bucket(tx, bucket)?;
