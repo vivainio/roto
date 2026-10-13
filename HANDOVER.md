@@ -2,7 +2,8 @@
 
 Written 2026-10-13. Requested by the dh-core project (`dolib/stack/*.lua` in the
 `tmp/ville-switch-to-roto` branch), whose local AWS stack is now defined entirely in roto
-setup Lua. Phase 1 helpers not started; the generic codec and queue delivery below are done.
+setup Lua. Phase 1 (`roto.s3.bucket`/`put`) and phase 2 (`roto.dynamodb.table`/`put`) are done;
+phases 3 and 4 are not needed now that `roto.call` speaks IAM/SNS (see Status).
 
 ## Status (2026-10-13)
 
@@ -59,7 +60,7 @@ a missing resource or reconcile an existing one (rerunning setup is safe, nothin
 deleted), return a small lowercase table. Additive, so `roto.api_version` stays 2; document
 feature detection (`if roto.s3.bucket then`).
 
-## Phase 1: `roto.s3.bucket` and `roto.s3.put`
+## Phase 1: `roto.s3.bucket` and `roto.s3.put` (done, #4)
 
 ```lua
 local q = roto.sqs.queue("ch-service-s3-events-q")
@@ -95,7 +96,11 @@ section, plus a note in `docs/s3.md`.
 
 ## Later phases (same conventions)
 
-2. `roto.dynamodb.table(name, {hash = "PK", range = "SK", gsis = {...}})` and
+2. **Done 2026-10-13:** `roto.dynamodb.table(name, {hash, range?, types?, gsis?})` and
+   `roto.dynamodb.put(table, plain_lua_table)` in `setup.rs` (`table_input`,
+   `attribute_value`), with stubs, docs and `setup_creates_dynamodb_tables_and_puts_plain_items`.
+   Tables are pay-per-request; an existing table is kept unreconciled. Original sketch:
+   `roto.dynamodb.table(name, {hash = "PK", range = "SK", gsis = {...}})` and
    `roto.dynamodb.put(table, plain_lua_table)` (marshal strings, numbers, booleans, nested).
    dh-core wants `hash_only` tables, N GSIs named `GSI<i>` with `GSI<i>PK`/`GSI<i>SK`, and
    provisioned 5/5 (billing mode is irrelevant locally).

@@ -211,6 +211,103 @@ fn notification_config(value: &Value) -> mlua::Result<Value> {
     Ok(config)
 }
 
+/// A plain JSON value as a DynamoDB AttributeValue (`roto.dynamodb.put`).
+fn attribute_value(value: &Value) -> mlua::Result<Value> {
+    Ok(match value {
+        Value::Null => json!({"NULL":true}),
+        Value::Bool(b) => json!({"BOOL":b}),
+        Value::Number(n) => json!({"N":n.to_string()}),
+        Value::String(s) => json!({"S":s}),
+        Value::Array(items) => json!({"L":items
+            .iter()
+            .map(attribute_value)
+            .collect::<mlua::Result<Vec<_>>>()?}),
+        Value::Object(map) => json!({"M":map
+            .iter()
+            .map(|(k, v)| Ok((k.clone(), attribute_value(v)?)))
+            .collect::<mlua::Result<serde_json::Map<_, _>>>()?}),
+    })
+}
+
+fn string_field<'a>(
+    map: &'a serde_json::Map<String, Value>,
+    key: &str,
+    what: &str,
+) -> mlua::Result<Option<&'a str>> {
+    match map.get(key) {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(mlua::Error::external(format!(
+            "{what} {key} must be a string"
+        ))),
+    }
+}
+
+/// `CreateTable` input for `roto.dynamodb.table`: key attributes (default type `S`),
+/// pay-per-request billing, and global secondary indexes projecting all attributes unless told otherwise.
+fn table_input(name: &str, opts: &serde_json::Map<String, Value>) -> mlua::Result<Value> {
+    check_keys(opts, &["hash", "range", "types", "gsis"], "table option")?;
+    let types = match opts.get("types") {
+        None => serde_json::Map::new(),
+        Some(Value::Object(map)) => map.clone(),
+        Some(_) => {
+            return Err(mlua::Error::external(
+                "table types must be a table of attribute -> S, N or B",
+            ));
+        }
+    };
+    let mut attributes: Vec<String> = Vec::new();
+    let mut key_schema = |hash: &str, range: Option<&str>| -> Vec<Value> {
+        let mut schema = vec![json!({"AttributeName":hash,"KeyType":"HASH"})];
+        if let Some(range) = range {
+            schema.push(json!({"AttributeName":range,"KeyType":"RANGE"}));
+        }
+        for attribute in std::iter::once(hash).chain(range) {
+            if !attributes.iter().any(|a| a == attribute) {
+                attributes.push(attribute.to_string());
+            }
+        }
+        schema
+    };
+    let hash = string_field(opts, "hash", "table")?
+        .ok_or_else(|| mlua::Error::external("roto.dynamodb.table requires a hash key"))?;
+    let keys = key_schema(hash, string_field(opts, "range", "table")?);
+    let mut gsis = Vec::new();
+    if let Some(list) = opts.get("gsis") {
+        for gsi in list_of(list, "table gsis")? {
+            let gsi = gsi
+                .as_object()
+                .ok_or_else(|| mlua::Error::external("each gsi must be a table"))?;
+            check_keys(gsi, &["name", "hash", "range", "projection"], "gsi option")?;
+            let missing = |key: &str| mlua::Error::external(format!("each gsi requires {key}"));
+            let index_name = string_field(gsi, "name", "gsi")?.ok_or_else(|| missing("name"))?;
+            let index_hash = string_field(gsi, "hash", "gsi")?.ok_or_else(|| missing("hash"))?;
+            gsis.push(json!({
+                "IndexName":index_name,
+                "KeySchema":key_schema(index_hash, string_field(gsi, "range", "gsi")?),
+                "Projection":{"ProjectionType":string_field(gsi, "projection", "gsi")?.unwrap_or("ALL")},
+            }));
+        }
+    }
+    let definitions: Vec<Value> = attributes
+        .iter()
+        .map(|a| {
+            let kind = types.get(a).and_then(Value::as_str).unwrap_or("S");
+            json!({"AttributeName":a,"AttributeType":kind})
+        })
+        .collect();
+    let mut input = json!({
+        "TableName":name,
+        "AttributeDefinitions":definitions,
+        "KeySchema":keys,
+        "BillingMode":"PAY_PER_REQUEST",
+    });
+    if !gsis.is_empty() {
+        input["GlobalSecondaryIndexes"] = Value::Array(gsis);
+    }
+    Ok(input)
+}
+
 fn link_attrs(lua: &Lua, opts: Option<Table>) -> mlua::Result<roto_svc_s3::LinkAttrs> {
     let Some(opts) = opts else {
         return Ok(Default::default());
@@ -637,6 +734,61 @@ pub fn run_source(
         })?,
     )?;
 
+    let dynamodb_api = lua.create_table()?;
+    let (table_services, table_ctx) = (services.clone(), ctx.clone());
+    dynamodb_api.set(
+        "table",
+        lua.create_function(move |lua, (name, opts): (String, LuaValue)| {
+            setup_only(lua)?;
+            let opts: Value = lua.from_value(opts)?;
+            let opts = opts.as_object().ok_or_else(|| {
+                mlua::Error::external("roto.dynamodb.table options must be a table")
+            })?;
+            let input = table_input(&name, opts)?;
+            let handler = table_services
+                .get("dynamodb")
+                .ok_or_else(|| mlua::Error::external("Service unavailable: dynamodb"))?;
+            let call = |operation: &str, input: &Value| {
+                aws_client::call(handler.as_ref(), &table_ctx, "dynamodb", operation, input)
+            };
+            // An existing table is kept as is: indexes cannot be reconciled in place.
+            let description = match call("DescribeTable", &json!({"TableName":name})) {
+                Ok(existing) => existing["Table"].clone(),
+                Err(e) if e.contains("ResourceNotFoundException") => call("CreateTable", &input)
+                    .map_err(mlua::Error::external)?["TableDescription"]
+                    .clone(),
+                Err(e) => return Err(mlua::Error::external(e)),
+            };
+            lua.to_value(&json!({"name":name,"arn":description["TableArn"]}))
+        })?,
+    )?;
+    let (put_services, put_ctx) = (services.clone(), ctx.clone());
+    dynamodb_api.set(
+        "put",
+        lua.create_function(move |lua, (table, item): (String, LuaValue)| {
+            setup_only(lua)?;
+            let item: Value = lua.from_value(item)?;
+            if !item.is_object() {
+                return Err(mlua::Error::external(
+                    "roto.dynamodb.put item must be a table",
+                ));
+            }
+            let handler = put_services
+                .get("dynamodb")
+                .ok_or_else(|| mlua::Error::external("Service unavailable: dynamodb"))?;
+            let item = attribute_value(&item)?["M"].clone();
+            aws_client::call(
+                handler.as_ref(),
+                &put_ctx,
+                "dynamodb",
+                "PutItem",
+                &json!({"TableName":table,"Item":item}),
+            )
+            .map_err(mlua::Error::external)?;
+            lua.to_value(&json!({"table":table}))
+        })?,
+    )?;
+
     let (l_service, l_ctx, bind_parent) = (lambda.clone(), ctx.clone(), parent.clone());
     lambda_api.set(
         "bind",
@@ -816,6 +968,7 @@ pub fn run_source(
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;
     roto.set("s3", s3_api)?;
+    roto.set("dynamodb", dynamodb_api)?;
     lua.globals().set("roto", roto)?;
     let chunk = lua.load(&source.code).set_name(source.name);
     let Some(posted) = source.posted else {
@@ -1335,6 +1488,66 @@ roto.s3.bucket("assets", { bogus = true })
             .unwrap_err()
             .to_string();
         assert!(error.contains("Unknown bucket option: bogus"), "{error}");
+        assert!(error.contains("setup.lua:"), "{error}");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn setup_creates_dynamodb_tables_and_puts_plain_items() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        let services: HashMap<&'static str, Arc<dyn ServiceHandler>> = HashMap::from([(
+            "dynamodb",
+            Arc::new(roto_svc_dynamodb::DynamoDbHandler::new(&store).unwrap())
+                as Arc<dyn ServiceHandler>,
+        )]);
+        let path = script(
+            r#"
+local t = roto.dynamodb.table("admin", {
+  hash = "PK", range = "SK",
+  gsis = {{ name = "GSI1", hash = "GSI1PK", range = "GSI1SK" }},
+})
+assert(t.name == "admin" and t.arn:find("table/admin", 1, true))
+local d = roto.call("dynamodb", "DescribeTable", {TableName = "admin"}).Table
+assert(#d.KeySchema == 2 and d.KeySchema[1].AttributeName == "PK" and d.KeySchema[2].KeyType == "RANGE")
+assert(#d.AttributeDefinitions == 4 and #d.GlobalSecondaryIndexes == 1)
+assert(d.GlobalSecondaryIndexes[1].IndexName == "GSI1")
+assert(d.GlobalSecondaryIndexes[1].Projection.ProjectionType == "ALL")
+
+-- rerunning keeps the table; hash-only tables and numeric keys
+roto.dynamodb.table("admin", {hash = "PK", range = "SK"})
+roto.dynamodb.table("sessions", {hash = "PK", types = {PK = "N"}})
+local s = roto.call("dynamodb", "DescribeTable", {TableName = "sessions"}).Table
+assert(#s.KeySchema == 1 and s.AttributeDefinitions[1].AttributeType == "N")
+
+assert(roto.dynamodb.put("admin", {
+  PK = "TENANTS", SK = "TENANT#t1", Enabled = true, Count = 3, Ratio = 1.5, Gone = roto.null,
+  Tags = roto.array({"a", "b"}), Nested = {Region = "DUB"},
+}).table == "admin")
+local item = roto.call("dynamodb", "GetItem", {
+  TableName = "admin", Key = {PK = {S = "TENANTS"}, SK = {S = "TENANT#t1"}},
+}).Item
+assert(item.Enabled.BOOL == true and item.Count.N == "3" and item.Ratio.N == "1.5" and item.Gone.NULL == true)
+assert(item.Tags.L[2].S == "b" and item.Nested.M.Region.S == "DUB")
+
+-- bad input is rejected with the script location
+assert(not pcall(roto.dynamodb.table, "x1x", {}))
+assert(not pcall(roto.dynamodb.table, "x2x", {hash = "PK", colors = {}}))
+assert(not pcall(roto.dynamodb.table, "x3x", {hash = "PK", gsis = {{ hash = "G" }}}))
+assert(not pcall(roto.dynamodb.put, "admin", "not a table"))
+roto.dynamodb.table("admin", { bogus = true })
+"#,
+        );
+        let error = run(&path, context(), &[], sqs, lambda, s3, services)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unknown table option: bogus"), "{error}");
         assert!(error.contains("setup.lua:"), "{error}");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

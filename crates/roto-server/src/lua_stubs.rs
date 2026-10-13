@@ -129,6 +129,8 @@ mod tests {
                     "queue", "topic", "lambda", "events", "prefix", "suffix", "id",
                 ],
             ),
+            ("table", &["hash", "range", "types", "gsis"]),
+            ("gsi", &["name", "hash", "range", "projection"]),
             ("object", &["content_type", "metadata", "headers"]),
             ("object headers", crate::setup::LINK_HEADERS),
             ("queue", &["visibility_timeout", "attributes", "tags"]),
@@ -155,6 +157,8 @@ mod tests {
         }
         for symbol in [
             "function roto.sqs.queue",
+            "function roto.dynamodb.table",
+            "function roto.dynamodb.put",
             "function roto.s3.bucket",
             "function roto.s3.put",
             "function roto.s3.link",

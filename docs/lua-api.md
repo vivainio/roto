@@ -33,6 +33,8 @@ raises an error); **any** = also safe inside runtime callbacks.
 | `roto.s3.put(bucket, key, body, options?)` | `{bucket, key}` | setup | [S3](#s3) |
 | `roto.s3.link(bucket, key, file, options?)` | `{bucket, key}` | setup | [S3](#s3) |
 | `roto.s3.link_dir(bucket, prefix, dir, options?)` | `{bucket, prefix, count}` | setup | [S3](#s3) |
+| `roto.dynamodb.table(name, options)` | `{name, arn}` | setup | [DynamoDB](#dynamodb) |
+| `roto.dynamodb.put(table, item)` | `{table}` | setup | [DynamoDB](#dynamodb) |
 | `roto.lambda.fn(name, options)` | `{name, arn}` | setup | [Lambda](#lambda) |
 | `roto.lambda.bind(name, executor)` | `{name}` | setup | [Lambda](#lambda) |
 | `roto.lambda.event_source(queue, function, options?)` | AWS mapping configuration | setup | [Lambda](#lambda) |
@@ -193,6 +195,47 @@ Returns `{bucket, prefix, count}`, where `count` is the number of files linked. 
 ```lua
 local linked = roto.s3.link_dir("assets", "static/", "public")  -- static/<relative path>
 print(linked.count .. " files linked")
+```
+
+### DynamoDB
+
+Feature-detect with `if roto.dynamodb then`.
+
+#### `roto.dynamodb.table(name, options)`
+
+Creates the table if it is missing. An existing table is kept as is, so rerunning setup
+is safe; indexes are not reconciled in place. Tables are pay-per-request. Returns
+`{name, arn}`.
+
+| Option | Meaning |
+| --- | --- |
+| `hash` | Hash key attribute name. Required. |
+| `range` | Range key attribute name. Omit for a hash-only table. |
+| `types` | Table of attribute name to `"S"`, `"N"` or `"B"`. Every key attribute defaults to `"S"`. |
+| `gsis` | List of global secondary indexes `{name, hash, range?, projection?}`. `projection` defaults to `"ALL"`. |
+
+Key attribute definitions are derived from `hash`, `range` and the index keys.
+
+```lua
+roto.dynamodb.table("admin", {
+  hash = "PK", range = "SK",
+  gsis = {{ name = "GSI1", hash = "GSI1PK", range = "GSI1SK" }},
+})
+roto.dynamodb.table("sessions", { hash = "PK" })
+```
+
+#### `roto.dynamodb.put(table, item)`
+
+Writes an item given as plain Lua values, so there are no `{S = ...}` wrappers. Strings,
+numbers, booleans, `roto.null`, `roto.array` lists and nested tables become `S`, `N`,
+`BOOL`, `NULL`, `L` and `M`. An unmarked empty table is an empty map. Binary and set types
+need `roto.call("dynamodb", "PutItem", ...)`. Returns `{table}`.
+
+```lua
+roto.dynamodb.put("admin", {
+  PK = "TENANTS", SK = "TENANT#acme", Enabled = true, Seats = 25,
+  Tags = roto.array({"pilot"}), Contact = { Region = "DUB" },
+})
 ```
 
 ### Lambda
