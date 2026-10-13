@@ -234,7 +234,7 @@ fn call_json(
     }
 }
 
-fn input_object<'v>(input: &'v Value, operation: &str) -> Result<Map<String, Value>, String> {
+fn input_object(input: &Value, operation: &str) -> Result<Map<String, Value>, String> {
     match input {
         Value::Null => Ok(Map::new()),
         Value::Object(map) => Ok(map.clone()),
@@ -410,14 +410,14 @@ fn write_xml(
             }
             let members = model.members(shape);
             for member in &members {
-                if member.spec["xmlAttribute"].as_bool().unwrap_or(false) {
-                    if let Some(v) = map.get(member.name) {
-                        attrs.push_str(&format!(
-                            " {}=\"{}\"",
-                            wire_name(*member),
-                            escape(&scalar_text(v, member.name)?)
-                        ));
-                    }
+                if member.spec["xmlAttribute"].as_bool().unwrap_or(false)
+                    && let Some(v) = map.get(member.name)
+                {
+                    attrs.push_str(&format!(
+                        " {}=\"{}\"",
+                        wire_name(*member),
+                        escape(&scalar_text(v, member.name)?)
+                    ));
                 }
             }
             out.push_str(&format!("<{name}{attrs}>"));
@@ -683,12 +683,12 @@ fn parse_response(
     } else if !body_shape_members.is_empty() && !text.trim().is_empty() {
         let doc = roxmltree::Document::parse(&text).map_err(|e| e.to_string())?;
         let mut node = doc.root_element();
-        if model.protocol == Protocol::Query {
-            if let Some(wrapper) = op["output"]["resultWrapper"].as_str() {
-                match children_named(node, wrapper).into_iter().next() {
-                    Some(inner) => node = inner,
-                    None => return Ok(Value::Object(result)),
-                }
+        if model.protocol == Protocol::Query
+            && let Some(wrapper) = op["output"]["resultWrapper"].as_str()
+        {
+            match children_named(node, wrapper).into_iter().next() {
+                Some(inner) => node = inner,
+                None => return Ok(Value::Object(result)),
             }
         }
         if let Value::Object(map) = parse_structure(model, shape, &body_shape_members, node) {
