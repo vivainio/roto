@@ -71,6 +71,10 @@ pub async fn run(
     let output = Arc::new(Mutex::new(Vec::<String>::new()));
     let task_output = output.clone();
     let task_app = app.clone();
+    let sink: setup::TraceSink = {
+        let app = app.clone();
+        Arc::new(move |entry| app.trace.record(entry))
+    };
     let result = tokio::task::spawn_blocking(move || {
         let api = task_app.lua_api.as_ref().expect("checked above");
         let _running = api.running.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,6 +94,7 @@ pub async fn run(
                 limit: Duration::from_secs(limit),
                 output: task_output,
             }),
+            trace: Some(sink),
         };
         setup::run_source(
             source,

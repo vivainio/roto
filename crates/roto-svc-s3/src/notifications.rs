@@ -98,7 +98,7 @@ pub(crate) fn record(
         if let Some(o) = object {
             if event.starts_with("ObjectCreated:") {
                 obj["size"] = json!(o.size);
-                obj["eTag"] = json!(o.etag);
+                obj["eTag"] = json!(o.etag());
             }
             if o.version_id != "null" {
                 obj["versionId"] = json!(o.version_id);
@@ -137,7 +137,7 @@ pub(crate) fn record(
         if let Some(o) = object {
             if created {
                 obj["size"] = json!(o.size);
-                obj["etag"] = json!(o.etag);
+                obj["etag"] = json!(o.etag());
             }
             if o.version_id != "null" {
                 obj["version-id"] = json!(o.version_id);

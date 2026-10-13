@@ -185,11 +185,17 @@ function roto.s3.link(bucket, key, file, options) end
 ---@field prefix string
 ---@field count integer
 
+---@class roto.LinkDirOptions: roto.ObjectOptions
+---@field include? string[] Globs; only matching files are linked. Empty or omitted means all.
+---@field exclude? string[] Globs; matching files are skipped, even if included.
+
 ---Links every regular file below `dir`, recursively, as `prefix` plus the relative path.
+---Globs without a `/` match the file name at any depth; with a `/` they match the whole
+---relative path. `*` and `?` stop at `/`, `**` does not.
 ---@param bucket string
 ---@param prefix string
 ---@param dir string
----@param options? roto.ObjectOptions
+---@param options? roto.LinkDirOptions
 ---@return roto.LinkedDir
 function roto.s3.link_dir(bucket, prefix, dir, options) end
 

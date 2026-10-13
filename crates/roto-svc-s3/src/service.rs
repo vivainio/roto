@@ -135,7 +135,8 @@ pub(crate) struct Obj {
     pub is_latest: bool,
     pub delete_marker: bool,
     pub size: i64,
-    pub etag: String,
+    /// Empty for a linked file whose md5 has not been needed yet; read it with `etag()`.
+    stored_etag: String,
     pub content_type: String,
     pub last_modified: i64,
     pub path: String,
@@ -144,6 +145,17 @@ pub(crate) struct Obj {
     pub tags: BTreeMap<String, String>,
     pub storage_class: String,
     pub acl: Option<String>,
+}
+
+impl Obj {
+    /// The ETag. For a linked file this hashes the file on first use (see `linked_etag`).
+    pub fn etag(&self) -> String {
+        if self.stored_etag.is_empty() && blobs::is_link(&self.path) {
+            linked_etag(&self.path)
+        } else {
+            self.stored_etag.clone()
+        }
+    }
 }
 
 fn json_map(s: String) -> BTreeMap<String, String> {
@@ -159,7 +171,7 @@ impl From<ObjectRow> for Obj {
             is_latest: r.is_latest != 0,
             delete_marker: r.delete_marker != 0,
             size: r.size,
-            etag: r.etag,
+            stored_etag: r.etag,
             content_type: r.content_type,
             last_modified: r.last_modified,
             path: r.path,
@@ -237,26 +249,56 @@ enum Body<'a> {
     Link(String, i64),
 }
 
-/// Size and the real ETag (the body's md5) for a file, streamed so it is never held in memory.
-fn file_fingerprint(path: &std::path::Path) -> std::io::Result<(i64, String)> {
+/// Size of a regular host file; the file is not read.
+fn file_size(path: &std::path::Path) -> std::io::Result<i64> {
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    Ok(meta.len() as i64)
+}
+
+/// The md5 of a file, streamed so it is never held in memory.
+fn file_md5(path: &std::path::Path) -> std::io::Result<String> {
     use md5::{Digest, Md5};
     use std::io::Read;
     let mut file = std::fs::File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
     let mut hasher = Md5::new();
     let mut buf = vec![0u8; 64 * 1024];
-    let mut size = 0u64;
     loop {
         let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
-        size += n as u64;
     }
-    Ok((size as i64, hex::encode(hasher.finalize())))
+    Ok(hex::encode(hasher.finalize()))
+}
+
+type EtagCache =
+    std::collections::HashMap<std::path::PathBuf, ((u64, Option<std::time::SystemTime>), String)>;
+
+/// The real ETag (the body's md5) of a linked file. Linking only stats the file, so the hash
+/// is computed on first use and remembered until the file's size or mtime changes. An
+/// unreadable file has no ETag here; reading its body reports the error.
+fn linked_etag(link: &str) -> String {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<EtagCache>> = std::sync::OnceLock::new();
+    let Some(target) = blobs::link_target(link) else {
+        return String::new();
+    };
+    let Ok(meta) = std::fs::metadata(&target) else {
+        return String::new();
+    };
+    let stamp = (meta.len(), meta.modified().ok());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((seen, etag)) = cache.lock().unwrap().get(&target) {
+        if *seen == stamp {
+            return etag.clone();
+        }
+    }
+    let etag = file_md5(&target).unwrap_or_default();
+    cache.lock().unwrap().insert(target, (stamp, etag.clone()));
+    etag
 }
 
 /// Content type from the extension. Archives (`.gz`, `.tgz`) stay `binary/octet-stream`.
@@ -499,8 +541,10 @@ impl S3 {
     ) -> Result<(), AwsError> {
         let host = std::fs::canonicalize(host)
             .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
-        let (size, etag) = file_fingerprint(&host)
+        let size = file_size(&host)
             .map_err(|e| AwsError::internal(format!("cannot link {}: {e}", host.display())))?;
+        // An empty ETag marks a link whose md5 is computed on first read (`linked_etag`).
+        let etag = String::new();
         let content_type = attrs
             .content_type
             .or_else(|| guess_content_type(&host).map(str::to_string));
@@ -796,12 +840,12 @@ fn check_conditions(
     if_unmodified_since: Option<Timestamp>,
 ) -> Result<(), AwsError> {
     if let Some(m) = if_match {
-        if !etag_matches(m, &o.etag) {
+        if !etag_matches(m, &o.etag()) {
             return Err(precondition_failed("If-Match"));
         }
     }
     if let Some(m) = if_none_match {
-        if etag_matches(m, &o.etag) {
+        if etag_matches(m, &o.etag()) {
             return Err(not_modified());
         }
     }
@@ -822,7 +866,7 @@ macro_rules! object_output {
     ($T:ident, $o:expr, $b:expr) => {{
         let o: &Obj = $o;
         let mut out = $T::default();
-        out.e_tag = Some(etag_quoted(&o.etag));
+        out.e_tag = Some(etag_quoted(&o.etag()));
         out.last_modified = Some(Timestamp(o.last_modified));
         out.content_type = Some(o.content_type.clone());
         out.metadata = o.metadata.clone();
@@ -1127,7 +1171,7 @@ impl Service for S3 {
             }
             if let Some(m) = &i.if_match {
                 match &current {
-                    Some(c) if etag_matches(m, &c.etag) => {}
+                    Some(c) if etag_matches(m, &c.etag()) => {}
                     Some(_) => return Err(precondition_failed("If-Match")),
                     None => return Err(no_such_key(&i.key)),
                 }
@@ -1409,11 +1453,11 @@ impl Service for S3 {
             }
             let response_sse = attrs.headers.get("server_side_encryption").cloned();
             let response_ssekms_key_id = attrs.headers.get("ssekms_key_id").cloned();
-            let n = self.store_object(tx, &dst, &i.key, &data, o.etag.clone(), attrs)?;
+            let n = self.store_object(tx, &dst, &i.key, &data, o.etag().clone(), attrs)?;
             crate::notifications::record(tx, ctx, &dst, &i.key, "ObjectCreated:Copy", Some(&n))?;
             Ok(CopyObjectOutput {
                 copy_object_result: Some(CopyObjectResult {
-                    e_tag: Some(etag_quoted(&n.etag)),
+                    e_tag: Some(etag_quoted(&n.etag())),
                     last_modified: Some(Timestamp(n.last_modified)),
                     ..Default::default()
                 }),
@@ -2283,7 +2327,7 @@ impl Service for S3 {
                 ..Default::default()
             };
             if want("ETag") {
-                out.e_tag = Some(o.etag.clone());
+                out.e_tag = Some(o.etag().clone());
             }
             if want("StorageClass") {
                 out.storage_class = Some(o.storage_class.clone());
@@ -2371,7 +2415,7 @@ fn to_object(o: &Obj, enc: &dyn Fn(&str) -> String, fetch_owner: bool) -> Object
     Object {
         key: Some(enc(&o.key)),
         last_modified: Some(Timestamp(o.last_modified)),
-        e_tag: Some(etag_quoted(&o.etag)),
+        e_tag: Some(etag_quoted(&o.etag())),
         size: Some(o.size),
         storage_class: Some(o.storage_class.clone()),
         owner: fetch_owner.then(owner),
@@ -2591,7 +2635,7 @@ impl S3 {
                         version_id: Some(o.version_id.clone()),
                         is_latest: Some(o.is_latest),
                         last_modified: Some(Timestamp(o.last_modified)),
-                        e_tag: Some(etag_quoted(&o.etag)),
+                        e_tag: Some(etag_quoted(&o.etag())),
                         size: Some(o.size),
                         storage_class: Some(o.storage_class.clone()),
                         owner: Some(owner()),

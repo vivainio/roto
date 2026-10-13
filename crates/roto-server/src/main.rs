@@ -292,8 +292,12 @@ async fn main() {
             base_url: endpoint.clone(),
         };
         let services = app.services.clone();
+        let sink: setup::TraceSink = {
+            let app = app.clone();
+            Arc::new(move |entry| app.trace.record(entry))
+        };
         let hooks = tokio::task::spawn_blocking(move || {
-            setup::run(
+            setup::run_traced(
                 &path,
                 ctx,
                 &set_vars,
@@ -301,6 +305,7 @@ async fn main() {
                 setup_lambda,
                 setup_s3,
                 services,
+                Some(sink),
             )
             .map_err(|e| e.to_string())
         })

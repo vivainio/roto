@@ -132,6 +132,7 @@ mod tests {
             ("table", &["hash", "range", "types", "gsis"]),
             ("gsi", &["name", "hash", "range", "projection"]),
             ("object", &["content_type", "metadata", "headers"]),
+            ("link_dir", &["include", "exclude"]),
             ("object headers", crate::setup::LINK_HEADERS),
             ("queue", &["visibility_timeout", "attributes", "tags"]),
             (

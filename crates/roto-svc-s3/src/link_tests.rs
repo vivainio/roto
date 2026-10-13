@@ -229,3 +229,31 @@ fn deleting_the_bucket_or_resetting_keeps_host_files() {
     f.s3.reset().unwrap();
     assert_eq!(std::fs::read_to_string(&host).unwrap(), "host body");
 }
+
+#[test]
+fn etag_is_hashed_on_first_read_not_when_linking() {
+    let f = Fixture::new();
+    let host = f.host("late.txt", "before");
+    f.link("late.txt", &host);
+
+    // Linking only stat'ed the file, so a change before the first read is what gets hashed.
+    std::fs::write(&host, "hello").unwrap();
+    let head = f.call("HEAD", "/bkt/late.txt", "", &[], "");
+    assert_eq!(
+        header(&head, "etag"),
+        Some("\"5d41402abc4b2a76b9719d911017c592\"")
+    );
+
+    // The hash is remembered, and follows the file when its size changes.
+    let head = f.call("HEAD", "/bkt/late.txt", "", &[], "");
+    assert_eq!(
+        header(&head, "etag"),
+        Some("\"5d41402abc4b2a76b9719d911017c592\"")
+    );
+    std::fs::write(&host, "hello world").unwrap();
+    let head = f.call("HEAD", "/bkt/late.txt", "", &[], "");
+    assert_eq!(
+        header(&head, "etag"),
+        Some("\"5eb63bbbe01eeed093cb22bb8f5acdc3\"")
+    );
+}

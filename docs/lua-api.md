@@ -176,7 +176,9 @@ roto.s3.put("attachments", "tenant1/Invoice.pdf", pdf_bytes, {content_type = "ap
 Registers `key` as a reference to a host file. The body is not copied; GET, HEAD, Range
 and listings are served from `file`. Relative paths resolve against the setup script's
 directory. The bucket is created if missing. Running setup again refreshes an existing
-link to the same file. A missing file is a setup error.
+link to the same file. A missing file is a setup error. Linking only stats the file; the
+real MD5 ETag is computed the first time it is needed (a `HEAD`, `GET` or listing) and
+remembered until the file's size or modification time changes.
 
 Options: `content_type` (otherwise guessed from the extension; `.gz` and `.tgz` stay
 `binary/octet-stream`), `metadata` (user metadata table) and `headers` (`cache_control`,
@@ -190,11 +192,24 @@ roto.s3.link("assets", "demodata/rows.csv.gz", "Assets/demodata/rows.csv.gz")
 #### `roto.s3.link_dir(bucket, prefix, dir, options?)`
 
 Links every regular file below `dir`, recursively, as `prefix` plus the relative path.
-Returns `{bucket, prefix, count}`, where `count` is the number of files linked. An empty directory is fine; a missing one is an error.
+Returns `{bucket, prefix, count}`, where `count` is the number of files linked. An empty
+directory is fine; a missing one is an error.
+
+Besides the `link` options, `include` and `exclude` take lists of globs to choose files. A
+file is linked when it matches any `include` glob (or `include` is empty or omitted) and no
+`exclude` glob. A glob without a `/` matches the file name at any depth; one with a `/`
+matches the path relative to `dir`. `*` and `?` do not cross a `/`; `**` does, and `**/`
+also matches no directory at all.
 
 ```lua
 local linked = roto.s3.link_dir("assets", "static/", "public")  -- static/<relative path>
 print(linked.count .. " files linked")
+
+-- only the compressed CSVs and SQL, skipping drafts
+roto.s3.link_dir("assets", "demodata/", "Assets/demodata", {
+  include = {"*.csv.gz", "*.sql"},
+  exclude = {"draft_*"},
+})
 ```
 
 ### DynamoDB
