@@ -55,6 +55,11 @@ pub(crate) fn canonical(service: &str) -> &str {
     }
 }
 
+/// The embedded models, for the Lua stub generator.
+pub(crate) fn embedded_models() -> impl Iterator<Item = (&'static str, &'static Value)> {
+    MODELS.iter().map(|(name, _)| (*name, &models()[*name]))
+}
+
 pub(crate) fn supports(service: &str) -> bool {
     let service = canonical(service);
     JSON_SERVICES.contains(&service) || MODELS.iter().any(|(name, _)| *name == service)

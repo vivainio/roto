@@ -56,7 +56,7 @@ fn lambda_call(
     )
 }
 
-const LINK_HEADERS: &[&str] = &[
+pub(crate) const LINK_HEADERS: &[&str] = &[
     "cache_control",
     "content_disposition",
     "content_encoding",
@@ -74,6 +74,141 @@ fn string_map(
         LuaValue::Nil => Ok(Default::default()),
         value => lua.from_value(value),
     }
+}
+
+fn check_keys(
+    map: &serde_json::Map<String, Value>,
+    allowed: &[&str],
+    what: &str,
+) -> mlua::Result<()> {
+    for key in map.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(mlua::Error::external(format!("Unknown {what}: {key}")));
+        }
+    }
+    Ok(())
+}
+
+/// A list option; an empty table (which Lua cannot tell from an empty list) is an empty list.
+fn list_of<'a>(value: &'a Value, what: &str) -> mlua::Result<Vec<&'a Value>> {
+    match value {
+        Value::Array(items) => Ok(items.iter().collect()),
+        Value::Object(map) if map.is_empty() => Ok(Vec::new()),
+        _ => Err(mlua::Error::external(format!("{what} must be a list"))),
+    }
+}
+
+fn string_list(value: &Value, what: &str) -> mlua::Result<Vec<String>> {
+    list_of(value, what)?
+        .into_iter()
+        .map(|v| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| mlua::Error::external(format!("{what} must be a list of strings")))
+        })
+        .collect()
+}
+
+/// `{methods, origins, headers, expose, max_age, id}` rules as S3 `CORSRules`.
+fn cors_rules(value: &Value) -> mlua::Result<Vec<Value>> {
+    let mut rules = Vec::new();
+    for rule in list_of(value, "cors")? {
+        let rule = rule
+            .as_object()
+            .ok_or_else(|| mlua::Error::external("each cors rule must be a table"))?;
+        check_keys(
+            rule,
+            &["methods", "origins", "headers", "expose", "max_age", "id"],
+            "cors option",
+        )?;
+        let required = |name: &str| {
+            rule.get(name)
+                .ok_or_else(|| mlua::Error::external(format!("cors rule needs {name}")))
+        };
+        let mut out = json!({
+            "AllowedMethods": string_list(required("methods")?, "cors methods")?,
+            "AllowedOrigins": string_list(required("origins")?, "cors origins")?,
+        });
+        if let Some(v) = rule.get("headers") {
+            out["AllowedHeaders"] = json!(string_list(v, "cors headers")?);
+        }
+        if let Some(v) = rule.get("expose") {
+            out["ExposeHeaders"] = json!(string_list(v, "cors expose")?);
+        }
+        if let Some(v) = rule.get("max_age") {
+            out["MaxAgeSeconds"] = v.clone();
+        }
+        if let Some(v) = rule.get("id") {
+            out["ID"] = v.clone();
+        }
+        rules.push(out);
+    }
+    Ok(rules)
+}
+
+/// `{queue|topic|lambda, events, prefix, suffix, id}` entries as an S3
+/// `NotificationConfiguration`. Destinations are ARN strings or helper tables with `arn`.
+fn notification_config(value: &Value) -> mlua::Result<Value> {
+    let mut config = json!({});
+    for entry in list_of(value, "notify")? {
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| mlua::Error::external("each notify entry must be a table"))?;
+        check_keys(
+            entry,
+            &[
+                "queue", "topic", "lambda", "events", "prefix", "suffix", "id",
+            ],
+            "notify option",
+        )?;
+        let destinations: Vec<_> = ["queue", "topic", "lambda"]
+            .into_iter()
+            .filter(|kind| entry.contains_key(*kind))
+            .collect();
+        let [kind] = destinations.as_slice() else {
+            return Err(mlua::Error::external(
+                "each notify entry needs exactly one of queue, topic or lambda",
+            ));
+        };
+        let destination = &entry[*kind];
+        let arn = destination
+            .as_str()
+            .or_else(|| destination["arn"].as_str())
+            .ok_or_else(|| {
+                mlua::Error::external(format!("notify {kind} must be an ARN or a helper table"))
+            })?;
+        let events = entry
+            .get("events")
+            .map(|v| string_list(v, "notify events"))
+            .transpose()?
+            .filter(|events| !events.is_empty())
+            .ok_or_else(|| mlua::Error::external("notify entry needs events"))?;
+        let (arn_field, list_field) = match *kind {
+            "queue" => ("QueueArn", "QueueConfigurations"),
+            "topic" => ("TopicArn", "TopicConfigurations"),
+            _ => ("LambdaFunctionArn", "LambdaFunctionConfigurations"),
+        };
+        let mut out = json!({ arn_field: arn, "Events": events });
+        if let Some(id) = entry.get("id") {
+            out["Id"] = id.clone();
+        }
+        let rules: Vec<Value> = ["prefix", "suffix"]
+            .into_iter()
+            .filter_map(|name| {
+                entry
+                    .get(name)
+                    .map(|value| json!({"Name": name, "Value": value}))
+            })
+            .collect();
+        if !rules.is_empty() {
+            out["Filter"] = json!({"Key": {"FilterRules": rules}});
+        }
+        config[list_field]
+            .as_array_mut()
+            .map(|list| list.push(out.clone()))
+            .unwrap_or_else(|| config[list_field] = json!([out]));
+    }
+    Ok(config)
 }
 
 fn link_attrs(lua: &Lua, opts: Option<Table>) -> mlua::Result<roto_svc_s3::LinkAttrs> {
@@ -404,7 +539,7 @@ pub fn run_source(
             },
         )?,
     )?;
-    let (link_s3, link_ctx, link_parent) = (s3, ctx.clone(), parent.clone());
+    let (link_s3, link_ctx, link_parent) = (s3.clone(), ctx.clone(), parent.clone());
     s3_api.set(
         "link_dir",
         lua.create_function(
@@ -434,6 +569,72 @@ pub fn run_source(
                 lua.to_value(&json!({"bucket":bucket,"prefix":prefix,"count":files.len()}))
             },
         )?,
+    )?;
+
+    let (put_s3, put_ctx) = (s3.clone(), ctx.clone());
+    s3_api.set(
+        "put",
+        lua.create_function(
+            move |lua,
+                  (bucket, key, body, opts): (String, String, mlua::LuaString, Option<Table>)| {
+                setup_only(lua)?;
+                let attrs = link_attrs(lua, opts)?;
+                put_s3
+                    .put_inline(&put_ctx, &bucket, &key, body.as_bytes().to_vec(), attrs)
+                    .map_err(mlua::Error::external)?;
+                lua.to_value(&json!({"bucket":bucket,"key":key}))
+            },
+        )?,
+    )?;
+    let (bucket_s3, bucket_ctx) = (s3, ctx.clone());
+    let bucket_services = services.clone();
+    s3_api.set(
+        "bucket",
+        lua.create_function(move |lua, (name, opts): (String, Option<LuaValue>)| {
+            setup_only(lua)?;
+            let opts: Value = match opts {
+                None | Some(LuaValue::Nil) => json!({}),
+                Some(value) => lua.from_value(value)?,
+            };
+            let opts = opts
+                .as_object()
+                .ok_or_else(|| mlua::Error::external("roto.s3.bucket options must be a table"))?;
+            check_keys(
+                opts,
+                &["cors", "notify", "skip_validation"],
+                "bucket option",
+            )?;
+            bucket_s3
+                .ensure_bucket(&bucket_ctx, &name)
+                .map_err(mlua::Error::external)?;
+            let s3_call = |operation: &str, input: Value| -> mlua::Result<Value> {
+                let handler = bucket_services
+                    .get("s3")
+                    .ok_or_else(|| mlua::Error::external("Service unavailable: s3"))?;
+                aws_client::call(handler.as_ref(), &bucket_ctx, "s3", operation, &input)
+                    .map_err(mlua::Error::external)
+            };
+            if let Some(cors) = opts.get("cors") {
+                let rules = cors_rules(cors)?;
+                if rules.is_empty() {
+                    s3_call("DeleteBucketCors", json!({"Bucket":name}))?;
+                } else {
+                    s3_call(
+                        "PutBucketCors",
+                        json!({"Bucket":name,"CORSConfiguration":{"CORSRules":rules}}),
+                    )?;
+                }
+            }
+            if let Some(notify) = opts.get("notify") {
+                let mut input =
+                    json!({"Bucket":name,"NotificationConfiguration":notification_config(notify)?});
+                if opts.get("skip_validation").and_then(Value::as_bool) == Some(true) {
+                    input["SkipDestinationValidation"] = json!(true);
+                }
+                s3_call("PutBucketNotificationConfiguration", input)?;
+            }
+            lua.to_value(&json!({"name":name,"arn":format!("arn:aws:s3:::{name}")}))
+        })?,
     )?;
 
     let (l_service, l_ctx, bind_parent) = (lambda.clone(), ctx.clone(), parent.clone());
@@ -1069,6 +1270,72 @@ assert(not pcall(roto.call, "s3", "GetObject", {Bucket = "bkt", Key = "missing"}
             services,
         )
         .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn setup_creates_buckets_with_cors_and_notifications_and_puts_objects() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        s3.attach_sqs(sqs.clone());
+        let services: HashMap<&'static str, Arc<dyn ServiceHandler>> = HashMap::from([(
+            "s3",
+            Arc::new(roto_svc_s3::S3Handler(s3.clone())) as Arc<dyn ServiceHandler>,
+        )]);
+        let path = script(
+            r#"
+local q = roto.sqs.queue("s3-events")
+local b = roto.s3.bucket("assets", {
+  cors = {{ methods = {"GET", "PUT"}, origins = {"*"}, headers = {"*"}, max_age = 3500 }},
+  notify = {
+    { queue = q, events = {"s3:ObjectCreated:*"}, prefix = "in/", id = "scan" },
+  },
+})
+assert(b.name == "assets" and b.arn == "arn:aws:s3:::assets")
+roto.s3.bucket("assets") -- rerun without options leaves configuration unchanged
+
+local cors = roto.call("s3", "GetBucketCors", {Bucket = "assets"}).CORSRules[1]
+assert(cors.AllowedMethods[2] == "PUT" and cors.MaxAgeSeconds == 3500)
+local n = roto.call("s3", "GetBucketNotificationConfiguration", {Bucket = "assets"})
+local c = n.QueueConfigurations[1]
+assert(c.QueueArn == q.arn and c.Id == "scan")
+assert(c.Filter.Key.FilterRules[1].Name == "prefix" and c.Filter.Key.FilterRules[1].Value == "in/")
+
+local p = roto.s3.put("assets", "in/hello.txt", "hello", {
+  content_type = "text/plain", metadata = {owner = "me"}, headers = {["Cache-Control"] = "no-cache"},
+})
+assert(p.bucket == "assets" and p.key == "in/hello.txt")
+local got = roto.call("s3", "GetObject", {Bucket = "assets", Key = "in/hello.txt"})
+assert(got.Body == "hello" and got.ContentType == "text/plain")
+assert(got.Metadata.owner == "me" and got.CacheControl == "no-cache")
+roto.s3.put("fresh", "k", "v") -- creates the bucket
+assert(roto.call("s3", "GetObject", {Bucket = "fresh", Key = "k"}).Body == "v")
+
+-- an empty list clears the configuration
+roto.s3.bucket("assets", { cors = {}, notify = {} })
+assert(not pcall(roto.call, "s3", "GetBucketCors", {Bucket = "assets"}))
+assert(roto.call("s3", "GetBucketNotificationConfiguration", {Bucket = "assets"}).QueueConfigurations == nil)
+
+-- bad input is rejected with the script location
+assert(not pcall(roto.s3.bucket, "x1x", { colors = {} }))
+assert(not pcall(roto.s3.bucket, "x2x", { notify = {{ events = {"s3:ObjectCreated:*"} }} }))
+assert(not pcall(roto.s3.bucket, "x3x", { cors = {{ methods = {"GET"} }} }))
+assert(not pcall(roto.s3.bucket, "x4x", { notify = {{ queue = "arn:aws:sqs:us-east-1:123456789012:nope", events = {"s3:ObjectCreated:*"} }} }))
+roto.s3.bucket("x5x", { skip_validation = true, notify = {{ queue = "arn:aws:sqs:us-east-1:123456789012:nope", events = {"s3:ObjectCreated:*"} }} })
+roto.s3.bucket("assets", { bogus = true })
+"#,
+        );
+        let error = run(&path, context(), &[], sqs, lambda, s3, services)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unknown bucket option: bogus"), "{error}");
+        assert!(error.contains("setup.lua:"), "{error}");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
