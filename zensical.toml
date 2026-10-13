@@ -19,6 +19,7 @@ nav = [
   { "Getting started" = "getting-started.md" },
   { "Lua setup" = "lua.md" },
   { "Lua API reference" = "lua-api.md" },
+  { "Lua type stubs" = "lua-types.md" },
   { "Demos" = "demos.md" },
   { "Runtime hooks" = "runtime-hooks.md" },
   { "Integration testing" = "integration-testing.md" },
