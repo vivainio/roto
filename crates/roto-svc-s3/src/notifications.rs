@@ -51,8 +51,18 @@ pub(crate) fn record(
     let doc = roto_protocol::restxml::parse_xml(source.as_bytes())?;
     let config = NotificationConfiguration::read_xml(doc.root_element())?;
     let event_type = format!("s3:{event}");
-    for destination in config.lambda_function_configurations {
-        if !destination.events.iter().any(|pattern| {
+    let destinations = config
+        .lambda_function_configurations
+        .into_iter()
+        .map(|d| (d.lambda_function_arn, d.id, d.events, d.filter))
+        .chain(
+            config
+                .queue_configurations
+                .into_iter()
+                .map(|d| (d.queue_arn, d.id, d.events, d.filter)),
+        );
+    for (target_arn, destination_id, destination_events, destination_filter) in destinations {
+        if !destination_events.iter().any(|pattern| {
             pattern == &event_type
                 || pattern
                     .strip_suffix('*')
@@ -60,7 +70,7 @@ pub(crate) fn record(
         }) {
             continue;
         }
-        if let Some(filter) = destination.filter.and_then(|f| f.key) {
+        if let Some(filter) = destination_filter.and_then(|f| f.key) {
             if !filter.filter_rules.iter().all(|r| {
                 let value =
                     roto_protocol::restxml::percent_decode_form(r.value.as_deref().unwrap_or(""));
@@ -78,7 +88,7 @@ pub(crate) fn record(
         let sequence: i64 = diesel::insert_into(notification_outbox::table)
             .values((
                 notification_outbox::id.eq(&(id)),
-                notification_outbox::target.eq(&(destination.lambda_function_arn)),
+                notification_outbox::target.eq(&(target_arn)),
                 notification_outbox::context.eq(&(context.to_string())),
                 notification_outbox::event.eq("{}"),
             ))
@@ -99,7 +109,7 @@ pub(crate) fn record(
             "eventTime":Timestamp::now().to_iso8601_millis(),"eventName":event,
             "userIdentity":{"principalId":ctx.account_id},"requestParameters":{"sourceIPAddress":"127.0.0.1"},
             "responseElements":{"x-amz-request-id":ctx.request_id,"x-amz-id-2":"roto"},
-            "s3":{"s3SchemaVersion":"1.0","configurationId":destination.id.unwrap_or_default(),
+            "s3":{"s3SchemaVersion":"1.0","configurationId":destination_id.unwrap_or_default(),
                 "bucket":{"name":bucket.name,"arn":format!("arn:aws:s3:::{}",bucket.name),"ownerIdentity":{"principalId":bucket.account_id}},"object":obj}
         }]});
         diesel::update(notification_outbox::table.filter(notification_outbox::id.eq(&(id))))
@@ -156,13 +166,14 @@ pub(crate) fn record(
 }
 
 pub(crate) fn start_worker(s3: &Arc<S3>, lambda: Arc<roto_svc_lambda::Lambda>) {
-    start_worker_with_events(s3, lambda, None);
+    start_worker_with_events(s3, lambda, None, None);
 }
 
 pub(crate) fn start_worker_with_events(
     s3: &Arc<S3>,
     lambda: Arc<roto_svc_lambda::Lambda>,
     events: Option<Arc<roto_svc_eventbridge::EventBridge>>,
+    sqs: Option<Arc<roto_svc_sqs::Sqs>>,
 ) {
     let weak = Arc::downgrade(s3);
     std::thread::Builder::new()
@@ -206,6 +217,33 @@ pub(crate) fn start_worker_with_events(
                                     )
                                 })
                                 .and_then(|events| events.enqueue_event(&ctx, "default", payload))
+                        } else if target.starts_with("arn:aws:sqs:") {
+                            sqs.as_ref()
+                                .ok_or_else(|| {
+                                    AwsError::sender(
+                                        400,
+                                        "ServiceUnavailable",
+                                        "SQS delivery is unavailable",
+                                    )
+                                })
+                                .and_then(|sqs| {
+                                    let delivered = sqs.deliver(
+                                        &target,
+                                        &payload.to_string(),
+                                        &Default::default(),
+                                        None,
+                                        None,
+                                    )?;
+                                    if delivered {
+                                        Ok(())
+                                    } else {
+                                        Err(AwsError::sender(
+                                            400,
+                                            "NoSuchQueue",
+                                            format!("Queue does not exist: {target}"),
+                                        ))
+                                    }
+                                })
                         } else {
                             lambda.enqueue(&ctx, &target, payload).map(|_| ())
                         };
@@ -321,6 +359,73 @@ mod tests {
                     .collect())
             })
             .unwrap()
+    }
+
+    #[test]
+    fn queue_destinations_receive_filtered_events() {
+        let store = Store::ephemeral();
+        let sqs = roto_svc_sqs::SqsHandler::new(&store).unwrap();
+        let lambda = roto_svc_lambda::LambdaHandler::new(&store, Default::default()).unwrap();
+        let bridge =
+            roto_svc_eventbridge::EventBridgeHandler::new(&store, lambda.0.clone(), sqs.0.clone())
+                .unwrap();
+        let s3 = S3Handler::new(&store).unwrap();
+        s3.0.attach_sqs(sqs.0.clone());
+        s3.start_notifications_with_queues(lambda.0.clone(), bridge.0.clone(), sqs.0.clone());
+        let created = roto_svc_sqs::dispatch(
+            &*sqs.0,
+            &ctx(),
+            "CreateQueue",
+            &json!({"QueueName":"events"}),
+        )
+        .unwrap();
+        let url = serde_json::from_slice::<Value>(&created.body).unwrap()["QueueUrl"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(call(&s3, "PUT", "/uploads", "", b"", vec![]).status, 200);
+        let missing = br#"<NotificationConfiguration><QueueConfiguration><Queue>arn:aws:sqs:us-east-1:123456789012:nope</Queue><Event>s3:ObjectCreated:*</Event></QueueConfiguration></NotificationConfiguration>"#;
+        let rejected = call(&s3, "PUT", "/uploads", "notification", missing, vec![]);
+        assert_eq!(rejected.status, 400);
+        assert!(String::from_utf8_lossy(&rejected.body).contains("nope"));
+        let skipped = call(
+            &s3,
+            "PUT",
+            "/uploads",
+            "notification",
+            missing,
+            vec![("x-amz-skip-destination-validation".into(), "true".into())],
+        );
+        assert_eq!(skipped.status, 200);
+        let config = br#"<NotificationConfiguration><QueueConfiguration><Id>q1</Id><Queue>arn:aws:sqs:us-east-1:123456789012:events</Queue><Event>s3:ObjectCreated:*</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>in/</Value></FilterRule></S3Key></Filter></QueueConfiguration></NotificationConfiguration>"#;
+        assert_eq!(
+            call(&s3, "PUT", "/uploads", "notification", config, vec![]).status,
+            200
+        );
+        call(&s3, "PUT", "/uploads/other.txt", "", b"no", vec![]);
+        call(&s3, "PUT", "/uploads/in/a.txt", "", b"yes", vec![]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let record = loop {
+            let received = roto_svc_sqs::dispatch(
+                &*sqs.0,
+                &ctx(),
+                "ReceiveMessage",
+                &json!({"QueueUrl":url,"MaxNumberOfMessages":10}),
+            )
+            .unwrap();
+            let body: Value = serde_json::from_slice(&received.body).unwrap();
+            if let Some(messages) = body["Messages"].as_array().filter(|m| !m.is_empty()) {
+                assert_eq!(messages.len(), 1, "{body}");
+                break serde_json::from_str::<Value>(messages[0]["Body"].as_str().unwrap())
+                    .unwrap();
+            }
+            assert!(Instant::now() < deadline, "no queue message");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let record = &record["Records"][0];
+        assert_eq!(record["eventName"], "ObjectCreated:Put");
+        assert_eq!(record["s3"]["object"]["key"], "in%2Fa.txt");
+        assert_eq!(record["s3"]["configurationId"], "q1");
     }
 
     #[test]
