@@ -46,6 +46,48 @@ medians. RSS includes resident shared pages and is not the same as total
 application memory, macOS physical footprint, or container memory accounting.
 The Python client, OS caches, and any external executors are outside that number.
 
+## Startup with a Lua setup script
+
+A [setup script](lua-api.md) runs inside the server process before the listener opens, so
+its calls are function calls, not HTTP requests, and they are cheap. As a realistic case,
+a setup script for an application's local stack makes **66 setup calls**:
+
+| Resources | Count |
+| --- | ---: |
+| SQS queues | 20 |
+| DynamoDB tables (two with a global secondary index) and seeded items | 8 and 4 |
+| S3 buckets (7 with CORS and/or queue notifications) | 11 |
+| Inline objects written with `roto.s3.put` | 5 |
+| Host files linked with `roto.s3.link_dir` and `roto.s3.link` (about 194 MiB) | 14 |
+| SSM parameters, secrets, SNS topics | 7, 1, 1 |
+| IAM roles and role policies | 2 and 1 |
+| Lambda functions (inline handlers) | 4 |
+
+Measured on October 13, 2026 with a `cargo build -p roto-server --release` binary on
+x86-64 Linux under WSL2 (not the Apple M3 above), from process launch until
+`/roto-api/health` answers, five runs each:
+
+| Server state | Time to ready |
+| --- | ---: |
+| Ephemeral | 36–38 ms |
+| Persistent, existing data directory (setup runs again) | 36–45 ms |
+| Persistent, first run (creates the databases) | 147 ms |
+
+All 66 setup calls together take about **9 ms**; the rest is process launch and the health
+poll. Rerunning setup against persisted state is as fast as a fresh start because the
+helpers reconcile instead of recreating.
+
+Linking host files costs no file I/O beyond a `stat`. Roto computes the real MD5 ETag of a
+linked file the first time a `HEAD`, `GET` or listing needs it. An earlier version hashed
+every file at link time, which took about 2.3 s for the 194 MiB above and about 11 s when
+the whole 0.9 GiB demo directory was linked (debug build). If a script links large files
+that nothing reads, use the `include` and `exclude` globs of `roto.s3.link_dir` to skip
+the ones you do not need.
+
+To find the slow step in your own script, start the server with `--trace setup.jsonl`:
+every setup call is recorded with its duration and Lua line (see
+[Setup calls](server.md#setup-calls)).
+
 ## Launching Roto from test code
 
 The measured startup and idle-memory costs make a fresh Roto process per test or
