@@ -1,4 +1,5 @@
 mod apigateway_v2;
+mod aws_client;
 mod gateway;
 mod inspection;
 mod lua_api;
@@ -188,6 +189,8 @@ async fn main() {
         std::process::exit(1);
     });
     let setup_sqs = sqs.0.clone();
+    let sqs_for_s3 = sqs.0.clone();
+    s3.0.attach_sqs(sqs.0.clone());
     let setup_lambda = lambda.0.clone();
     let setup_s3 = s3.0.clone();
     let lambda = Arc::new(lambda);
@@ -349,7 +352,7 @@ async fn main() {
         });
     lambda.start(endpoint);
     events.start();
-    s3.start_notifications_with_events(lambda.0.clone(), events.0.clone());
+    s3.start_notifications_with_queues(lambda.0.clone(), events.0.clone(), sqs_for_s3);
     tracing::info!(
         "roto listening on http://{addr} ({})",
         if args.ephemeral {

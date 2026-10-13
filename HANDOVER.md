@@ -1,3 +1,125 @@
+# Handover: Lua resource helpers (S3 bucket config first)
+
+Written 2026-10-13. Requested by the dh-core project (`dolib/stack/*.lua` in the
+`tmp/ville-switch-to-roto` branch), whose local AWS stack is now defined entirely in roto
+setup Lua. Phase 1 helpers not started; the generic codec and queue delivery below are done.
+
+## Status (2026-10-13)
+
+Done, ahead of the helpers:
+
+- **Generic `roto.call` for XML services.** `crates/roto-server/src/aws_client.rs` interprets the
+  embedded botocore models, so `roto.call` takes boto3-shaped tables for `s3`, `sns`, `iam`,
+  `sts` and `cloudformation`. JSON services moved into the same module (`JSON_SERVICES`); only
+  `sqs` and `lambda` keep their own dispatch. This is the "Alternative worth costing" below,
+  and it removes the `form_encode`/XML plumbing in dh-core. No `rest-json` encoder yet. See
+  `docs/service-protocols.md` and `docs/adding-a-service.md`.
+- **S3 queue notification delivery.** `QueueConfiguration` destinations now deliver the S3 event
+  JSON to SQS through the outbox worker. `PutBucketNotificationConfiguration` rejects missing
+  queues with `InvalidArgument` unless `x-amz-skip-destination-validation: true` is sent, so
+  dh-core must create queues before configuring the bucket (or pass
+  `SkipDestinationValidation = true`). SNS topic destinations are still stored, not delivered.
+- Tests: `roto_call_speaks_rest_xml_and_query_protocols_from_tables` (`setup.rs`) and
+  `queue_destinations_receive_filtered_events` (`notifications.rs`).
+
+Known limits of the codec: timestamps must be strings, binary S3 bodies come back as lossy
+UTF-8 (use `roto.wire`), and ACL `xsi:type` grantees and checksum headers are not specially
+handled. The server lacks some IAM operations (`ListRolePolicies`, `GetRolePolicy`).
+
+## Problem
+
+`roto.sqs.queue`, `roto.s3.link` and `roto.lambda.fn` are one-liners. Everything else goes
+through `roto.call` / `roto.wire` with AWS-shaped input, and for the XML protocols (S3,
+IAM, SNS) that means hand-built bodies. dh-core's stack is 437 lines of Lua; roughly a third
+is plumbing that a helper would remove:
+
+- `s3.lua`: bucket notification and CORS XML built by string concatenation (`queue_config`,
+  `notify`, `CORS`), plus `PUT /bucket` and `PUT /bucket/key` via `roto.wire`.
+- `util.lua`: `form_encode` and `query` (Query protocol for IAM/SNS) and `tolerate`
+  (swallows "already exists" so setup can rerun).
+- `dynamodb.lua`: `create_table` builds `AttributeDefinitions`/`KeySchema`/GSIs by hand, and
+  items are written as `{S = ...}`/`{BOOL = true}`.
+- `services.lua`: `PutParameter` with `Type = "SecureString"`, `CreateSecret`, IAM
+  `CreateRole` + `PutRolePolicy` + trust-policy JSON strings, SNS `CreateTopic`.
+
+For comparison, dh-core's previous Python setup (`do_localstack` in `dolib/stack_tasks.py`,
+boto3) passed plain dicts such as `put_bucket_notification_configuration(
+NotificationConfiguration={"QueueConfigurations": [...]})` and let boto3 serialise to XML.
+`roto.call` does the same for JSON services but does not cover S3/IAM/SNS.
+
+## Decision
+
+Add structured resource helpers (same family as `roto.sqs.queue`), not file-based config
+loading. Notification queue ARNs are only known at setup time, so static XML/JSON files
+would need templating anyway.
+
+Conventions to follow (see `docs/lua-api.md` "Resource helpers"): startup-only via
+`setup_only(lua)?`, validate with `options(&table, &[...])` (unknown options raise), create
+a missing resource or reconcile an existing one (rerunning setup is safe, nothing is
+deleted), return a small lowercase table. Additive, so `roto.api_version` stays 2; document
+feature detection (`if roto.s3.bucket then`).
+
+## Phase 1: `roto.s3.bucket` and `roto.s3.put`
+
+```lua
+local q = roto.sqs.queue("ch-service-s3-events-q")
+roto.s3.bucket("ch-attachment-bucket", {
+  cors = { { methods = {"GET", "PUT"}, origins = {"*"}, headers = {"*"}, max_age = 3500 } },
+  notify = {
+    { queue = q, events = {"s3:ObjectTagging:Put"} },
+    { queue = scanner, events = {"s3:ObjectCreated:*"}, prefix = "unscanned/" },
+  },
+})
+roto.s3.put("dh-ec-store", "tenant1/x/Invoice.pdf", body, { content_type = "application/pdf" })
+```
+
+- `bucket(name, opts?)` returns `{name, arn}`. Creates if missing (`BucketAlreadyOwnedByYou`
+  is not an error). Options: `cors`, `notify`, later `versioning`, `tags`.
+- `cors`: list of rules with `methods`, `origins`, `headers`, `expose`, `max_age`. Replaces
+  the bucket's CORS configuration when given; omitted means unchanged.
+- `notify`: list of `{queue = <helper table or arn string>, events = {...}, prefix?, suffix?}`.
+  `topic =` and `lambda =` destinations use the same shape; implement `queue` first since it
+  is what dh-core needs. When given, replaces the whole notification configuration (S3
+  semantics), so one call must list every destination for the bucket.
+- `put(bucket, key, body, opts?)`: creates the bucket if missing, stores the object.
+  Options: `content_type`, `metadata`. Returns `{bucket, key}`. Complements `s3.link` for
+  small inline fixtures.
+- Implement by calling the S3 service core directly (as `link_object` does) rather than
+  generating XML and going through `roto.wire`.
+
+Tests: setup tests in `setup.rs` (follow `setup_can_seed_other_services_and_load_relative_modules`)
+covering create, rerun is idempotent, CORS round-trips via `GetBucketCors`, notify config
+round-trips and actually delivers (`PutObject` then `ReceiveMessage` on the queue), unknown
+option error with `setup.lua:N`. Docs: `docs/lua-api.md` symbol index and Resource helpers
+section, plus a note in `docs/s3.md`.
+
+## Later phases (same conventions)
+
+2. `roto.dynamodb.table(name, {hash = "PK", range = "SK", gsis = {...}})` and
+   `roto.dynamodb.put(table, plain_lua_table)` (marshal strings, numbers, booleans, nested).
+   dh-core wants `hash_only` tables, N GSIs named `GSI<i>` with `GSI<i>PK`/`GSI<i>SK`, and
+   provisioned 5/5 (billing mode is irrelevant locally).
+3. `roto.iam.role(name, {trust = {service = "lambda.amazonaws.com"} | {aws = arn} | raw
+   json, policies = {name = doc}, description})` and `roto.sns.topic(name)`; removes the
+   Query-protocol plumbing.
+4. `roto.ssm.param(name, value, {secure = true})` and `roto.secret(name, value)`.
+
+Alternative worth costing before phase 2: make `roto.call` accept S3/IAM/SNS with
+boto3-shaped tables (the serialisers are generated from botocore models already). That
+would cover everything without per-service helpers; the helpers above would then be thin
+sugar on top.
+
+## Open questions
+
+- ~~Queue notification delivery~~ Resolved: queues now deliver (see Status). Topic (SNS)
+  destinations remain undelivered.
+- Should `notify` merge with existing configuration or replace it? Replace matches
+  `PutBucketNotificationConfiguration`; merging hides drift.
+- Once phase 1 ships, dh-core drops `util.query`/`form_encode` only after phase 3; the
+  S3 half of its `s3.lua` shrinks immediately (about 30 lines).
+
+---
+
 # Handover: S3 object links (serve bodies from their original file)
 
 Written 2026-10-12 and implemented the same day (see "As built" below). Requested by the dh-core

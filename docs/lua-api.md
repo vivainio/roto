@@ -249,12 +249,21 @@ Three tiers reach a service, from most to least convenient:
 | Need | Use |
 | --- | --- |
 | Create an SQS queue, Lambda function or mapping, or link S3 files | [Resource helpers](#resource-helpers) |
-| Call an operation of a JSON-protocol service | `roto.call` |
-| Anything else (S3, SNS, IAM, STS, CloudFormation, Lambda invoke, ...) | `roto.wire` |
+| Call an operation of any supported service with a boto3-shaped table | `roto.call` |
+| Raw wire access for anything else (custom paths, odd payloads) | `roto.wire` |
 
 `roto.call` services: `sqs`, `lambda`, `dynamodb`, `ssm`, `secretsmanager`, `kinesis`,
-`kms`, `logs` (CloudWatch Logs) and `events` (alias `eventbridge`). Services that speak
-REST or Query/XML protocols (S3, SNS, IAM, STS, CloudFormation, ...) need `roto.wire`.
+`kms`, `logs` (CloudWatch Logs) and `events` (alias `eventbridge`), plus the XML-protocol
+services `s3`, `sns`, `iam`, `sts` and `cloudformation`. Feature-detect the XML services
+with `pcall`; other services need `roto.wire`.
+
+For the XML-protocol services `roto.call` works like boto3: it reads the botocore model
+for the operation, routes each input member to the URI, query string, headers or XML/form
+body, and converts the XML response back to a PascalCase table. Lists are Lua arrays,
+maps are tables, booleans and numbers are native. Timestamps and blobs are strings
+(blobs are base64-encoded for you, so pass raw bytes; a `GetObject` `Body` comes back
+as a UTF-8 string with replacement, so use `roto.wire` for binary objects). Unknown
+input members raise an error naming the member.
 
 ### `roto.call(service, operation, input?)`
 
@@ -267,6 +276,10 @@ implementation.
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
+roto.call("s3", "CreateBucket", {Bucket = "assets"})
+roto.call("s3", "PutBucketCors", {Bucket = "assets", CORSConfiguration = {CORSRules = {
+  {AllowedMethods = {"GET", "PUT"}, AllowedOrigins = {"*"}, MaxAgeSeconds = 3500},
+}}})
 local parameter = roto.call("ssm", "GetParameter", {Name = "/app/mode"})
 assert(parameter.Parameter.Value == "development")
 

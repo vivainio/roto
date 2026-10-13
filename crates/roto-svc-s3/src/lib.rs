@@ -198,7 +198,16 @@ impl S3Handler {
         lambda: Arc<roto_svc_lambda::Lambda>,
         events: Arc<roto_svc_eventbridge::EventBridge>,
     ) {
-        notifications::start_worker_with_events(&self.0, lambda, Some(events));
+        notifications::start_worker_with_events(&self.0, lambda, Some(events), None);
+    }
+    /// Starts delivery to Lambda, EventBridge and SQS queue destinations.
+    pub fn start_notifications_with_queues(
+        &self,
+        lambda: Arc<roto_svc_lambda::Lambda>,
+        events: Arc<roto_svc_eventbridge::EventBridge>,
+        sqs: Arc<roto_svc_sqs::Sqs>,
+    ) {
+        notifications::start_worker_with_events(&self.0, lambda, Some(events), Some(sqs));
     }
     pub fn with_lambda(
         store: &Store,

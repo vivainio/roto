@@ -37,7 +37,11 @@ nav = [
   ] },
   { "Storage" = "storage.md" },
   { "Architecture" = "architecture.md" },
-  { "Development" = "development.md" },
+  { "Development" = [
+    { "Overview" = "development.md" },
+    { "Adding a service" = "adding-a-service.md" },
+    { "Service protocols" = "service-protocols.md" },
+  ] },
   { "Documentation" = "documentation.md" },
 ]
 
