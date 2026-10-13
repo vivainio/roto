@@ -21,6 +21,8 @@ const MAX_KEYS: i32 = 1000;
 pub struct S3 {
     pub(crate) db: Arc<Db>,
     pub(crate) blobs: Blobs,
+    /// Lets `PutBucketNotificationConfiguration` check that queue destinations exist.
+    sqs: std::sync::OnceLock<Arc<roto_svc_sqs::Sqs>>,
 }
 
 impl S3 {
@@ -28,7 +30,17 @@ impl S3 {
         let db = store.diesel_db("s3", crate::MIGRATIONS)?;
         let root = store.blob_dir("s3")?;
         let blobs = Blobs::new(root).map_err(io)?;
-        Ok(Self { db, blobs })
+        Ok(Self {
+            db,
+            blobs,
+            sqs: Default::default(),
+        })
+    }
+
+    /// Validates queue destinations in notification configurations against this SQS service.
+    /// Without it, destinations are not checked.
+    pub fn attach_sqs(&self, sqs: Arc<roto_svc_sqs::Sqs>) {
+        let _ = self.sqs.set(sqs);
     }
 
     pub fn reset(&self) -> Result<(), AwsError> {
@@ -1945,6 +1957,27 @@ impl Service for S3 {
         _ctx: &RequestContext,
         i: PutBucketNotificationConfigurationRequest,
     ) -> Result<(), AwsError> {
+        if let (Some(sqs), false) = (
+            self.sqs.get(),
+            i.skip_destination_validation.unwrap_or(false),
+        ) {
+            let mut missing = Vec::new();
+            for queue in &i.notification_configuration.queue_configurations {
+                if !sqs.queue_exists(&queue.queue_arn)? {
+                    missing.push(queue.queue_arn.clone());
+                }
+            }
+            if !missing.is_empty() {
+                return Err(AwsError::sender(
+                    400,
+                    "InvalidArgument",
+                    format!(
+                        "Unable to validate the following destination configurations: {}",
+                        missing.join(", ")
+                    ),
+                ));
+            }
+        }
         config::save(
             self,
             &i.bucket,

@@ -7,6 +7,8 @@ use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
 use roto_core::{RawRequest, RequestContext, ServiceHandler};
 use serde_json::{Value, json};
 
+use crate::aws_client;
+
 /// Lua API level, exposed as `roto.api_version`; bump only on a breaking change.
 pub(crate) const LUA_API_VERSION: u32 = 2;
 
@@ -535,36 +537,18 @@ pub fn run_source(
                 let result = match service.as_str() {
                     "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
-                    "dynamodb" | "ssm" | "secretsmanager" | "events" | "eventbridge"
-                    | "kinesis" | "kms" | "logs" => {
-                        let service = if service == "eventbridge" {
-                            "events"
-                        } else {
-                            service.as_str()
-                        };
-                        let handler = call_services.get(service).ok_or_else(|| {
-                            mlua::Error::external(format!("Service unavailable: {service}"))
+                    other if aws_client::supports(other) => {
+                        let name = aws_client::canonical(other);
+                        let handler = call_services.get(name).ok_or_else(|| {
+                            mlua::Error::external(format!("Service unavailable: {name}"))
                         })?;
-                        decode(
-                            handler
-                                .handle(
-                                    &call_ctx,
-                                    &RawRequest {
-                                        method: "POST".into(),
-                                        path: "/".into(),
-                                        headers: vec![("x-amz-target".into(), operation)],
-                                        body: serde_json::to_vec(&input)
-                                            .map_err(mlua::Error::external)?,
-                                        ..Default::default()
-                                    },
-                                )
-                                .map_err(mlua::Error::external)?,
-                        )?
+                        aws_client::call(handler.as_ref(), &call_ctx, name, &operation, &input)
+                            .map_err(mlua::Error::external)?
                     }
                     _ => {
-                        return Err(mlua::Error::external(
-                            "Use roto.wire for services using Query/XML protocols",
-                        ));
+                        return Err(mlua::Error::external(format!(
+                            "Unknown service for roto.call: {service}; use roto.wire"
+                        )));
                     }
                 };
                 lua.to_value(&result)
@@ -995,6 +979,86 @@ assert(not pcall(roto.json_decode, "{"))
             "return { value = 'hello' }",
         )
         .unwrap();
+        run(
+            &path,
+            context(),
+            &[],
+            sqs,
+            lambda,
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
+            services,
+        )
+        .unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn roto_call_speaks_rest_xml_and_query_protocols_from_tables() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let iam = roto_svc_iam::IamHandler::new(&store).unwrap();
+        let sts = roto_svc_sts::StsHandler::new(&store, iam.0.clone()).unwrap();
+        let services: HashMap<&'static str, Arc<dyn ServiceHandler>> = HashMap::from([
+            (
+                "s3",
+                Arc::new(roto_svc_s3::S3Handler::new(&store).unwrap()) as Arc<dyn ServiceHandler>,
+            ),
+            (
+                "sns",
+                Arc::new(roto_svc_sns::SnsHandler::new(&store, sqs.clone()).unwrap())
+                    as Arc<dyn ServiceHandler>,
+            ),
+            ("iam", Arc::new(iam) as Arc<dyn ServiceHandler>),
+            ("sts", Arc::new(sts) as Arc<dyn ServiceHandler>),
+        ]);
+        let path = script(
+            r#"
+roto.call("s3", "CreateBucket", {Bucket = "bkt"})
+roto.call("s3", "PutObject", {Bucket = "bkt", Key = "a/b c.txt", Body = "hi", ContentType = "text/plain", Metadata = {k = "v"}})
+local got = roto.call("s3", "GetObject", {Bucket = "bkt", Key = "a/b c.txt"})
+assert(got.Body == "hi", got.Body)
+assert(got.ContentType == "text/plain")
+assert(got.Metadata.k == "v")
+assert(got.ContentLength == 2)
+local list = roto.call("s3", "ListObjectsV2", {Bucket = "bkt", Prefix = "a/"})
+assert(list.KeyCount == 1 and list.Contents[1].Key == "a/b c.txt")
+
+roto.call("s3", "PutBucketCors", {Bucket = "bkt", CORSConfiguration = {CORSRules = {
+  {AllowedMethods = {"GET", "PUT"}, AllowedOrigins = {"*"}, AllowedHeaders = {"*"}, MaxAgeSeconds = 3500},
+}}})
+local cors = roto.call("s3", "GetBucketCors", {Bucket = "bkt"}).CORSRules[1]
+assert(cors.AllowedMethods[2] == "PUT" and cors.MaxAgeSeconds == 3500)
+
+roto.call("s3", "PutBucketNotificationConfiguration", {Bucket = "bkt", NotificationConfiguration = {
+  LambdaFunctionConfigurations = {{
+    LambdaFunctionArn = "arn:aws:lambda:us-east-1:123456789012:function:f",
+    Events = {"s3:ObjectCreated:*"},
+    Filter = {Key = {FilterRules = {{Name = "prefix", Value = "in/"}}}},
+  }},
+}})
+local n = roto.call("s3", "GetBucketNotificationConfiguration", {Bucket = "bkt"})
+local f = n.LambdaFunctionConfigurations[1]
+assert(f.Events[1] == "s3:ObjectCreated:*")
+assert(f.Filter.Key.FilterRules[1].Value == "in/")
+
+local topic = roto.call("sns", "CreateTopic", {Name = "t", Attributes = {DisplayName = "d"}, Tags = {{Key = "k", Value = "v"}}})
+assert(topic.TopicArn:find("t$"))
+assert(roto.call("sns", "GetTopicAttributes", {TopicArn = topic.TopicArn}).Attributes.DisplayName == "d")
+
+local role = roto.call("iam", "CreateRole", {RoleName = "r", AssumeRolePolicyDocument = "{}", Tags = {{Key = "a", Value = "b"}}})
+assert(role.Role.RoleName == "r")
+roto.call("iam", "PutRolePolicy", {RoleName = "r", PolicyName = "p", PolicyDocument = "{}"})
+assert(roto.call("iam", "GetRole", {RoleName = "r"}).Role.Tags[1].Key == "a")
+assert(roto.call("sts", "GetCallerIdentity").Account == "123456789012")
+assert(not pcall(roto.call, "s3", "CreateBucket", {Bukket = "x"}))
+assert(not pcall(roto.call, "s3", "GetObject", {Bucket = "bkt", Key = "missing"}))
+"#,
+        );
         run(
             &path,
             context(),

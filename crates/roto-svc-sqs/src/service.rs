@@ -1399,6 +1399,16 @@ pub struct ExternalAttribute {
 }
 
 impl Sqs {
+    /// Whether the queue with ARN `queue_arn` exists.
+    pub fn queue_exists(&self, queue_arn: &str) -> Result<bool, AwsError> {
+        let parts: Vec<&str> = queue_arn.split(':').collect();
+        let [_, _, "sqs", region, account, name] = parts.as_slice() else {
+            return Ok(false);
+        };
+        self.db
+            .read(|tx| Ok(load_queue(tx, account, region, name)?.is_some()))
+    }
+
     /// Delivers a message from another service to the queue with ARN `queue_arn`.
     /// Returns `Ok(false)` when the queue does not exist (publishers skip such subscriptions).
     pub fn deliver(
