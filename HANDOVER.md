@@ -1,5 +1,11 @@
 # Handover: Lua resource helpers (S3 bucket config first)
 
+Also done 2026-10-13: setup-time calls are traced. `trace_setup_calls` in `setup.rs` wraps
+`roto.call`, `roto.wire` and each resource helper at registration and records an entry
+(`source` `setup` or `lua-api`, `service`, `operation`, `resource`, Lua `location`, outcome,
+`duration_ms`) through a `TraceSink` into the same ring and `--trace` file as HTTP requests
+(`run_traced`; `lua_api.rs` passes one too). See "Setup calls" in `docs/server.md`.
+
 Written 2026-10-13. Requested by the dh-core project (`dolib/stack/*.lua` in the
 `tmp/ville-switch-to-roto` branch), whose local AWS stack is now defined entirely in roto
 setup Lua. Phase 1 (`roto.s3.bucket`/`put`) and phase 2 (`roto.dynamodb.table`/`put`) are done;
@@ -231,7 +237,7 @@ functions to `docs/lua-api.md` and a note in `docs/s3.md`.
 ## Open questions
 
 - Windows: `link:` plus drive-letter paths. Probably fine as an opaque string, but test.
-- Should `link_dir` skip dotfiles and obey a glob filter? dh-core needs neither yet.
+- ~~Should `link_dir` obey a glob filter?~~ Done: `include`/`exclude` lists (`glob_match` in `setup.rs`). Dotfiles are still linked.
 - Should linked objects show a header like `x-roto-linked: true` in `/roto-api`
   inspection output? Cheap and helpful when debugging.
 
@@ -251,10 +257,15 @@ Until then dh-core uses `io.open` + `roto.request("s3", "PUT", ...)` in setup.
 - `roto.s3.link` / `link_dir` are in `crates/roto-server/src/setup.rs`; `S3::link_object`,
   `LinkAttrs` and the `Body::Link` path are in `crates/roto-svc-s3/src/service.rs`; the
   `link:` marker helpers and link-aware reads are in `blobs.rs`.
-- **ETag differs from the design:** size, plus an md5 of path+size+mtime, taken from `stat`;
-  the file is never read at link time. Size/ETag are still not refreshed on HEAD.
+- **ETag:** link time only stats the file (size). The real md5 is computed lazily by
+  `linked_etag` in `service.rs` the first time `Obj::etag()` is called (HEAD, GET, listings,
+  copy, notifications), then cached in memory keyed by size+mtime. Do not read `stored_etag`
+  directly, and do not resolve it in `From<ObjectRow>`: `store_body` and relinking load rows
+  and would hash the file again. A large file costs nothing until its ETag is needed, and an
+  edited file gets a fresh ETag. (An earlier build hashed at link time, which made startup
+  take ~10s for 900MB of dh-core demo data.) Size is still not refreshed on HEAD.
 - `setup::run` now takes an `Arc<S3>`.
-- Not done: the `x-roto-linked` inspection header, dotfile/glob filters, Windows testing,
+- Not done: the `x-roto-linked` inspection header, dotfile skipping (globs exist, see `include`/`exclude`), Windows testing,
   and the `tests/smoke-*.py` link case.
 - Also added: `--enable-lua-api` and `POST /roto-api/lua` (`crates/roto-server/src/lua_api.rs`)
   to run setup-API scripts against a live server; loopback only, rejects `Origin` requests.

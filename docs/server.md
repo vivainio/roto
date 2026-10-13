@@ -215,6 +215,23 @@ the full trace across the in-memory limit or server restarts, also pass
 `--trace calls.jsonl`; that file is truncated on startup and flushed after
 each request.
 
+### Setup calls
+
+Calls made by a [Lua setup script](lua-api.md) happen in process, not over HTTP, but they
+are traced too: every `roto.call`, `roto.wire`, and resource helper (`roto.s3.link`,
+`roto.dynamodb.table`, and so on) adds an entry with `"source": "setup"` (or `"lua-api"`
+for a script posted to `/roto-api/lua`). The entry has the same `service`, `outcome`,
+`error_code`, `duration_ms` and timestamp fields as a request, plus the `operation` (the
+AWS operation for `roto.call`, `METHOD /path` for `roto.wire`, `roto.<service>.<helper>`
+for helpers), the `resource` a helper names (a queue, table or `bucket/key`) and the Lua
+`location` that made the call. Setup entries have no `method`, `path` or `status`. This is the
+quickest way to see which step makes startup slow:
+
+```sh
+roto-server --setup setup.lua --trace setup.jsonl
+jq -s 'sort_by(-.duration_ms) | .[:5][] | [.duration_ms, .operation, .resource, .location]' setup.jsonl
+```
+
 For local tests, clients can carry the trace ID in a fake access key. Give each
 scenario a key beginning with `ROTO`; Roto records that full access key as
 `trace_id`. This works with ordinary AWS SDK client construction, without

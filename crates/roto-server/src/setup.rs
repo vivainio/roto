@@ -308,13 +308,22 @@ fn table_input(name: &str, opts: &serde_json::Map<String, Value>) -> mlua::Resul
     Ok(input)
 }
 
-fn link_attrs(lua: &Lua, opts: Option<Table>) -> mlua::Result<roto_svc_s3::LinkAttrs> {
+/// `extra` names options the caller reads itself, such as the `link_dir` globs.
+fn link_attrs(
+    lua: &Lua,
+    opts: Option<&Table>,
+    extra: &[&str],
+) -> mlua::Result<roto_svc_s3::LinkAttrs> {
     let Some(opts) = opts else {
         return Ok(Default::default());
     };
-    options(&opts, &["content_type", "metadata", "headers"])?;
+    let allowed: Vec<&str> = ["content_type", "metadata", "headers"]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .collect();
+    options(opts, &allowed)?;
     let mut headers = std::collections::BTreeMap::new();
-    for (name, value) in string_map(lua, &opts, "headers")? {
+    for (name, value) in string_map(lua, opts, "headers")? {
         let normalized = name.to_ascii_lowercase().replace('-', "_");
         if !LINK_HEADERS.contains(&normalized.as_str()) {
             return Err(mlua::Error::external(format!(
@@ -325,9 +334,55 @@ fn link_attrs(lua: &Lua, opts: Option<Table>) -> mlua::Result<roto_svc_s3::LinkA
     }
     Ok(roto_svc_s3::LinkAttrs {
         content_type: opts.get("content_type")?,
-        metadata: string_map(lua, &opts, "metadata")?,
+        metadata: string_map(lua, opts, "metadata")?,
         headers,
     })
+}
+
+/// Glob match of `text` against `pattern`: `*` and `?` stop at `/`, `**` does not, and `**/`
+/// also matches no directory at all.
+fn glob_match(pattern: &[char], text: &[char]) -> bool {
+    match pattern.first() {
+        None => text.is_empty(),
+        Some('*') if pattern.get(1) == Some(&'*') => {
+            let rest = &pattern[2..];
+            if let Some(after_slash) = rest.strip_prefix(&['/'])
+                && glob_match(after_slash, text)
+            {
+                return true;
+            }
+            (0..=text.len()).any(|skip| glob_match(rest, &text[skip..]))
+        }
+        Some('*') => {
+            let rest = &pattern[1..];
+            let mut skip = 0;
+            loop {
+                if glob_match(rest, &text[skip..]) {
+                    return true;
+                }
+                if skip >= text.len() || text[skip] == '/' {
+                    return false;
+                }
+                skip += 1;
+            }
+        }
+        Some('?') => {
+            text.first().is_some_and(|c| *c != '/') && glob_match(&pattern[1..], &text[1..])
+        }
+        Some(c) => text.first() == Some(c) && glob_match(&pattern[1..], &text[1..]),
+    }
+}
+
+/// A `link_dir` pattern against a path relative to the directory. A pattern without `/`
+/// matches the file name at any depth; one with `/` matches the whole relative path.
+fn path_matches(pattern: &str, rel: &str) -> bool {
+    let subject = if pattern.contains('/') {
+        rel
+    } else {
+        rel.rsplit('/').next().unwrap_or(rel)
+    };
+    let pattern: Vec<char> = pattern.chars().collect();
+    glob_match(&pattern, &subject.chars().collect::<Vec<_>>())
 }
 
 /// Every regular file below `dir` as `(path relative to dir, absolute path)`, sorted.
@@ -350,6 +405,128 @@ fn walk_files(
         }
     }
     Ok(())
+}
+
+/// The Lua call sites of the setup API that are traced, as paths below `roto`.
+const TRACED_CALLS: &[&str] = &[
+    "call",
+    "wire",
+    "sqs.queue",
+    "s3.bucket",
+    "s3.put",
+    "s3.link",
+    "s3.link_dir",
+    "dynamodb.table",
+    "dynamodb.put",
+    "lambda.fn",
+    "lambda.bind",
+    "lambda.event_source",
+];
+
+/// Replaces each traced setup function with one that times the call and records an entry:
+/// service, operation (`roto.s3.link`, or the AWS operation for `roto.call`), the resource
+/// it names, the Lua location and the outcome.
+fn trace_setup_calls(
+    lua: &Lua,
+    roto: &Table,
+    sink: &TraceSink,
+    request_id: &str,
+    origin: &'static str,
+) -> mlua::Result<()> {
+    for path in TRACED_CALLS {
+        let (scope, name) = match path.rsplit_once('.') {
+            Some((scope, name)) => (Some(scope), name),
+            None => (None, *path),
+        };
+        let table = match scope {
+            Some(scope) => roto.get::<Table>(scope)?,
+            None => roto.clone(),
+        };
+        let original: mlua::Function = table.get(name)?;
+        let (sink, request_id, path) = (sink.clone(), request_id.to_owned(), *path);
+        let traced = lua.create_function(move |lua, args: mlua::MultiValue| {
+            let strings: Vec<String> = args
+                .iter()
+                .filter_map(|v| v.as_string().map(|s| s.to_string_lossy()))
+                .collect();
+            let location = lua
+                .inspect_stack(1, |frame| {
+                    let source = frame.source();
+                    format!(
+                        "{}:{}",
+                        source.short_src.as_deref().unwrap_or("?"),
+                        frame.current_line().unwrap_or(0)
+                    )
+                })
+                .unwrap_or_default();
+            let (service, operation, resource) = describe_call(path, &strings);
+            let started = std::time::Instant::now();
+            let result = original.call::<mlua::MultiValue>(args);
+            let (outcome, error_code, error) = match &result {
+                Ok(_) => ("success", None, None),
+                Err(e) => {
+                    let text = e.to_string();
+                    let code = error_code_in(&text);
+                    let first_line = text.lines().next().unwrap_or_default();
+                    (
+                        "error",
+                        code,
+                        Some(first_line.chars().take(300).collect::<String>()),
+                    )
+                }
+            };
+            sink(json!({
+                "timestamp_ms": crate::trace::started_at_ms(),
+                "duration_ms": started.elapsed().as_millis(),
+                "source": origin, "request_id": request_id, "trace_id": null,
+                "service": service, "operation": operation, "resource": resource,
+                "location": location, "outcome": outcome,
+                "error_code": error_code, "error": error,
+            }));
+            result
+        })?;
+        table.set(name, traced)?;
+    }
+    Ok(())
+}
+
+/// The AWS error code inside a setup error message: `<Code>` of an XML error, or `__type` of a JSON one.
+fn error_code_in(text: &str) -> Option<String> {
+    let between = |open: &str, close: &str| {
+        text.split_once(open)
+            .and_then(|(_, rest)| rest.split_once(close))
+            .map(|(code, _)| code.rsplit('#').next().unwrap_or(code).to_owned())
+    };
+    between("<Code>", "</Code>").or_else(|| between("\"__type\":\"", "\""))
+}
+
+/// `(service, operation, resource)` for a traced call from its path below `roto` and its
+/// string arguments.
+fn describe_call(path: &str, strings: &[String]) -> (Option<String>, String, Option<String>) {
+    let arg = |i: usize| strings.get(i).cloned();
+    match path {
+        "call" => (arg(0), arg(1).unwrap_or_default(), None),
+        "wire" => (
+            arg(0),
+            format!(
+                "{} {}",
+                arg(1).unwrap_or_default(),
+                arg(2).unwrap_or_default()
+            ),
+            None,
+        ),
+        _ => {
+            let service = path.split('.').next().map(str::to_owned);
+            let resource = match path {
+                "s3.put" | "s3.link" | "s3.link_dir" => match (arg(0), arg(1)) {
+                    (Some(bucket), Some(key)) => Some(format!("{bucket}/{key}")),
+                    (bucket, _) => bucket,
+                },
+                _ => arg(0),
+            };
+            (service, format!("roto.{path}"), resource)
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -516,14 +693,20 @@ pub struct Posted {
     pub output: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+/// Receives one JSON entry per setup API call, for the request trace.
+pub type TraceSink = Arc<dyn Fn(Value) + Send + Sync>;
+
 /// A Lua chunk to run with the setup API. `dir` anchors relative paths and `require`.
 pub struct Source {
     pub name: String,
     pub code: String,
     pub dir: std::path::PathBuf,
     pub posted: Option<Posted>,
+    /// Records every setup API call when set.
+    pub trace: Option<TraceSink>,
 }
 
+#[cfg(test)]
 pub fn run(
     path: &Path,
     ctx: RequestContext,
@@ -533,12 +716,27 @@ pub fn run(
     s3: Arc<roto_svc_s3::S3>,
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
 ) -> mlua::Result<Hooks> {
+    run_traced(path, ctx, vars, sqs, lambda, s3, services, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_traced(
+    path: &Path,
+    ctx: RequestContext,
+    vars: &[(String, String)],
+    sqs: Arc<roto_svc_sqs::Sqs>,
+    lambda: Arc<roto_svc_lambda::Lambda>,
+    s3: Arc<roto_svc_s3::S3>,
+    services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
+    trace: Option<TraceSink>,
+) -> mlua::Result<Hooks> {
     let path = std::fs::canonicalize(path).map_err(mlua::Error::external)?;
     let source = Source {
         name: format!("@{}", path.display()),
         code: std::fs::read_to_string(&path).map_err(mlua::Error::external)?,
         dir: path.parent().unwrap().to_path_buf(),
         posted: None,
+        trace,
     };
     run_source(source, ctx, vars, sqs, lambda, s3, services).map(|(hooks, _)| hooks)
 }
@@ -554,6 +752,7 @@ pub fn run_source(
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
 ) -> mlua::Result<(Hooks, Value)> {
     let parent = source.dir.clone();
+    let request_id = ctx.request_id.clone();
     let lua = Lua::new();
     let hooks = Hooks::default();
     let runtime_lock = Arc::new(std::sync::Mutex::new(()));
@@ -628,7 +827,7 @@ pub fn run_source(
         lua.create_function(
             move |lua, (bucket, key, file, opts): (String, String, String, Option<Table>)| {
                 setup_only(lua)?;
-                let attrs = link_attrs(lua, opts)?;
+                let attrs = link_attrs(lua, opts.as_ref(), &[])?;
                 link_s3
                     .link_object(&link_ctx, &bucket, &key, &link_parent.join(&file), attrs)
                     .map_err(mlua::Error::external)?;
@@ -642,7 +841,19 @@ pub fn run_source(
         lua.create_function(
             move |lua, (bucket, prefix, dir, opts): (String, String, String, Option<Table>)| {
                 setup_only(lua)?;
-                let attrs = link_attrs(lua, opts)?;
+                let attrs = link_attrs(lua, opts.as_ref(), &["include", "exclude"])?;
+                let globs = |name: &str| -> mlua::Result<Vec<String>> {
+                    let Some(opts) = &opts else {
+                        return Ok(Vec::new());
+                    };
+                    let list = opts.get::<Option<Vec<String>>>(name).map_err(|_| {
+                        mlua::Error::external(format!(
+                            "link_dir {name} must be a list of glob strings"
+                        ))
+                    })?;
+                    Ok(list.unwrap_or_default())
+                };
+                let (include, exclude) = (globs("include")?, globs("exclude")?);
                 let dir = link_parent.join(&dir);
                 let mut files = Vec::new();
                 if !dir.is_dir() {
@@ -652,6 +863,10 @@ pub fn run_source(
                     )));
                 }
                 walk_files(&dir, "", &mut files).map_err(mlua::Error::external)?;
+                files.retain(|(rel, _)| {
+                    (include.is_empty() || include.iter().any(|g| path_matches(g, rel)))
+                        && !exclude.iter().any(|g| path_matches(g, rel))
+                });
                 for (rel, file) in &files {
                     link_s3
                         .link_object(
@@ -675,7 +890,7 @@ pub fn run_source(
             move |lua,
                   (bucket, key, body, opts): (String, String, mlua::LuaString, Option<Table>)| {
                 setup_only(lua)?;
-                let attrs = link_attrs(lua, opts)?;
+                let attrs = link_attrs(lua, opts.as_ref(), &[])?;
                 put_s3
                     .put_inline(&put_ctx, &bucket, &key, body.as_bytes().to_vec(), attrs)
                     .map_err(mlua::Error::external)?;
@@ -969,6 +1184,14 @@ pub fn run_source(
     roto.set("lambda", lambda_api)?;
     roto.set("s3", s3_api)?;
     roto.set("dynamodb", dynamodb_api)?;
+    if let Some(sink) = &source.trace {
+        let origin = if source.posted.is_some() {
+            "lua-api"
+        } else {
+            "setup"
+        };
+        trace_setup_calls(&lua, &roto, sink, &request_id, origin)?;
+    }
     lua.globals().set("roto", roto)?;
     let chunk = lua.load(&source.code).set_name(source.name);
     let Some(posted) = source.posted else {
@@ -1493,6 +1716,94 @@ roto.s3.bucket("assets", { bogus = true })
     }
 
     #[test]
+    fn setup_calls_are_traced_with_location_and_outcome() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        let services: HashMap<&'static str, Arc<dyn ServiceHandler>> = HashMap::from([
+            (
+                "s3",
+                Arc::new(roto_svc_s3::S3Handler(s3.clone())) as Arc<dyn ServiceHandler>,
+            ),
+            (
+                "ssm",
+                Arc::new(roto_svc_ssm::SsmHandler::new(&store).unwrap()) as Arc<dyn ServiceHandler>,
+            ),
+        ]);
+        let path = script(
+            r#"
+roto.sqs.queue("jobs")
+roto.s3.put("assets", "a/b.txt", "x")
+roto.call("ssm", "PutParameter", {Name = "/p", Value = "v", Type = "String"})
+assert(not pcall(roto.call, "ssm", "GetParameter", {Name = "/missing"}))
+roto.wire("s3", "GET", "/assets/a/b.txt")
+"#,
+        );
+        let entries = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let sink: TraceSink = {
+            let entries = entries.clone();
+            Arc::new(move |entry| entries.lock().unwrap().push(entry))
+        };
+        run_traced(&path, context(), &[], sqs, lambda, s3, services, Some(sink)).unwrap();
+        let entries = entries.lock().unwrap();
+        let ops: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|e| {
+                (
+                    e["service"].as_str().unwrap(),
+                    e["operation"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                ("sqs", "roto.sqs.queue"),
+                ("s3", "roto.s3.put"),
+                ("ssm", "PutParameter"),
+                ("ssm", "GetParameter"),
+                ("s3", "GET /assets/a/b.txt"),
+            ]
+        );
+        assert_eq!(entries[0]["resource"], "jobs");
+        assert_eq!(entries[1]["resource"], "assets/a/b.txt");
+        assert_eq!(entries[1]["source"], "setup");
+        assert!(
+            entries[1]["location"]
+                .as_str()
+                .unwrap()
+                .ends_with("setup.lua:3"),
+            "{}",
+            entries[1]
+        );
+        assert_eq!(entries[2]["outcome"], "success");
+        assert_eq!(entries[3]["outcome"], "error");
+        assert_eq!(entries[3]["error_code"], "ParameterNotFound");
+        assert!(entries.iter().all(|e| e["duration_ms"].is_number()));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn globs_match_names_paths_and_double_stars() {
+        let m = |p: &str, t: &str| path_matches(p, t);
+        assert!(m("*.csv.gz", "a.csv.gz") && m("*.csv.gz", "x/y/a.csv.gz"));
+        assert!(!m("*.csv.gz", "a.csv") && !m("*.csv", "a.csv.gz"));
+        assert!(m("a?.txt", "ab.txt") && !m("a?.txt", "a.txt"));
+        assert!(m("sub/*.txt", "sub/a.txt") && !m("sub/*.txt", "sub/deep/a.txt"));
+        assert!(
+            m("sub/**", "sub/deep/a.txt") && m("**/a.txt", "a.txt") && m("**/a.txt", "x/y/a.txt")
+        );
+        assert!(m("a/**/b", "a/b") && m("a/**/b", "a/x/y/b") && !m("a/**/b", "ab"));
+        assert!(m("demo_data_*", "demo_data_1m.csv") && !m("demo_data_*", "x/other"));
+        assert!(m("*", "a") && !m("*.x", ""));
+    }
+
+    #[test]
     fn setup_creates_dynamodb_tables_and_puts_plain_items() {
         let store = Store::ephemeral();
         let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
@@ -1569,6 +1880,14 @@ assert(roto.s3.link("links", "one.txt", "data/one.txt").key == "one.txt")
 assert(roto.s3.link_dir("links", "demo/", "data").count == 3)
 roto.s3.link("links", "typed", "data/one.txt", {content_type="text/x-t", headers={["Cache-Control"]="no-cache"}})
 assert(roto.wire("s3", "GET", "/links/demo/sub/two.txt").body == "two")
+-- globs: no `/` matches the file name at any depth; include empty means everything
+assert(roto.s3.link_dir("filtered", "a/", "data", {include = {"*.txt"}}).count == 2)
+assert(roto.s3.link_dir("filtered", "b/", "data", {include = {"sub/**"}}).count == 1)
+assert(roto.s3.link_dir("filtered", "c/", "data", {exclude = {"*.bin"}}).count == 2)
+assert(roto.s3.link_dir("filtered", "d/", "data", {include = {"*.txt"}, exclude = {"sub/*"}}).count == 1)
+assert(roto.s3.link_dir("filtered", "e/", "data", {include = {"nope*", "three.*"}}).count == 1)
+assert(roto.s3.link_dir("filtered", "f/", "data", {include = {}}).count == 3)
+assert(roto.s3.link_dir("filtered", "g/", "data", {include = {"*.nope"}}).count == 0)
 "#,
         );
         let dir = path.parent().unwrap().to_path_buf();
@@ -1615,6 +1934,14 @@ assert(roto.wire("s3", "GET", "/links/demo/sub/two.txt").body == "two")
                 "roto.s3.link('links', 'x', 'data/one.txt', {bogus=1})\n",
                 "bogus",
             ),
+            (
+                "roto.s3.link('links', 'x', 'data/one.txt', {include={'*'}})\n",
+                "include",
+            ),
+            (
+                "roto.s3.link_dir('links', 'x/', 'data', {include='*.txt'})\n",
+                "include",
+            ),
         ] {
             let path = script(source);
             let error = run(
@@ -1651,6 +1978,7 @@ assert(roto.wire("s3", "GET", "/links/demo/sub/two.txt").body == "two")
                 limit: std::time::Duration::from_millis(limit),
                 output: output.clone(),
             }),
+            trace: None,
         };
         let call = |source| {
             run_source(
