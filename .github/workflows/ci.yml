@@ -34,10 +34,6 @@ jobs:
         working-directory: tests/mqtt
   lua-services:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [cur, acm, budgets, config, servicediscovery, opensearch, rds, ecr, ecs, glue]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -48,7 +44,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -p test_package_lua_services.py
       - run: python3 -m pip install boto3==1.42.97
       - name: Service HTTP and SDK contracts (directory and ZIP bundle)
-        run: python3 tests/smoke-lua-services.py --service ${{ matrix.service }} --sdk
+        run: python3 tests/smoke-lua-services.py --sdk
   moto-tests:
     runs-on: ubuntu-latest
     steps:
