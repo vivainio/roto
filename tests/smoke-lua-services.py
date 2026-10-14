@@ -438,39 +438,25 @@ def empty(s, name):
     assert s.call(name, op, unsigned_payload, unsigned=True) == {key: []}
 
 
+def load_module(kind):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(kind, ROOT / f'tests/smoke-lua-{kind}.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--service', choices=list(TARGETS) + ['opensearch', 'rds'], help='Run one service (default: all)')
     parser.add_argument('--sdk', action='store_true', help='Also validate output models and boto3 round trips (requires boto3)')
     args = parser.parse_args()
-    if args.service in ('ecr', 'ecs', 'glue'):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('catalog', ROOT / 'tests/smoke-lua-catalog.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        module.run(args.service, args.sdk)
+    external = {name: 'catalog' for name in ('ecr', 'ecs', 'glue')}
+    external.update({name: 'databases' for name in ('opensearch', 'rds')})
+    for name in ([args.service] if args.service in external else external if args.service is None else []):
+        load_module(external[name]).run(name, args.sdk)
+    if args.service in external:
         return
-    if args.service in ('opensearch', 'rds'):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('databases', ROOT / 'tests/smoke-lua-databases.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        module.run(args.service, args.sdk)
-        return
-    if args.service is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('databases', ROOT / 'tests/smoke-lua-databases.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        for name in ('opensearch', 'rds'):
-            module.run(name, args.sdk)
-    if args.service is None:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('catalog', ROOT / 'tests/smoke-lua-catalog.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        for name in ('ecr', 'ecs', 'glue'):
-            module.run(name, args.sdk)
     checks = {'cur': cur, 'acm': acm, 'budgets': budgets, 'config': config, 'servicediscovery': cloudmap}
     with tempfile.TemporaryDirectory(prefix='roto-bundle-') as packaged:
         archive = Path(packaged) / 'services.zip'
