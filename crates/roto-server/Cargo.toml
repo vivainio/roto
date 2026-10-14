@@ -16,6 +16,7 @@ roto-svc-lambda = { version = "0.0.0-dev", path = "../roto-svc-lambda" }
 roto-svc-logs = { version = "0.0.0-dev", path = "../roto-svc-logs" }
 roto-svc-s3 = { version = "0.0.0-dev", path = "../roto-svc-s3" }
 roto-svc-secretsmanager = { version = "0.0.0-dev", path = "../roto-svc-secretsmanager" }
+roto-svc-rdsdata = { version = "0.0.0-dev", path = "../roto-svc-rdsdata" }
 roto-svc-sns = { version = "0.0.0-dev", path = "../roto-svc-sns" }
 roto-svc-sqs = { version = "0.0.0-dev", path = "../roto-svc-sqs" }
 roto-svc-ssm = { version = "0.0.0-dev", path = "../roto-svc-ssm" }

@@ -201,6 +201,8 @@ async fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let rds_data = roto_svc_rdsdata::RdsDataHandler::new();
+    let rds_data_backend = rds_data.0.clone();
     let setup_sqs = sqs.0.clone();
     let sqs_for_s3 = sqs.0.clone();
     s3.0.attach_sqs(sqs.0.clone());
@@ -219,6 +221,7 @@ async fn main() {
         Arc::new(sns),
         Arc::new(kinesis),
         Arc::new(kms),
+        Arc::new(rds_data),
         Arc::new(logs),
         lambda.clone(),
         events.clone(),
@@ -281,6 +284,25 @@ async fn main() {
         hooks: Default::default(),
         lua_api,
     });
+
+    {
+        let app = Arc::downgrade(&app);
+        rds_data_backend.set_resolver(Arc::new(move |request| {
+            let app = app.upgrade().ok_or("server is shutting down")?;
+            let hooks = app.hooks.lock().unwrap().clone();
+            hooks.rds_data_connection(
+                serde_json::json!({
+                    "resource_arn": request.resource_arn,
+                    "secret_arn": request.secret_arn,
+                    "database": request.database,
+                }),
+                serde_json::json!({
+                    "account_id": request.account_id,
+                    "region": request.region,
+                }),
+            )
+        }));
+    }
 
     if let Some(path) = args.setup {
         let set_vars = args.set;
