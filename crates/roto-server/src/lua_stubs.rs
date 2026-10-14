@@ -174,6 +174,7 @@ mod tests {
             "function roto.hooks.request",
             "function roto.hooks.mqtt_connect",
             "function roto.hooks.mqtt_subscribe",
+            "function roto.hooks.rds_data_connection",
             "operation: \"PutBucketCors\", input: aws.s3.PutBucketCorsRequest",
             "operation: \"CreateRole\", input: aws.iam.CreateRoleRequest",
             "---@class aws.s3.CORSRule",

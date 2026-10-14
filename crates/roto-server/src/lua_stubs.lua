@@ -331,6 +331,16 @@ function roto.hooks.mqtt_connect(callback) end
 ---up to that QoS, 128 rejects.
 ---@param callback fun(request: roto.MqttRequest, context: roto.HookContext): { return_codes: integer[] }?
 function roto.hooks.mqtt_subscribe(callback) end
+
+---@class roto.RdsDataConnectionRequest
+---@field resource_arn string
+---@field secret_arn string?
+---@field database string?
+
+---Choose the PostgreSQL server for an RDS Data API request. Return a connection string such as
+---`postgres://user:pass@localhost:5432/app`, or `nil` to reject the request.
+---@param callback fun(request: roto.RdsDataConnectionRequest, context: roto.HookContext): string?
+function roto.hooks.rds_data_connection(callback) end
 -- --8<-- [end:helpers]
 
 -- roto.call: typed overloads for the XML-protocol services ----------------------------

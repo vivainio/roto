@@ -535,6 +535,7 @@ pub struct Hooks(Arc<std::sync::Mutex<HashMap<HookKey, Callback>>>);
 enum HookKey {
     Service(String, String),
     Mqtt(String),
+    RdsDataConnection,
 }
 #[derive(Clone, Debug)]
 struct Callback {
@@ -583,6 +584,31 @@ impl Hooks {
                 .unwrap()
                 .contains_key(&HookKey::Service(service.into(), operation.into()))
         })
+    }
+
+    /// Connection string for an RDS Data API request, from `roto.hooks.rds_data_connection`.
+    pub fn rds_data_connection(
+        &self,
+        request: Value,
+        context: Value,
+    ) -> Result<Option<String>, String> {
+        let callback = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&HookKey::RdsDataConnection)
+            .cloned();
+        let Some(callback) = callback else {
+            return Ok(None);
+        };
+        let _guard = callback.lock.lock().map_err(|error| error.to_string())?;
+        match timed_call(&callback.lua, &callback.function, (request, context), 1)
+            .map_err(|error| error.to_string())?
+        {
+            Value::Null => Ok(None),
+            Value::String(url) => Ok(Some(url)),
+            _ => Err("rds_data_connection must return a string or nil".into()),
+        }
     }
 
     pub fn matches_mqtt(&self, operation: &str) -> bool {
@@ -1179,6 +1205,23 @@ pub fn run_source(
             })?,
         )?;
     }
+    let registrations = hooks.clone();
+    let hook_lock = runtime_lock.clone();
+    hooks_api.set(
+        "rds_data_connection",
+        lua.create_function(move |lua, callback: mlua::Function| {
+            setup_only(lua)?;
+            registrations.0.lock().unwrap().insert(
+                HookKey::RdsDataConnection,
+                Callback {
+                    lua: lua.clone(),
+                    function: callback,
+                    lock: hook_lock.clone(),
+                },
+            );
+            Ok(())
+        })?,
+    )?;
     roto.set("hooks", hooks_api)?;
     roto.set("sqs", sqs_api)?;
     roto.set("lambda", lambda_api)?;

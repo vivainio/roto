@@ -518,6 +518,25 @@ Interception applies to external AWS HTTP requests. Internal service calls bypas
 it. Callback failures produce an internal AWS error. See
 [runtime interception](runtime-hooks.md#request-interception) for tracing details.
 
+### `roto.hooks.rds_data_connection(callback)`
+
+Register `callback(request, context)` to choose the PostgreSQL server behind RDS Data
+API calls (`aws rds-data ...`, signing name `rds-data`). Return a connection string
+or `nil` to reject the request with `BadRequestException`. The request has
+`resource_arn`, `secret_arn` and `database`; the context has `account_id` and `region`.
+A later registration replaces the earlier one. Connections use plain TCP (no TLS).
+
+```lua
+roto.hooks.rds_data_connection(function(request, context)
+  return "postgres://postgres:pw@localhost:5432/app"
+end)
+```
+
+`:name` parameters are inlined as escaped literals and results use the text protocol,
+so `typeHint` (`DATE`, `DECIMAL`, `JSON`, `TIME`, `TIMESTAMP`, `UUID`) only adds a cast.
+Transactions hold a dedicated connection and expire after three minutes. The Data API
+`database` argument is passed to the hook but not applied; put the database in the URL.
+
 ### `roto.hooks.mqtt_connect(callback)` and `roto.hooks.mqtt_subscribe(callback)`
 
 Register `callback(request, context)` for MQTT lifecycle decisions; return no
