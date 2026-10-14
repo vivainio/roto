@@ -132,10 +132,13 @@ With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same help
 
 ## Other services
 
-Anything without a helper is seeded with `roto.call` (JSON-protocol services: SQS, Lambda,
-DynamoDB, SSM, Secrets Manager, Kinesis, EventBridge, KMS, CloudWatch Logs) or `roto.wire`
-(everything else, such as S3 and SNS). Decode JSON response bodies with `roto.json_decode`.
-See [Service access](lua-api.md#service-access) for the signatures and examples.
+Anything without a helper can be seeded with `roto.call`, using an operation name
+and AWS-shaped arguments, or `roto.wire`, using an HTTP method, path, headers, and
+body. Both call local service handlers directly. `roto.wire` returns a raw response
+body; decode JSON responses with `roto.json_decode`.
+See [Service access](lua-api.md#service-access) for supported services and
+[the same S3 upload with wire, call, and boto3](lua-api.md#the-same-upload-with-wire-call-and-boto3)
+for a comparison including object metadata.
 
 ```lua
 roto.call("ssm", "PutParameter", {

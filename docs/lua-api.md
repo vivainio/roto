@@ -371,6 +371,65 @@ maps are tables, booleans and numbers are native. Timestamps and blobs are strin
 as a UTF-8 string with replacement, so use `roto.wire` for binary objects). Unknown
 input members raise an error naming the member.
 
+### The same upload with wire, call, and boto3
+
+Each example uploads `hello.txt` to an existing `fixtures` bucket with the same
+contents, content type, and custom metadata. Run any one of them; they perform
+the same S3 `PutObject` operation.
+
+**Lua: `roto.wire`** spells out the HTTP request. It calls Roto's service handler
+directly, without a network connection. Metadata becomes `x-amz-meta-*` headers:
+
+```lua
+roto.wire("s3", "PUT", "/fixtures/hello.txt", {
+  headers = {
+    ["content-type"] = "text/plain",
+    ["x-amz-meta-owner"] = "demo",
+    ["x-amz-meta-purpose"] = "greeting",
+  },
+  body = "hello",
+})
+```
+
+**Lua: `roto.call`** takes the operation name and AWS-shaped arguments. Roto
+translates the bucket and key into the path, and the metadata into headers:
+
+```lua
+roto.call("s3", "PutObject", {
+  Bucket = "fixtures",
+  Key = "hello.txt",
+  Body = "hello",
+  ContentType = "text/plain",
+  Metadata = {owner = "demo", purpose = "greeting"},
+})
+```
+
+**Python: boto3** takes equivalent arguments and sends the request over HTTP to
+the running Roto server (here on the default port, 5070):
+
+```python
+import boto3
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url="http://localhost:5070",
+    region_name="us-east-1",
+    aws_access_key_id="demo",
+    aws_secret_access_key="demo",
+)
+s3.put_object(
+    Bucket="fixtures",
+    Key="hello.txt",
+    Body=b"hello",
+    ContentType="text/plain",
+    Metadata={"owner": "demo", "purpose": "greeting"},
+)
+```
+
+`wire` means using the service's HTTP request format; it executes a request,
+rather than configuring a connection between resources. Prefer `roto.call`
+when you have an operation name and structured arguments.
+
 ### `roto.call(service, operation, input?)`
 
 Calls a supported service operation with AWS-shaped input and returns decoded
