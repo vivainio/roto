@@ -57,6 +57,12 @@ for path in Path(sys.argv[1]).rglob("*.py"):
             'AssumeRolePolicyDocument="some policy"',
             f"AssumeRolePolicyDocument={policy!r}",
         )
+    if path.as_posix().endswith("test_sqs/test_sqs_cloudformation.py"):
+        # Upstream leaves the random queue name unquoted, so the template is not JSON and is
+        # parsed as YAML. Roto (YAML 1.2) reads an all-hex name such as 123e45 as a float and
+        # rejects the queue; PyYAML (1.1) needs a dot for floats and keeps it a string. Quoting
+        # removes the one-in-sixteen-ish flake without changing what the tests assert.
+        adapted = adapted.replace('"QueueName": $q_name', '"QueueName": "$q_name"')
     if path.as_posix().endswith("test_events/test_events_integration.py"):
         # Roto delivers through a background outbox; wait for the message while
         # retaining upstream's assertions about the delivered event.
