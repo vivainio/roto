@@ -149,12 +149,6 @@ roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
 
 Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON null.
 
-## EventBridge wiring
-
-Use `roto.call("events", "PutRule", input)` and `PutTargets` to route custom or S3
-events to these same functions and queues. See [EventBridge](eventbridge.md) for a
-complete setup and supported patterns.
-
 ## SQS delivery behavior
 
 Mappings are persisted and manageable with the ordinary Lambda event-source mapping APIs.
