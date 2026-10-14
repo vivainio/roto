@@ -1,9 +1,15 @@
-# Local Lambda executors
+# Lambda
 
-Bind local executors through Lua setup:
+Save this executor binding as `setup.lua`:
+
+```lua
+roto.lambda.bind("process-upload", {command = {"sh", "-c", "cat"}})
+```
+
+Start Roto with that file:
 
 ```sh
-cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.lua
+roto-server --ephemeral --setup setup.lua
 ```
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using a name
@@ -112,9 +118,7 @@ Lambda invocation record. It does appear in the request trace.
 Interceptors match an exact service/operation pair, can stub unsupported
 operations, and have a one-second Lua instruction deadline. Internal service
 calls and setup calls do not trigger them. See [runtime hooks](runtime-hooks.md)
-for the full contract and limits, or run
-`roto-server --ephemeral --setup examples/hooks/setup.lua` for an inline worker
-with SQS failure injection.
+for the full contract and limits, including a setup example you can save locally.
 
 ## Command executor
 
@@ -281,13 +285,16 @@ RIE generates the runtime request ID, which can differ from Roto's invocation ID
 
 ### Try warm and cold invocations
 
-The [warm counter demo](../demos/lambda-warm/setup.lua) creates both functions using
-an image whose Python handler increments a module-level counter:
+Download [setup.lua](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/setup.lua),
+[app.py](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/app.py), and
+[Containerfile](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/Containerfile)
+into an empty directory, then run these commands from that directory. The setup
+creates both functions using an image whose Python handler increments a module-level counter:
 
 ```sh
 podman build -t roto-lambda-warm:latest \
-  -f demos/lambda-warm/Containerfile demos/lambda-warm
-roto-server --ephemeral --setup demos/lambda-warm/setup.lua
+  -f Containerfile .
+roto-server --ephemeral --setup setup.lua
 ```
 
 Use Docker instead of Podman if needed. Invoke each function twice:
@@ -402,13 +409,7 @@ test virtualenv includes it), and does not change the example config or an exist
 
 Expose Lambda functions through API Gateway HTTP API v2 proxy events:
 
-```sh
-cargo run -p roto-server -- --ephemeral --setup examples/demo/setup.lua \
-  --http-routes examples/demo/http-routes.json
-curl 'http://localhost:5070/roto-http/echo/orders/42?tag=one&tag=two'
-```
-
-For a custom route handler, create the function in Lua setup:
+Save this function as `setup.lua`:
 
 ```lua
 roto.lambda.fn("process-order", {
@@ -428,7 +429,7 @@ A `POST /roto-http/orders/42` invokes this handler.
 
 The route file contains a `routes` array. Each route specifies `method`, `path`,
 `function` (a Lambda name or full ARN), and optionally `region` (default
-`us-east-1`). Functions and executor bindings must already exist; the demo setup
+`us-east-1`). Functions and executor bindings must already exist; the setup above
 provides both. Restart the server to reload the route file.
 
 ```json

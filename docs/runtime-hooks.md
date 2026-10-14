@@ -134,10 +134,10 @@ Lambda invocations from deadlocking the shared VM. Runtime callbacks may use
 `roto.array` and `roto.null`. Bindings and registrations remain after resource
 reset; reset does not rerun setup.
 
-Run the example with:
+Save the example as `setup.lua` and run it with:
 
 ```sh
-roto-server --ephemeral --setup examples/hooks/setup.lua
+roto-server --ephemeral --setup setup.lua
 ```
 
 Post-create resource callbacks and a catch-all fallback remain future work.

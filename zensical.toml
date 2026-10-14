@@ -17,33 +17,44 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
-  { "Lua setup" = "lua.md" },
-  { "Lua API reference" = "lua-api.md" },
-  { "Lua type stubs" = "lua-types.md" },
-  { "Demos" = "demos.md" },
-  { "Runtime hooks" = "runtime-hooks.md" },
-  { "Integration testing" = "integration-testing.md" },
-  { "Performance" = "benchmarks.md" },
-  { "Server reference" = "server.md" },
   { "Services" = [
     { "Coverage overview" = "services.md" },
-    { "S3" = "s3.md" },
-    { "CloudWatch Logs" = "cloudwatch-logs.md" },
-    { "KMS" = "kms.md" },
-    { "Local Lambda execution" = "lambda.md" },
-    { "EventBridge" = "eventbridge.md" },
-    { "CloudFormation" = "cloudformation.md" },
-    { "Kinesis" = "kinesis.md" },
-    { "IoT and MQTT" = "iot.md" },
+    { "Core services" = [
+      { "S3" = "s3.md" },
+      { "Lambda" = "lambda.md" },
+      { "CloudWatch Logs" = "cloudwatch-logs.md" },
+      { "EventBridge" = "eventbridge.md" },
+      { "Kinesis" = "kinesis.md" },
+    ] },
+    { "Other services" = [
+      { "RDS Data API" = "rds-data.md" },
+      { "CloudFormation" = "cloudformation.md" },
+      { "KMS" = "kms.md" },
+      { "IoT and MQTT" = "iot.md" },
+    ] },
   ] },
-  { "Storage" = "storage.md" },
-  { "Architecture" = "architecture.md" },
+  { "Lua configuration" = [
+    { "Setup tutorial" = "lua.md" },
+    { "Runtime hooks" = "runtime-hooks.md" },
+    { "API reference" = "lua-api.md" },
+    { "Editor support" = "lua-types.md" },
+  ] },
+  { "Examples and testing" = [
+    { "Container example" = "demos.md" },
+    { "Integration testing" = "integration-testing.md" },
+  ] },
+  { "Reference" = [
+    { "Server options and inspection" = "server.md" },
+    { "Storage" = "storage.md" },
+    { "Performance" = "benchmarks.md" },
+  ] },
   { "Development" = [
     { "Overview" = "development.md" },
+    { "Architecture" = "architecture.md" },
     { "Adding a service" = "adding-a-service.md" },
     { "Service protocols" = "service-protocols.md" },
+    { "Building this book" = "documentation.md" },
   ] },
-  { "Documentation" = "documentation.md" },
 ]
 
 [project.theme]

@@ -7,6 +7,13 @@ produced it. Give the scenario a unique fake access key beginning with
 Roto keeps the latest 10,000 requests in memory, so this works without
 `--trace` or a trace file.
 
+Start a disposable server before running the test:
+
+```sh
+roto-server --ephemeral --port 5070
+```
+
+The example assumes a .NET test project with xUnit and the `AWSSDK.S3` package.
 For example, this xUnit test checks that an S3 upload succeeds and that roto
 observed a successful `PutObject` request:
 
@@ -33,6 +40,7 @@ public class UploadTests
         };
 
         using var s3 = new AmazonS3Client(credentials, config);
+        await s3.PutBucketAsync(new PutBucketRequest { BucketName = "integration-tests" });
         await s3.PutObjectAsync(new PutObjectRequest
         {
             BucketName = "integration-tests",
@@ -55,15 +63,9 @@ public class UploadTests
 }
 ```
 
-Start a disposable server before running the test:
-
-```sh
-roto-server --ephemeral --port 5070
-```
-
 In a test fixture, start a fresh `--ephemeral` server for each test or test group
 when you want isolated state. Roto's measured [startup time and idle memory](benchmarks.md)
-make repeated launches practical. Build once before the suite, use a free port for
+make repeated launches practical. Use the installed `roto-server` binary, choose a free port for
 each process, and stop it in fixture cleanup. A server per test collection also
 works when tests intentionally share resources. Wait for `/roto-api/health`
 before creating clients. A unique trace
@@ -75,24 +77,3 @@ For longer investigations, add `--trace calls.jsonl` to preserve the full
 history on disk. The in-memory endpoint remains available and is useful for
 assertions even without that option. See [Server reference](server.md#finding-unsupported-api-calls)
 for the trace fields, filtering, and coverage report.
-
-## Lua service contracts in CI
-
-The `lua-services` job has separate matrix entries for CUR, ACM, Budgets, Config,
-Cloud Map, OpenSearch, RDS, ECR, ECS and Glue. Each entry builds the server, installs pinned boto3, and runs:
-
-```sh
-python3 tests/smoke-lua-services.py --service acm --sdk
-```
-
-Replace `acm` with `cur`, `budgets`, `config`, `servicediscovery`, `opensearch`,
-`rds`, `ecr`, `ecs`, or `glue`. The runner
-starts and cleans up disposable servers on free ports. It checks each service's
-supported operations, modeled failures, account/region isolation, persistence
-through restart, and reset, using both a directory bundle and a ZIP bundle.
-SDK mode also checks model field names/types, serialization and response parsing.
-Without `--sdk`, it needs only Python's standard library. Omit `--service` to run
-all ten. Build first with `cargo build -p roto-server --locked`.
-
-These focused contracts are adapted from MiniStack tests and cover the implemented
-subsets. They are separate from the Moto operation-coverage reports.

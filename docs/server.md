@@ -4,8 +4,8 @@ Pass options to the installed `roto-server` command:
 
 ```sh
 roto-server --data-dir ./test-data --durable
-# Capture API calls while running Moto's suite:
-roto-server --ephemeral --trace moto-trace.jsonl
+# Record API requests while using your application:
+roto-server --ephemeral --trace calls.jsonl
 ```
 
 | Option | Default | Behavior |
@@ -293,11 +293,13 @@ or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
 
 ## Lua setup
 
+Create `setup.lua` using the example in [Lua setup](lua.md).
+
 Lua can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
-event-source mappings. See [Lua setup](lua.md), [Lambda executors](lambda.md), and [EventBridge wiring](eventbridge.md).
+event-source mappings. See [Lua setup](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
 
 ```sh
-roto-server --ephemeral --setup examples/lua/setup.lua
+roto-server --ephemeral --setup setup.lua
 ```
 
 ## Optional Lua service bundle

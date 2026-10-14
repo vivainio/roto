@@ -1,4 +1,4 @@
-# Lua setup and SQS → Lambda
+# Lua setup
 
 Lua declares resources and wires queues to Lambda functions. Functions can execute a local
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
@@ -8,20 +8,7 @@ This page is a tutorial; the [Lua API reference](lua-api.md) is the single sourc
 symbol, option and return value (start with its symbol index).
 The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
 
-```sh
-cargo run -p roto-server -- --ephemeral --setup examples/lua/setup.lua
-aws --endpoint-url http://localhost:5070 sqs send-message \
-  --queue-url http://localhost:5070/123456789012/jobs --message-body 'hello'
-curl http://localhost:5070/roto-api/lambda/invocations
-```
-
-The shell example requires Python 3. See [setup.lua](https://github.com/vivainio/roto/blob/main/examples/lua/setup.lua) for an optional HTTP binding.
-Both executors receive the AWS SQS event with a `Records` array. A shell script must read
-stdin and write exactly one JSON result to stdout; logs go to stderr. An HTTP endpoint must
-return a 2xx response containing one JSON result. The full contracts, environment variables,
-timeouts and output limits are in [the Lambda executor reference](lambda.md).
-
-For a standalone first setup, save this as `setup.lua`:
+Save this as `setup.lua`:
 
 ```lua
 local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
@@ -31,29 +18,29 @@ local handler = roto.lambda.fn("echo-job", {
 roto.lambda.event_source(queue, handler)
 ```
 
-Start `roto-server --setup setup.lua`, then send a message with the command above.
-The handler returns the incoming event as its JSON result.
-
-## Quick test data
-
-Use the reusable [demo seed](https://github.com/vivainio/roto/blob/main/examples/demo/setup.lua)
-for API development, integration tests, or the inspection UI:
+Start the server in one terminal:
 
 ```sh
-scripts/demo.sh                 # seeded ephemeral server on port 5071
-# Or manage the server directly:
-roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
+roto-server --ephemeral --setup setup.lua
 ```
 
-It creates useful data across eleven stateful services, including multi-page
-bucket contents, versions, nested DynamoDB items, retained queue messages,
-Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
-No moto or Python dependencies are needed. Verify it with
-`python3 tests/smoke-demo.py` after building the server. See the
-[demo README](https://github.com/vivainio/roto/blob/main/examples/demo/README.md)
-for the fixture inventory and intentional failure cases.
+In another terminal, send a message using the AWS CLI with local credentials
+configured as described in [Getting started](getting-started.md):
+
+```sh
+aws --endpoint-url http://localhost:5070 sqs send-message \
+  --queue-url http://localhost:5070/123456789012/jobs --message-body 'hello'
+curl http://localhost:5070/roto-api/lambda/invocations
+```
+
+The handler receives an AWS SQS event with a `Records` array and returns that
+event as its JSON result. A shell executor reads stdin and writes one JSON result
+to stdout; logs go to stderr. See [Lambda](lambda.md) for the full
+contract, HTTP and container executors, timeouts, and output limits.
 
 ## Setup helpers
+
+This expands the first example with queue settings and function options:
 
 ```lua
 local dead = roto.sqs.queue("dead")
@@ -68,7 +55,7 @@ local handler = roto.lambda.fn("process-job", {
   memory_size = 128,
   description = "Process local jobs",
   environment = { MODE = "development" },
-  executor = { command = { "sh", "./process_jobs.sh" }, env = { DEBUG = "1" } },
+  executor = { command = { "sh", "-c", "cat" }, env = { DEBUG = "1" } },
 })
 -- Alternatively: executor = { url = "http://localhost:8080/jobs", headers = {} }
 -- Or invoke an existing Lambda image: executor = { container = "my-worker:latest" }
@@ -125,11 +112,6 @@ existing host files as objects without copying or uploading them, which suits la
 that every start would otherwise re-upload. See the [Lua API reference](lua-api.md#s3)
 and [Storage](storage.md).
 
-## Running scripts against a live server
-
-With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
-[Lua API reference](lua-api.md#running-scripts-on-a-live-server).
-
 ## Other services
 
 Anything without a helper can be seeded with `roto.call`, using an operation name
@@ -144,6 +126,7 @@ for a comparison including object metadata.
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
+roto.call("s3", "CreateBucket", {Bucket = "fixtures"})
 roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
 ```
 
@@ -179,12 +162,24 @@ On restart, interrupted SQS invocations are marked failed in history and retry t
 Reset clears resources, mappings and history. Local executor bindings remain; setup is not
 automatically rerun after reset.
 
-## Verification
+## Running scripts against a live server
+
+With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
+[Lua API reference](lua-api.md#running-scripts-on-a-live-server).
+
+## Quick test data
+
+To explore populated services in the inspection UI, download the
+[example setup script](https://github.com/vivainio/roto/blob/main/examples/demo/setup.lua)
+and save it as `demo-setup.lua`. Run it with:
 
 ```sh
-cargo build -p roto-server
-.venv-moto/bin/python tests/smoke-lua.py
+roto-server --ephemeral --port 5071 --setup demo-setup.lua
 ```
 
-The smoke test starts disposable servers, exercises shell and HTTP deliveries and disabled
-mappings, and restarts persistent state to verify idempotent setup.
+It creates useful data across eleven stateful services, including multi-page
+bucket contents, versions, nested DynamoDB items, retained queue messages,
+Lambda results/logs, and delivery history. Use a fresh store; names are fixed.
+Open `http://localhost:5071/roto-api/` to inspect the data. See the
+[demo README](https://github.com/vivainio/roto/blob/main/examples/demo/README.md)
+for the fixture inventory and intentional failure cases.

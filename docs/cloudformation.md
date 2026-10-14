@@ -6,31 +6,44 @@ useful subset: stack operations are synchronous, and templates call the same
 service handlers used by direct SQS, SNS, S3, DynamoDB, Kinesis, IAM, and Lambda
 requests.
 
-## Run the end-to-end demo
+## Create a stack
 
-Start a seeded local server in one terminal, then run the AWS CLI demo in
-another. The CLI uses fake credentials and targets Roto on port 5071.
-
-```sh
-scripts/demo.sh
-```
+Start a disposable server:
 
 ```sh
-cd demos/cloudformation
-./deploy-local.sh
+roto-server --ephemeral --port 5071
 ```
 
-The demo creates an SQS queue and an SNS topic subscribed to it, plus a nested
-stack that creates a second queue. It then creates a consumer stack that imports
-an export from the first stack. The templates show parameters, references,
-outputs, and `Fn::Sub`. Set `ROTO_ENDPOINT` if the server uses another port.
+Save this template as `queue.yaml`:
 
-The script uploads the nested template into a local S3 bucket because
-`AWS::CloudFormation::Stack` loads its template through `TemplateURL`. It prints
-both stacks' outputs and the nested stack's parent/root IDs. Delete the consumer
-stack first so it releases its import, then delete the main stack; that removes
-the nested stack and its queue. The shared template bucket remains until the
-ephemeral server is restarted.
+```yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  Jobs:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: jobs
+Outputs:
+  QueueUrl:
+    Value: !Ref Jobs
+```
+
+In another terminal, configure local credentials as described in
+[Getting started](getting-started.md), then create and inspect the stack:
+
+```sh
+aws --endpoint-url http://localhost:5071 cloudformation create-stack \
+  --stack-name jobs --template-body file://queue.yaml
+aws --endpoint-url http://localhost:5071 cloudformation describe-stacks \
+  --stack-name jobs
+```
+
+The stack creates the queue and exposes its URL in `Outputs`. Delete the stack
+when finished:
+
+```sh
+aws --endpoint-url http://localhost:5071 cloudformation delete-stack --stack-name jobs
+```
 
 ## Supported resources
 

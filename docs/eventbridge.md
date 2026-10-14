@@ -1,6 +1,7 @@
 # EventBridge
 
-Run `cargo run -p roto-server -- --ephemeral --setup examples/eventbridge/setup.lua`.
+Save the setup script below as `setup.lua`, then run
+`roto-server --ephemeral --setup setup.lua`.
 The setup creates an `uploads` bucket, enables EventBridge notifications, and routes
 `aws.s3` / `Object Created` events to an SQS queue and a local shell Lambda.
 Upload an object through your usual SDK pointed at `http://localhost:5070`.

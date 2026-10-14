@@ -1,9 +1,8 @@
 # Demos
 
-The repository's `demos/` directory contains runnable examples that connect Roto to
-external tools and runtimes. This chapter walks through invoking a Lambda container image
-with RIE. Its code blocks include the demo's actual source files, so they stay in sync with
-the runnable example.
+This example uses the installed `roto-server` command and Podman or Docker.
+Create an empty directory and save the three files shown below there:
+`Containerfile`, `app.py`, and `setup.lua`. No repository checkout is needed.
 
 ## Invoke a Lambda container image
 
@@ -13,43 +12,40 @@ starts the image with Podman or Docker, discovers the host port mapped to contai
 Set `warm = true` in the executor binding to reuse idle containers; see the
 [warm counter example](lambda.md#try-warm-and-cold-invocations).
 
-Build the image from the repository root:
-
-```sh
-podman build -t roto-lambda-container:latest \
-  -f demos/lambda-container/Containerfile demos/lambda-container
-```
-
-Use `docker build` with the same arguments if Docker is your container engine.
-
 The `Containerfile` uses the AWS Lambda Python base image. Its entrypoint starts the
 Runtime Interface Emulator (RIE) for local invocations. RIE and the runtime client
 are already included in this base image, so the Containerfile does not need to
 install them. The `container` binding requires RIE to be available and started on
 port 8080; arbitrary custom images may need to add it:
 
-```dockerfile title="demos/lambda-container/Containerfile"
+```dockerfile title="Containerfile"
 --8<-- "demos/lambda-container/Containerfile"
 ```
 
 The handler calls boto3 STS against the `AWS_ENDPOINT_URL` supplied by Roto, then returns
 that identity alongside the original event:
 
-```python title="demos/lambda-container/app.py"
+```python title="app.py"
 --8<-- "demos/lambda-container/app.py"
 ```
 
 The Lua setup creates function metadata and binds the local image name:
 
-```lua title="demos/lambda-container/setup.lua"
+```lua title="setup.lua"
 --8<-- "demos/lambda-container/setup.lua"
 ```
 
-Start Roto with the setup file:
+After saving all three files, build the image from that directory:
 
 ```sh
-cargo run -p roto-server -- --ephemeral --host 0.0.0.0 \
-  --setup demos/lambda-container/setup.lua
+podman build -t roto-lambda-container:latest -f Containerfile .
+```
+
+Use `docker build` with the same arguments if Docker is your container engine.
+Then start Roto:
+
+```sh
+roto-server --ephemeral --host 0.0.0.0 --setup setup.lua
 ```
 
 The non-loopback listen address lets the container reach Roto through the container engine's
@@ -77,7 +73,9 @@ Roto does not build or pull it. See the [Lambda execution chapter](lambda.md) fo
 behavior and limits, and the [demo README](https://github.com/vivainio/roto/blob/main/demos/lambda-container/README.md)
 for the same run instructions.
 
-## Other runnable examples
+## Further examples
+
+These source examples can be downloaded separately with their supporting files:
 
 - [CloudFormation demo](https://github.com/vivainio/roto/tree/main/demos/cloudformation):
   create queues and a topic, use a nested stack, then import an exported value.

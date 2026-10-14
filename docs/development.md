@@ -165,3 +165,24 @@ To retry uploading already-built distributions, run the release workflow
 manually and provide the original release run ID in `artifact-run-id`. This
 skips rebuilding and publishes that run's artifacts. Verify the chosen run
 belongs to the release you intend to publish.
+
+## Lua service contracts in CI
+
+The `lua-services` job has separate matrix entries for CUR, ACM, Budgets, Config,
+Cloud Map, OpenSearch, RDS, ECR, ECS and Glue. Each entry builds the server, installs pinned boto3, and runs:
+
+```sh
+python3 tests/smoke-lua-services.py --service acm --sdk
+```
+
+Replace `acm` with `cur`, `budgets`, `config`, `servicediscovery`, `opensearch`,
+`rds`, `ecr`, `ecs`, or `glue`. The runner
+starts and cleans up disposable servers on free ports. It checks each service's
+supported operations, modeled failures, account/region isolation, persistence
+through restart, and reset, using both a directory bundle and a ZIP bundle.
+SDK mode also checks model field names/types, serialization and response parsing.
+Without `--sdk`, it needs only Python's standard library. Omit `--service` to run
+all ten. Build first with `cargo build -p roto-server --locked`.
+
+These focused contracts are adapted from MiniStack tests and cover the implemented
+subsets. They are separate from the Moto operation-coverage reports.

@@ -95,10 +95,11 @@ with a reproducible suite and raw results.
 
 The book also covers [Lua setup](lua.md), the [full Lua API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
-Service guides explain [CloudFormation](cloudformation.md), [EventBridge](eventbridge.md),
-[S3](s3.md), [CloudWatch Logs](cloudwatch-logs.md), [Kinesis](kinesis.md), [KMS](kms.md),
-[IoT topics and WebSockets](iot.md), and
-[local Lambda execution](lambda.md).
+Core service guides cover [S3](s3.md), [Lambda](lambda.md),
+[CloudWatch Logs](cloudwatch-logs.md), [EventBridge](eventbridge.md), and
+[Kinesis](kinesis.md). Other service guides cover
+[RDS Data API](rds-data.md), [CloudFormation](cloudformation.md), [KMS](kms.md), and
+[IoT topics and WebSockets](iot.md).
 The [runtime Lua handler and interception guide](runtime-hooks.md) covers inline
 Lambda handlers and request interceptors.
 
