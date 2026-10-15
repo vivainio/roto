@@ -812,7 +812,7 @@ pub fn run_source(
     // Lua strings are byte strings, so both directions are binary-safe.
     roto.set(
         "encode_base64",
-        lua.create_function(|_, value: mlua::String| {
+        lua.create_function(|_, value: mlua::LuaString| {
             Ok(base64::engine::general_purpose::STANDARD.encode(value.as_bytes()))
         })?,
     )?;
