@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use base64::Engine;
 use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
 use roto_core::{RawRequest, RequestContext, ServiceHandler};
 use serde_json::{Value, json};
@@ -808,6 +809,22 @@ pub fn run_source(
             lua.to_value(&value)
         })?,
     )?;
+    // Lua strings are byte strings, so both directions are binary-safe.
+    roto.set(
+        "encode_base64",
+        lua.create_function(|_, value: mlua::String| {
+            Ok(base64::engine::general_purpose::STANDARD.encode(value.as_bytes()))
+        })?,
+    )?;
+    roto.set(
+        "decode_base64",
+        lua.create_function(|lua, text: String| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .map_err(mlua::Error::external)?;
+            lua.create_string(&bytes)
+        })?,
+    )?;
     // Make require("module") resolve beside the setup script before the default search paths.
     let package: Table = lua.globals().get("package")?;
     let search: String = package.get("path")?;
@@ -1592,6 +1609,11 @@ assert(roto.call("kms", "CreateKey", {}).KeyMetadata.KeyId)
 roto.call("logs", "CreateLogGroup", {logGroupName = "/app"})
 assert(roto.json_decode('{"a":[1,2]}').a[2] == 2)
 assert(not pcall(roto.json_decode, "{"))
+assert(roto.encode_base64("user:token") == "dXNlcjp0b2tlbg==")
+assert(roto.encode_base64("ab") == "YWI=" and roto.encode_base64("") == "")
+assert(roto.decode_base64("dXNlcjp0b2tlbg==") == "user:token")
+assert(roto.decode_base64(roto.encode_base64("\0\255\254")) == "\0\255\254")
+assert(not pcall(roto.decode_base64, "not base64!"))
 "#,
         );
         std::fs::write(

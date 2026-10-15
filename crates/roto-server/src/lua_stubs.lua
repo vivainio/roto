@@ -30,6 +30,16 @@ function roto.array(t) end
 ---@return any
 function roto.json_decode(text) end
 
+---Standard base64 of a string; binary-safe.
+---@param text string
+---@return string
+function roto.encode_base64(text) end
+
+---Decodes standard base64 to a (binary-safe) string. Raises on invalid base64.
+---@param text string
+---@return string
+function roto.decode_base64(text) end
+
 ---@class roto.WireOptions
 ---@field headers? table<string, string>
 ---@field query? string Raw query string without `?`.

@@ -171,6 +171,8 @@ mod tests {
             "function roto.wire",
             "function roto.json_decode",
             "function roto.array",
+            "function roto.encode_base64",
+            "function roto.decode_base64",
             "function roto.hooks.request",
             "function roto.hooks.mqtt_connect",
             "function roto.hooks.mqtt_subscribe",
