@@ -4,8 +4,8 @@ mod gateway;
 mod inspection;
 mod lua_api;
 mod lua_service;
-mod lua_stubs;
 mod lua_wire;
+mod luau_stubs;
 mod setup;
 mod trace;
 mod unsupported;
@@ -40,7 +40,7 @@ fn parse_set_var(raw: &str) -> Result<(String, String), String> {
 struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    /// Write the Lua type stubs (`roto.d.lua`) for editors into DIR and exit.
+    /// Write the Luau type definitions (`roto.d.luau`) for editors into DIR and exit.
     #[arg(long, value_name = "DIR")]
     lua_stubs: Option<PathBuf>,
     /// Port for the local AWS simulator.
@@ -115,7 +115,7 @@ async fn main() {
     let args = Args::parse();
     if let Some(dir) = &args.lua_stubs {
         std::fs::create_dir_all(dir)
-            .and_then(|()| std::fs::write(dir.join("roto.d.lua"), lua_stubs::render()))
+            .and_then(|()| std::fs::write(dir.join("roto.d.luau"), luau_stubs::render()))
             .unwrap_or_else(|e| {
                 eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());
                 std::process::exit(1);

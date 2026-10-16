@@ -1,42 +1,81 @@
-# Lua type stubs
+# Luau types
 
-Roto publishes type stubs for its setup Lua API, so editors that use
-[lua-language-server](https://luals.github.io/) (VS Code, Neovim, Zed and others) can
-complete and check `roto.*` calls. They describe the option tables of the helpers, the
-shapes they return, and the callback signatures. Nothing is checked at runtime by the
-stubs; the server still rejects unknown options itself.
+Setup scripts run on [Luau](https://luau.org), a gradually typed Lua. Roto publishes type
+definitions for everything it provides, so the Luau type checker flags a misspelled option,
+a missing field or a wrong value type before you start the server. They cover:
 
-**Download: [roto.d.lua](roto.d.lua)**. The file is generated from the server's source by
-`roto-server --lua-stubs` each time the book is built, so it always matches this version.
+- every `roto.*` helper: option tables, return tables and callback signatures
+- every operation of the AWS services Roto implements, through typed clients
+  (`roto.aws.s3.PutBucketCors({ ... })`): the input and output of each operation come
+  from the AWS service models
+- the shapes passed to request and MQTT hooks, and to inline Lambda handlers
 
-## Setup
+Nothing is checked at runtime by the definitions; the server still rejects unknown
+options itself. A script without `--!strict` is checked loosely or not at all.
 
-Save the file somewhere in your project, for example `types/roto.d.lua`, and point
-`.luarc.json` at the folder:
+**Download: [roto.d.luau](roto.d.luau)**. The file is generated from the server's source by
+`roto-server --lua-stubs DIR` each time the book is built, so it always matches this version.
+
+## Checking a script
+
+Start the script with `--!strict`, then check it with
+[luau-lsp](https://github.com/JohnnyMorganz/luau-lsp), which also gives editors (VS Code,
+Neovim, Zed and others) completion and hover for the definitions:
+
+```sh
+roto-server --lua-stubs types          # writes types/roto.d.luau
+luau-lsp analyze --platform=standard \
+  --flag:LuauTarjanChildLimit=1000000 \
+  --definitions=types/roto.d.luau setup.lua
+```
+
+The AWS models are large, so raise Luau's `LuauTarjanChildLimit` as shown; without it the
+checker gives up with "Code is too complex to typecheck". In an editor, set the same in the
+luau-lsp settings:
 
 ```json
 {
-  "workspace.library": ["types"],
-  "diagnostics.globals": ["roto"]
+  "luau-lsp.types.definitionFiles": { "roto": "types/roto.d.luau" },
+  "luau-lsp.fflags.override": { "LuauTarjanChildLimit": "1000000" }
 }
 ```
 
-Then a call such as `roto.s3.bucket("assets", { colors = {} })` is flagged while you
-type, and hovering a function shows its options and return table.
+The definitions work with both Luau type solvers; the new solver
+(`"luau-lsp.fflags.enableNewSolver": true`) gives the better diagnostics.
 
-## `roto.call`
+## Typed AWS clients
 
-For `s3`, `sns`, `iam`, `sts` and `cloudformation` every operation and its input and
-output tables are typed from the AWS service models, so `roto.call("s3", "PutBucketCors", {...})`
-completes the members of the request and flags unknown operations. For the other services
-`roto.call` takes any table; use the [AWS API reference](https://docs.aws.amazon.com/) for
-the members of each operation. These generated declarations are several thousand lines
-and are only in the download.
+`roto.aws.<service>.<Operation>(input)` is `roto.call("<service>", "<Operation>", input)`
+with checked tables. Services: `cloudformation`, `dynamodb`, `events` (also
+`eventbridge`), `iam`, `kinesis`, `kms`, `lambda`, `logs`, `s3`, `secretsmanager`, `sns`,
+`sqs`, `ssm` and `sts`.
 
-## The helper stubs
+```lua
+--!strict
+local queue = roto.sqs.queue("jobs")
+roto.aws.sqs.SendMessage({ QueueUrl = queue.url, MessageBody = "{}" })
+
+local url = roto.aws.sqs.GetQueueUrl({ QueueName = "jobs" })
+print(url.QueueUrl)            -- string
+roto.aws.s3.PutBucketCors({ Bucket = 1 })  -- error: Bucket must be a string, CORSConfiguration is missing
+```
+
+`roto.call(service, operation, input)` stays available and untyped.
+
+## Limits of the checker
+
+- Luau tables are open, so an unknown extra field in an option table is not always flagged;
+  a missing required field and a wrong value type are.
+- AWS enum members are typed as `string`.
+- The definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own
+  annotations: Luau definition files do not export type aliases. Annotate with
+  `typeof(...)` or let inference carry the types.
+- Setup-only helpers are not distinguished from runtime-callback code.
+
+## The helper definitions
 
 This is the part of the file that describes the setup helpers, options and callbacks.
 
 ```lua
---8<-- "docs/roto.d.lua:helpers"
+--8<-- "docs/roto.d.luau:helpers"
 ```

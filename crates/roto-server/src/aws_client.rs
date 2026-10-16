@@ -11,24 +11,17 @@ use std::sync::OnceLock;
 use roto_core::{RawRequest, RequestContext, ServiceHandler};
 use serde_json::{Map, Value};
 
-const MODELS: &[(&str, &str)] = &[
-    ("s3", include_str!("../../../models/s3/service-2.json")),
-    ("iam", include_str!("../../../models/iam/service-2.json")),
-    ("sns", include_str!("../../../models/sns/service-2.json")),
-    ("sts", include_str!("../../../models/sts/service-2.json")),
-    (
-        "cloudformation",
-        include_str!("../../../models/cloudformation/service-2.json"),
-    ),
-];
+/// Services `roto.call` speaks through the XML protocols, driven by their embedded models.
+const XML_SERVICES: &[&str] = &["s3", "iam", "sns", "sts", "cloudformation"];
 
 type Models = HashMap<&'static str, Value>;
 
 fn models() -> &'static Models {
     static CELL: OnceLock<Models> = OnceLock::new();
     CELL.get_or_init(|| {
-        MODELS
+        crate::luau_stubs::MODELS
             .iter()
+            .filter(|(name, _)| XML_SERVICES.contains(name))
             .map(|(name, text)| (*name, serde_json::from_str(text).expect("embedded model")))
             .collect()
     })
@@ -55,14 +48,9 @@ pub(crate) fn canonical(service: &str) -> &str {
     }
 }
 
-/// The embedded models, for the Lua stub generator.
-pub(crate) fn embedded_models() -> impl Iterator<Item = (&'static str, &'static Value)> {
-    MODELS.iter().map(|(name, _)| (*name, &models()[*name]))
-}
-
 pub(crate) fn supports(service: &str) -> bool {
     let service = canonical(service);
-    JSON_SERVICES.contains(&service) || MODELS.iter().any(|(name, _)| *name == service)
+    JSON_SERVICES.contains(&service) || XML_SERVICES.contains(&service)
 }
 
 #[derive(Clone, Copy, PartialEq)]

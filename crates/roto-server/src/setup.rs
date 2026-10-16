@@ -450,14 +450,19 @@ fn trace_setup_calls(
                 .iter()
                 .filter_map(|v| v.as_string().map(|s| s.to_string_lossy()))
                 .collect();
-            let location = lua
-                .inspect_stack(1, |frame| {
-                    let source = frame.source();
-                    format!(
-                        "{}:{}",
-                        source.short_src.as_deref().unwrap_or("?"),
-                        frame.current_line().unwrap_or(0)
-                    )
+            // The first script frame above this call (`roto.aws` proxies sit in between).
+            let location = (1..4)
+                .find_map(|level| {
+                    lua.inspect_stack(level, |frame| {
+                        let source = frame.source();
+                        let line = frame.current_line()?;
+                        let name = source
+                            .short_src
+                            .as_deref()
+                            .filter(|s| !matches!(*s, "[C]" | "[roto.aws]"))?;
+                        Some(format!("{name}:{line}"))
+                    })
+                    .flatten()
                 })
                 .unwrap_or_default();
             let (service, operation, resource) = describe_call(path, &strings);
@@ -489,6 +494,30 @@ fn trace_setup_calls(
         table.set(name, traced)?;
     }
     Ok(())
+}
+
+/// `roto.aws.<service>.<Operation>(input)`: sugar for `roto.call(service, operation, input)`
+/// whose shape the Luau definitions type per operation.
+fn install_aws_clients(lua: &Lua, roto: &Table) -> mlua::Result<()> {
+    lua.load(
+        r#"
+        local roto = ...
+        local function client(service)
+          return setmetatable({}, { __index = function(self, operation)
+            local call = function(input) return roto.call(service, operation, input) end
+            rawset(self, operation, call)
+            return call
+          end })
+        end
+        roto.aws = setmetatable({}, { __index = function(self, service)
+          local c = client(service)
+          rawset(self, service, c)
+          return c
+        end })
+        "#,
+    )
+    .set_name("=[roto.aws]")
+    .call::<()>(roto.clone())
 }
 
 /// The AWS error code inside a setup error message: `<Code>` of an XML error, or `__type` of a JSON one.
@@ -548,6 +577,16 @@ struct Callback {
     lock: Arc<std::sync::Mutex<()>>,
 }
 
+/// Aborts running Lua with `message` once `deadline` passes (Luau polls at calls and loop edges).
+pub(crate) fn set_deadline(lua: &Lua, deadline: std::time::Instant, message: &'static str) {
+    lua.set_interrupt(move |_| {
+        if std::time::Instant::now() >= deadline {
+            return Err(mlua::Error::external(message));
+        }
+        Ok(mlua::VmState::Continue)
+    });
+}
+
 fn timed_call(
     lua: &Lua,
     function: &mlua::Function,
@@ -556,20 +595,12 @@ fn timed_call(
 ) -> mlua::Result<Value> {
     lua.set_named_registry_value("roto_runtime_callback", true)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
-    lua.set_hook(
-        mlua::HookTriggers::new().every_nth_instruction(1000),
-        move |_, _| {
-            if std::time::Instant::now() >= deadline {
-                return Err(mlua::Error::external("Lua callback timed out"));
-            }
-            Ok(mlua::VmState::Continue)
-        },
-    )?;
+    set_deadline(lua, deadline, "Lua callback timed out");
     let result = (|| {
         let value: LuaValue = function.call((lua.to_value(&args.0)?, lua.to_value(&args.1)?))?;
         lua.from_value(value)
     })();
-    lua.remove_hook();
+    lua.remove_interrupt();
     lua.set_named_registry_value("roto_runtime_callback", false)?;
     result
 }
@@ -897,17 +928,6 @@ pub fn run_source(
                 .map_err(mlua::Error::external)?;
             lua.create_string(&bytes)
         })?,
-    )?;
-    // Make require("module") resolve beside the setup script before the default search paths.
-    let package: Table = lua.globals().get("package")?;
-    let search: String = package.get("path")?;
-    package.set(
-        "path",
-        format!(
-            "{}/?.lua;{}/?/init.lua;{search}",
-            parent.display(),
-            parent.display()
-        ),
     )?;
     let sqs_api = lua.create_table()?;
     let lambda_api = lua.create_table()?;
@@ -1343,6 +1363,7 @@ pub fn run_source(
         };
         trace_setup_calls(&lua, &roto, sink, &request_id, origin)?;
     }
+    install_aws_clients(&lua, &roto)?;
     lua.globals().set("roto", roto)?;
     let chunk = lua.load(&source.code).set_name(source.name);
     let Some(posted) = source.posted else {
@@ -1364,17 +1385,9 @@ pub fn run_source(
         })?,
     )?;
     let deadline = std::time::Instant::now() + posted.limit;
-    lua.set_hook(
-        mlua::HookTriggers::new().every_nth_instruction(1000),
-        move |_, _| {
-            if std::time::Instant::now() >= deadline {
-                return Err(mlua::Error::external("Lua script timed out"));
-            }
-            Ok(mlua::VmState::Continue)
-        },
-    )?;
+    set_deadline(&lua, deadline, "Lua script timed out");
     let result: LuaValue = chunk.eval()?;
-    lua.remove_hook();
+    lua.remove_interrupt();
     Ok((hooks, lua.from_value(result).unwrap_or(Value::Null)))
 }
 
@@ -1714,7 +1727,7 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
         ]);
         let path = script(
             r#"
-assert(require("fixture").value == "hello")
+assert(require("./fixture").value == "hello")
 roto.call("ssm", "PutParameter", {Name="/app/mode",Value="development",Type="String"})
 assert(roto.call("ssm", "GetParameter", {Name="/app/mode"}).Parameter.Value == "development")
 roto.wire("s3", "PUT", "/fixtures")
@@ -1926,6 +1939,7 @@ roto.s3.put("assets", "a/b.txt", "x")
 roto.call("ssm", "PutParameter", {Name = "/p", Value = "v", Type = "String"})
 assert(not pcall(roto.call, "ssm", "GetParameter", {Name = "/missing"}))
 roto.wire("s3", "GET", "/assets/a/b.txt")
+roto.aws.ssm.GetParameter({Name = "/p"})
 "#,
         );
         let entries = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
@@ -1952,7 +1966,16 @@ roto.wire("s3", "GET", "/assets/a/b.txt")
                 ("ssm", "PutParameter"),
                 ("ssm", "GetParameter"),
                 ("s3", "GET /assets/a/b.txt"),
+                ("ssm", "GetParameter"),
             ]
+        );
+        assert!(
+            entries[5]["location"]
+                .as_str()
+                .unwrap()
+                .ends_with("setup.lua:7"),
+            "{}",
+            entries[5]
         );
         assert_eq!(entries[0]["resource"], "jobs");
         assert_eq!(entries[1]["resource"], "assets/a/b.txt");

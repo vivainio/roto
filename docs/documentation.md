@@ -19,9 +19,9 @@ For the same validation as CI:
 .venv-docs/bin/zensical build --clean --strict
 ```
 
-The book embeds and publishes the Lua type stubs, which are generated and not committed.
+The book embeds and publishes the Luau type definitions, which are generated and not committed.
 Generate them before serving or building: `cargo run -p roto-server -- --lua-stubs docs`
-(the output `docs/roto.d.lua` is ignored by Git).
+(the output `docs/roto.d.luau` is ignored by Git).
 
 The output is `site/`; generated output and caches are ignored by Git. Add new
 chapters to `nav` in `zensical.toml`. Keep coverage claims aligned with source

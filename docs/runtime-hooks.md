@@ -122,10 +122,10 @@ See `demos/mqtt/setup.lua` and the browser demo's Lua denial checks.
 
 ## Execution limits
 
-Callbacks from one setup script execute serially. Lua instruction hooks check
-the deadline every 1,000 instructions: one second for an interceptor, and the
+Callbacks from one setup script execute serially. Lua deadline checks run
+at function calls and loop iterations: one second for an interceptor, and the
 configured function timeout for a Lambda. These checks interrupt Lua loops;
-they cannot interrupt blocking native calls such as `os.execute` or file I/O.
+they cannot interrupt a blocking native call.
 Use command or HTTP executors for workloads that need external processes.
 
 Resource setup helpers, `roto.call`, `roto.wire`, and hook registration are

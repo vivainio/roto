@@ -6,7 +6,8 @@ through RIE, or run an inline Lua placeholder handler.
 See [runtime Lua handlers and interception](runtime-hooks.md) for inline functions and request hooks.
 This page is a tutorial; the [Lua API reference](lua-api.md) is the single source for every
 symbol, option and return value (start with its symbol index).
-The binary embeds Lua 5.4 through `mlua`; no Lua installation is needed.
+The binary embeds [Luau](https://luau.org) through `mlua`; no Lua installation is needed.
+Start a script with `--!strict` to get types: see [Luau types](lua-types.md).
 
 Save this as `setup.lua`:
 
@@ -100,7 +101,7 @@ and delivery workers start. It starts in the `--account-id` account and `us-east
 there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
 `--set REGION=...` and `roto.vars` to take them from the command line).
 `roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
-`require("module")` searches the script directory first. Command `cwd` defaults to that
+`require("./module")` loads `module.luau` or `module.lua` beside the script. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
 Setup errors include a source location and stop startup. Changes from earlier successful

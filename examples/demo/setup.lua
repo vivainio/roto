@@ -1,15 +1,16 @@
+--!strict
 -- Disposable test/demo data: roto-server --ephemeral --setup examples/demo/setup.lua
 -- Uses the installed services' normal APIs; no database writes or network setup calls.
 local tags = { purpose = "demo-fixtures", owner = "local" }
-local function s3(method, path, body, query, headers)
+local function s3(method: string, path: string, body: (string | { [string]: any })?, query: string?, headers: { [string]: string }?)
   return roto.wire("s3", method, path, { body = body, query = query, headers = headers })
 end
-local function query(service, body)
+local function query(service: string, body: string)
   return roto.wire(service, "POST", "/", {
     headers = { ["content-type"] = "application/x-www-form-urlencoded" }, body = body,
   })
 end
-local function checked(service, operation, input)
+local function checked(service: string, operation: string, input: { [string]: any }): any
   local result = roto.call(service, operation, input)
   assert(not result.FailedEntryCount or result.FailedEntryCount == 0, operation .. " had failed entries")
   return result
@@ -39,7 +40,7 @@ s3("DELETE", "/demo-archive/removed.txt")
 
 -- Items include nested documents, lists, sets, booleans, and nulls.
 for _, name in ipairs({ "demo-orders", "demo-empty-table" }) do
-  roto.call("dynamodb", "CreateTable", {
+  roto.aws.dynamodb.CreateTable({
     TableName = name, BillingMode = "PAY_PER_REQUEST",
     KeySchema = { { AttributeName = "order_id", KeyType = "HASH" } },
     AttributeDefinitions = { { AttributeName = "order_id", AttributeType = "S" } },
@@ -47,7 +48,7 @@ for _, name in ipairs({ "demo-orders", "demo-empty-table" }) do
   })
 end
 for i, customer in ipairs({ "Ada", "Linus", "Grace", "Ken", "Margaret", "Barbara" }) do
-  roto.call("dynamodb", "PutItem", { TableName = "demo-orders", Item = {
+  roto.aws.dynamodb.PutItem({ TableName = "demo-orders", Item = {
     order_id = { S = "ORDER-" .. (1000 + i) }, customer = { S = customer }, total = { N = tostring(i * 19.5) },
     paid = { BOOL = i % 2 == 0 }, shipping = { M = { city = { S = "Helsinki" }, priority = { BOOL = false } } },
     labels = { SS = { "demo", "fixtures" } }, notes = { NULL = true },
@@ -60,11 +61,11 @@ local orders = roto.sqs.queue("demo-orders", { visibility_timeout = 30, tags = t
 local dead = roto.sqs.queue("demo-dead-letter", { tags = tags })
 local events = roto.sqs.queue("demo-events", { tags = tags })
 for i = 1, 3 do
-  roto.call("sqs", "SendMessage", { QueueUrl = orders.url, MessageBody = string.format('{"order_id":"ORDER-%d","action":"ship"}', 1000 + i),
+  roto.aws.sqs.SendMessage({ QueueUrl = orders.url, MessageBody = string.format('{"order_id":"ORDER-%d","action":"ship"}', 1000 + i),
     MessageAttributes = { source = { DataType = "String", StringValue = "demo-shop" } },
   })
 end
-roto.call("sqs", "SendMessage", { QueueUrl = dead.url, MessageBody = '{"order_id":"ORDER-0999","error":"payment declined"}' })
+roto.aws.sqs.SendMessage({ QueueUrl = dead.url, MessageBody = '{"order_id":"ORDER-0999","error":"payment declined"}' })
 
 -- Real invocations with readable results and logs, including an intentional failure.
 local echo = roto.lambda.fn("demo-echo", {
@@ -80,8 +81,8 @@ roto.wire("lambda", "POST", "/2015-03-31/functions/" .. echo.name .. "/invocatio
 roto.wire("lambda", "POST", "/2015-03-31/functions/" .. fail.name .. "/invocations", { body = { order_id = "ORDER-0999" } })
 
 -- EventBridge deliveries complete after startup, while the queue retains the events.
-roto.call("events", "CreateEventBus", { Name = "demo-shop" })
-roto.call("events", "PutRule", { EventBusName = "demo-shop", Name = "demo-orders", Description = "Route demo orders to SQS and Lambda",
+roto.aws.events.CreateEventBus({ Name = "demo-shop" })
+roto.aws.events.PutRule({ EventBusName = "demo-shop", Name = "demo-orders", Description = "Route demo orders to SQS and Lambda",
   EventPattern = '{"source":["demo.shop"]}', State = "ENABLED" })
 checked("events", "PutTargets", { EventBusName = "demo-shop", Rule = "demo-orders", Targets = {
   { Id = "queue", Arn = events.arn }, { Id = "echo", Arn = echo.arn },
@@ -95,22 +96,22 @@ s3("PUT", "/demo-archive", string.format([[<NotificationConfiguration><CloudFunc
 s3("PUT", "/demo-archive/undelivered.json", { message = "Missing Lambda target demonstrates delivery retries" })
 
 -- Configuration versions and relationships across the remaining services.
-roto.call("ssm", "PutParameter", { Name = "/demo/shop/environment", Type = "String", Value = "development" })
-roto.call("ssm", "PutParameter", { Name = "/demo/shop/environment", Type = "String", Value = "demo", Overwrite = true })
-roto.call("ssm", "PutParameter", { Name = "/demo/shop/features", Type = "StringList", Value = "browse,search,download" })
-roto.call("ssm", "PutParameter", { Name = "/demo/shop/token", Type = "SecureString", Value = "fake-demo-token" })
-roto.call("secretsmanager", "CreateSecret", { Name = "demo/shop/database", Description = "Fake credentials for UI fixtures",
+roto.aws.ssm.PutParameter({ Name = "/demo/shop/environment", Type = "String", Value = "development" })
+roto.aws.ssm.PutParameter({ Name = "/demo/shop/environment", Type = "String", Value = "demo", Overwrite = true })
+roto.aws.ssm.PutParameter({ Name = "/demo/shop/features", Type = "StringList", Value = "browse,search,download" })
+roto.aws.ssm.PutParameter({ Name = "/demo/shop/token", Type = "SecureString", Value = "fake-demo-token" })
+roto.aws.secretsmanager.CreateSecret({ Name = "demo/shop/database", Description = "Fake credentials for UI fixtures",
   SecretString = '{"username":"demo","password":"not-a-real-password"}', Tags = { { Key = "purpose", Value = "demo-fixtures" } } })
-roto.call("secretsmanager", "PutSecretValue", { SecretId = "demo/shop/database", SecretString = '{"username":"demo","password":"rotated-demo-password"}' })
+roto.aws.secretsmanager.PutSecretValue({ SecretId = "demo/shop/database", SecretString = '{"username":"demo","password":"rotated-demo-password"}' })
 query("iam", "Action=CreateUser&Version=2010-05-08&UserName=demo-user&Path=%2Fdemo%2F")
 query("iam", "Action=CreateRole&Version=2010-05-08&RoleName=demo-reader&Description=Demo+read+role&AssumeRolePolicyDocument=%7B%22Version%22%3A%222012-10-17%22%2C%22Statement%22%3A%5B%5D%7D")
 query("sns", "Action=CreateTopic&Version=2010-03-31&Name=demo-updates")
 query("sns", "Action=Subscribe&Version=2010-03-31&TopicArn=arn%3Aaws%3Asns%3A" .. roto.region .. "%3A" .. roto.account_id .. "%3Ademo-updates&Protocol=sqs&Endpoint=arn%3Aaws%3Asqs%3A" .. roto.region .. "%3A" .. roto.account_id .. "%3Ademo-events")
 -- CloudFormation owns a second resource set, with relationships and outputs to browse.
-local function form_encode(value)
+local function form_encode(value: string)
   return (value:gsub("[^%w%-._~]", function(char) return string.format("%%%02X", string.byte(char)) end))
 end
-local function stack(name, template)
+local function stack(name: string, template: string)
   query("cloudformation", "Action=CreateStack&Version=2010-05-15&StackName=" .. name .. "&TemplateBody=" .. form_encode(template)
     .. "&Tags.member.1.Key=purpose&Tags.member.1.Value=demo-fixtures")
 end

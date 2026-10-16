@@ -1,11 +1,15 @@
 # Lua API reference
 
 This chapter is the single reference for every Roto-provided Lua symbol. Roto embeds
-Lua 5.4; no separate Lua installation is required. Standard Lua libraries are
-available. Scripts are trusted local code running with the server's OS permissions.
+[Luau](https://luau.org) (through `mlua`); no separate installation is required. The Luau
+standard library is available (`string`, `table`, `math`, `bit32`, `utf8`, `buffer`, and
+`os.time`/`os.date`/`os.clock`); there is no `io`, `os.execute` or `os.getenv`, so a
+script reaches the machine only through `roto.*` and the executors it configures.
+Scripts are trusted local code. Luau is gradually typed: start a script with `--!strict`
+to check it against the [type definitions](lua-types.md).
 For a guided introduction see [Lua setup](lua.md); for worked callback examples see
 [Runtime hooks](runtime-hooks.md). Editor completion and checks for every symbol here
-are available through the [Lua type stubs](lua-types.md).
+are available through the [Luau type definitions](lua-types.md).
 
 There are two separate environments with different `roto` tables:
 
@@ -60,8 +64,9 @@ account and `us-east-1`. The script is the authority for its scope: call
 later setup call (`set_account` also forces that account for every request, whatever the
 access key says, which suits single-account apps), and read `roto.region` / `roto.account_id` for the current values. To
 take a value from the command line, pass `--set REGION=eu-west-1` and use
-`roto.set_region(roto.vars.REGION)`. `require("module")` searches beside the
-setup script first, including `module.lua` and `module/init.lua`.
+`roto.set_region(roto.vars.REGION)`. `require("./module")` loads `module.luau`, `module.lua` or
+`module/init.luau` beside the setup script (Luau string requires: the path is relative to
+the requiring file and must start with `./` or `../`).
 `--set KEY=VALUE` (repeatable) passes string parameters to the script as `roto.vars.KEY`.
 
 | Value or function | Meaning |
@@ -640,9 +645,9 @@ for connection closure and repeat-subscription behavior.
 ### Callback limits
 
 All callbacks from one setup script execute serially. Lua deadline checks run
-every 1,000 instructions: one second for interceptors and MQTT hooks, and the
+at function calls and loop iterations: one second for interceptors and MQTT hooks, and the
 configured timeout for Lambdas. Blocking native calls such as file I/O or
-`os.execute` cannot be interrupted by these checks. Runtime callbacks may use
+file I/O in an executor cannot be interrupted by these checks. Runtime callbacks may use
 `roto.array` and `roto.null`, but cannot call setup APIs or register more hooks.
 
 ## Service modules

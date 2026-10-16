@@ -87,8 +87,8 @@ Inline functions use the normal invocation and event delivery machinery. Their
 bindings are process-local: rerun setup after restarting. Already-persisted jobs
 referencing an earlier process's inline handler fail rather than invoke a new
 handler accidentally. Callbacks from one setup script execute serially. Lua
-instruction checks enforce the function timeout for Lua code, but cannot
-interrupt blocking native calls such as `os.execute` or file I/O. Resource setup
+deadline checks (at calls and loop iterations) enforce the function timeout for Lua code,
+but cannot interrupt a blocking native call. Resource setup
 helpers and `roto.call`/`roto.wire` are unavailable inside runtime callbacks.
 
 ## Intercept AWS requests from Lua

@@ -1,3 +1,4 @@
+--!strict
 -- Run with: roto-server --ephemeral --setup examples/lua/setup.lua
 local jobs = roto.sqs.queue("jobs", { visibility_timeout = 30 })
 local process_job = roto.lambda.fn("process-job", {

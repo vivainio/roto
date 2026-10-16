@@ -441,12 +441,7 @@ impl LuaService {
         let lua = &runtime.lua;
         runtime.db.transaction(|tx| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            lua.set_hook(mlua::HookTriggers::new().every_nth_instruction(1000), move |_, _| {
-                if std::time::Instant::now() >= deadline {
-                    return Err(mlua::Error::external("Lua service timed out"));
-                }
-                Ok(mlua::VmState::Continue)
-            }).map_err(lua_error)?;
+            crate::setup::set_deadline(lua, deadline, "Lua service timed out");
             let result = lua.scope(|scope| {
                 let db = lua.create_table()?;
                 db.set("get", scope.create_function(|lua, (namespace, id): (String, String)| {
@@ -478,7 +473,7 @@ impl LuaService {
                 let output: LuaValue = function.call((context, lua.to_value(&input)?, db))?;
                 lua.from_value::<Value>(output)
             });
-            lua.remove_hook();
+            lua.remove_interrupt();
             result.map_err(lua_error)
         })
     }
