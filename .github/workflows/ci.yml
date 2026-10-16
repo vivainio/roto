@@ -17,6 +17,20 @@ jobs:
           python3 tests/smoke-s3-browser.py
       - name: Generated code is up to date
         run: scripts/gen.sh && git diff --exit-code
+  luau-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install luau-lsp 1.70.1
+        run: |
+          curl -fsSL -o luau-lsp.zip https://github.com/JohnnyMorganz/luau-lsp/releases/download/1.70.1/luau-lsp-linux-x86_64.zip
+          echo "1a2ea1ae4f98f8946cefd970a4b54853e11ab4775e6932faa7f60cf920346567  luau-lsp.zip" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin" && unzip -q luau-lsp.zip -d "$HOME/.local/bin" && chmod +x "$HOME/.local/bin/luau-lsp"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Setup scripts type-check against the generated definitions
+        run: scripts/check-luau-types.sh
   mqtt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
