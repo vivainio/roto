@@ -376,6 +376,7 @@ impl Lambda {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for Lambda {
     fn create_event_source_mapping(
         &self,

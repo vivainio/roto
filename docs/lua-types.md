@@ -5,9 +5,12 @@ definitions for everything it provides, so the Luau type checker flags a misspel
 a missing field or a wrong value type before you start the server. They cover:
 
 - every `roto.*` helper: option tables, return tables and callback signatures
-- every operation of the AWS services Roto implements, through typed clients
-  (`roto.aws.s3.PutBucketCors({ ... })`): the input and output of each operation come
-  from the AWS service models
+- typed AWS clients (`roto.aws.s3.PutBucketCors({ ... })`): the input and output of each
+  operation come from the AWS service models. The core services (`s3`, `sqs`, `sns`,
+  `dynamodb`, `lambda`) are typed for every operation Roto implements; `iam`, `sts`, `ssm`,
+  `secretsmanager`, `kms`, `events`, `kinesis` and `cloudformation` for the operations setup
+  scripts commonly use. Other services and operations stay callable through the untyped
+  `roto.call`
 - the shapes passed to request and MQTT hooks, and to inline Lambda handlers
 
 Nothing is checked at runtime by the definitions; the server still rejects unknown
@@ -24,20 +27,13 @@ Neovim, Zed and others) completion and hover for the definitions:
 
 ```sh
 roto-server --lua-stubs types          # writes types/roto.d.luau
-luau-lsp analyze --platform=standard \
-  --flag:LuauTarjanChildLimit=1000000 \
-  --definitions=types/roto.d.luau setup.lua
+luau-lsp analyze --platform=standard --definitions=types/roto.d.luau setup.lua
 ```
 
-The AWS models are large, so raise Luau's `LuauTarjanChildLimit` as shown; without it the
-checker gives up with "Code is too complex to typecheck". In an editor, set the same in the
-luau-lsp settings:
+In an editor, point luau-lsp at the file:
 
 ```json
-{
-  "luau-lsp.types.definitionFiles": { "roto": "types/roto.d.luau" },
-  "luau-lsp.fflags.override": { "LuauTarjanChildLimit": "1000000" }
-}
+{ "luau-lsp.types.definitionFiles": { "roto": "types/roto.d.luau" } }
 ```
 
 The definitions work with both Luau type solvers; the new solver
@@ -47,8 +43,11 @@ The definitions work with both Luau type solvers; the new solver
 
 `roto.aws.<service>.<Operation>(input)` is `roto.call("<service>", "<Operation>", input)`
 with checked tables. Services: `cloudformation`, `dynamodb`, `events` (also
-`eventbridge`), `iam`, `kinesis`, `kms`, `lambda`, `logs`, `s3`, `secretsmanager`, `sns`,
-`sqs`, `ssm` and `sts`.
+`eventbridge`), `iam`, `kinesis`, `kms`, `lambda`, `s3`, `secretsmanager`, `sns`, `sqs`,
+`ssm` and `sts`. Which operations are typed is set in `crates/roto-server/typed-operations.json`;
+a test checks that each one is implemented. In `--!strict` code a service or operation
+without a typed client is a type error, but the call still works at runtime through
+`roto.call`.
 
 ```lua
 --!strict

@@ -786,6 +786,7 @@ fn validate_visibility(v: i32) -> Result<(), AwsError> {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for Sqs {
     fn create_queue(
         &self,

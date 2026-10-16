@@ -212,6 +212,7 @@ fn random_session_token() -> String {
     format!("{PREFIX}{}", &b64[PREFIX.len()..])
 }
 
+#[roto_core::implements_operations]
 impl Service for Sts {
     fn get_caller_identity(
         &self,

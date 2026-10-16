@@ -5,6 +5,11 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+include!("src/prune.rs");
+
+/// Models the `roto.call` XML codec reads at runtime in full; the rest only feed the types.
+const RUNTIME_MODELS: &[&str] = &["s3", "iam", "sns", "sts", "cloudformation"];
+
 const MODELS: &[&str] = &[
     "cloudformation",
     "dynamodb",
@@ -13,7 +18,6 @@ const MODELS: &[&str] = &[
     "kinesis",
     "kms",
     "lambda",
-    "logs",
     "s3",
     "secretsmanager",
     "sns",
@@ -42,12 +46,32 @@ fn main() {
     let models =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../models");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let typed: serde_json::Map<String, Value> =
+        serde_json::from_str(&std::fs::read_to_string("typed-operations.json").unwrap()).unwrap();
+    println!("cargo:rerun-if-changed=typed-operations.json");
     for name in MODELS {
         let source = models.join(name).join("service-2.json");
         println!("cargo:rerun-if-changed={}", source.display());
         let mut model: Value = serde_json::from_str(&std::fs::read_to_string(&source).unwrap())
             .unwrap_or_else(|e| panic!("{}: {e}", source.display()));
         strip(&mut model);
+        // eventbridge's `roto.aws` name is `events`. A list prunes types-only models here; a
+        // service typed in full ("implemented") is pruned by the generator, which can see
+        // what the service implements.
+        let service = if *name == "eventbridge" {
+            "events"
+        } else {
+            name
+        };
+        if !RUNTIME_MODELS.contains(name)
+            && let Some(list) = typed[service].as_array()
+        {
+            let operations: Vec<String> = list
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            prune(&mut model, &operations);
+        }
         std::fs::write(
             out.join(format!("{name}.json")),
             serde_json::to_string(&model).unwrap(),

@@ -502,6 +502,7 @@ impl Sns {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for Sns {
     fn create_topic(
         &self,

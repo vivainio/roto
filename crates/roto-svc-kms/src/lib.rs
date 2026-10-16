@@ -278,6 +278,7 @@ pub const IMPLEMENTED: &[&str] = &[
     "GenerateDataKey",
     "GenerateDataKeyWithoutPlaintext",
 ];
+#[roto_core::implements_operations]
 impl Service for Kms {
     fn create_alias(
         &self,

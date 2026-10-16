@@ -94,6 +94,7 @@ impl Iam {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for Iam {
     fn create_instance_profile(
         &self,

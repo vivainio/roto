@@ -349,6 +349,7 @@ impl EventBridge {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for EventBridge {
     fn create_event_bus(
         &self,

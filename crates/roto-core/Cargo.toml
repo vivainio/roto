@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+roto-macros = { version = "0.0.0-dev", path = "../roto-macros" }
 diesel = { version = "2.3.14", default-features = false, features = ["sqlite", "32-column-tables", "returning_clauses_for_sqlite_3_35"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 thiserror = "2.0.21"

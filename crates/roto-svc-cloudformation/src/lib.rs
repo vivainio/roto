@@ -1055,6 +1055,7 @@ fn parameters(
     Ok(result)
 }
 
+#[roto_core::implements_operations]
 impl Service for CloudFormation {
     fn create_change_set(
         &self,

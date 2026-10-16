@@ -951,6 +951,7 @@ impl S3 {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for S3 {
     // ---- buckets ----
     fn list_buckets(

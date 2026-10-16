@@ -133,6 +133,7 @@ impl CloudWatchLogs {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for CloudWatchLogs {
     fn create_log_group(
         &self,

@@ -404,6 +404,7 @@ fn check_resource(
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for Ssm {
     fn put_parameter(
         &self,

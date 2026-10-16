@@ -1,0 +1,16 @@
+{
+  "_comment": "Services with typed roto.aws clients. \"implemented\" types every operation the service implements; a list types only those. Others stay callable through the untyped roto.call.",
+  "dynamodb": "implemented",
+  "lambda": "implemented",
+  "s3": "implemented",
+  "sns": "implemented",
+  "sqs": "implemented",
+  "cloudformation": ["CreateStack", "DescribeStacks"],
+  "events": ["CreateEventBus", "PutRule", "PutTargets", "PutEvents"],
+  "iam": ["CreateRole", "GetRole", "PutRolePolicy"],
+  "kinesis": ["CreateStream", "DescribeStream", "PutRecord"],
+  "kms": ["CreateKey", "Encrypt", "Decrypt"],
+  "secretsmanager": ["CreateSecret", "PutSecretValue", "GetSecretValue"],
+  "ssm": ["PutParameter", "GetParameter", "GetParametersByPath"],
+  "sts": ["GetCallerIdentity"]
+}

@@ -998,6 +998,7 @@ fn call(
     Ok(result)
 }
 
+#[roto_core::implements_operations]
 impl Service for Kinesis {
     fn update_shard_count(
         &self,

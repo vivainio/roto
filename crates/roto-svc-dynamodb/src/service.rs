@@ -754,6 +754,7 @@ impl DynamoDb {
     }
 }
 
+#[roto_core::implements_operations]
 impl Service for DynamoDb {
     fn put_item(&self, ctx: &RequestContext, i: PutItemInput) -> Result<PutItemOutput, AwsError> {
         self.db

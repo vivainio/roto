@@ -485,6 +485,7 @@ fn random_password(i: &GetRandomPasswordRequest) -> Result<String, AwsError> {
     Ok(out.into_iter().collect())
 }
 
+#[roto_core::implements_operations]
 impl Service for SecretsManager {
     fn create_secret(
         &self,

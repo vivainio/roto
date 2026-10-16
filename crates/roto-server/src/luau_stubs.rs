@@ -7,6 +7,9 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
+/// The operations given typed clients, per `roto.aws` service.
+const TYPED: &str = include_str!("../typed-operations.json");
+
 const TEMPLATE: &str = include_str!("luau_stubs.d.luau");
 
 /// `(roto.aws name, model)` for every service with a model; `eventbridge` shares `events`.
@@ -33,7 +36,6 @@ pub(crate) const MODELS: &[(&str, &str)] = &[
         "lambda",
         include_str!(concat!(env!("OUT_DIR"), "/lambda.json")),
     ),
-    ("logs", include_str!(concat!(env!("OUT_DIR"), "/logs.json"))),
     ("s3", include_str!(concat!(env!("OUT_DIR"), "/s3.json"))),
     (
         "secretsmanager",
@@ -49,7 +51,8 @@ pub(crate) fn render() -> String {
     let mut clients = String::new();
     let mut shapes = String::new();
     for (service, text) in MODELS {
-        let model: Value = serde_json::from_str(text).expect("embedded model");
+        let mut model: Value = serde_json::from_str(text).expect("embedded model");
+        crate::prune::prune(&mut model, &typed_operations(service));
         write_service(service, &model, &mut clients, &mut shapes);
         if *service == "events" {
             let _ = writeln!(clients, "\t\teventbridge: aws_events_Client,");
@@ -58,6 +61,25 @@ pub(crate) fn render() -> String {
     TEMPLATE
         .replace("--@@AWS_CLIENTS@@\n", &clients)
         .replace("--@@AWS_SHAPES@@\n", &shapes)
+}
+
+/// The operations `service` gets typed clients for: all it implements, or a chosen list.
+pub(crate) fn typed_operations(service: &str) -> Vec<String> {
+    let all: serde_json::Map<String, Value> =
+        serde_json::from_str(TYPED).expect("typed operations");
+    match &all[service] {
+        Value::String(mode) if mode == "implemented" => crate::supported::operations(service)
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect(),
+        list => list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+    }
 }
 
 const KEYWORDS: &[&str] = &[

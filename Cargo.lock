@@ -1643,9 +1643,19 @@ name = "roto-core"
 version = "0.0.0-dev"
 dependencies = [
  "diesel",
+ "roto-macros",
  "rusqlite",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "roto-macros"
+version = "0.0.0-dev"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
