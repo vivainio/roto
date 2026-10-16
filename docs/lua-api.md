@@ -11,6 +11,20 @@ For a guided introduction see [Lua setup](lua.md); for worked callback examples 
 [Runtime hooks](runtime-hooks.md). Editor completion and checks for every symbol here
 are available through the [Luau type definitions](lua-types.md).
 
+## Upgrading from Lua 5.4 scripts
+
+Setup scripts now run on Luau instead of Lua 5.4. What changes:
+
+- Name script files `*.luau`. `--setup` takes any path, but `require` only finds `.luau`
+  (or `.lua`) files beside the requiring script, and Lua service bundles need `.luau`.
+- `require("module")` becomes `require("./module")` (relative to the requiring file).
+- `io`, `os.execute` and `os.getenv` are gone. Pass values with `--set KEY=VALUE`
+  (`roto.vars`) and do work through `roto.*` or an executor.
+- Numbers are doubles; there is no integer subtype.
+- `--setup-region` is gone: call `roto.set_region(...)`.
+- Type definitions are `roto.d.luau` for luau-lsp (`roto-server --lua-stubs DIR`); the
+  LuaLS `roto.d.lua` is no longer generated. See [Luau types](lua-types.md).
+
 There are two separate environments with different `roto` tables:
 
 - **Setup environment**: `--setup setup.luau` and `POST /roto-api/lua`. One shared VM that

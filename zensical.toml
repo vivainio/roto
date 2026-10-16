@@ -37,7 +37,7 @@ nav = [
     { "Setup tutorial" = "lua.md" },
     { "Runtime hooks" = "runtime-hooks.md" },
     { "API reference" = "lua-api.md" },
-    { "Editor support" = "lua-types.md" },
+    { "Luau types" = "lua-types.md" },
   ] },
   { "Examples and testing" = [
     { "Container example" = "demos.md" },
