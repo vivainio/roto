@@ -62,9 +62,6 @@ struct Args {
     /// Trusted Lua resource setup, run before listening or processing events.
     #[arg(long)]
     setup: Option<PathBuf>,
-    /// Region used by the Lua setup script.
-    #[arg(long, default_value = "us-east-1")]
-    setup_region: String,
     /// String variable exposed to the Lua setup script as `roto.vars.KEY`; repeatable.
     #[arg(long = "set", value_name = "KEY=VALUE", value_parser = parse_set_var)]
     set: Vec<(String, String)>,
@@ -79,11 +76,25 @@ struct Args {
     trace: Option<PathBuf>,
 }
 
+impl App {
+    /// Set by the setup script's `roto.set_account`: every request then runs in this account.
+    fn forced_account(&self) -> Option<String> {
+        self.hooks.lock().unwrap().forced_account()
+    }
+
+    /// Account for server-originated work (setup, inspection, MQTT).
+    fn account_id(&self) -> String {
+        self.forced_account()
+            .unwrap_or_else(|| self.default_account.clone())
+    }
+}
+
 struct App {
     services: HashMap<&'static str, Arc<dyn ServiceHandler>>,
     #[allow(dead_code)] // handed to stateful services as they are added
     store: Arc<Store>,
-    account_id: String,
+    /// Account for requests whose key names none; a script's `roto.set_account` overrides it.
+    default_account: String,
     unsupported: unsupported::Unsupported,
     trace: trace::Trace,
     gateway: gateway::Gateway,
@@ -264,7 +275,7 @@ async fn main() {
         args.port
     );
     let lua_api = args.enable_lua_api.then(|| lua_api::LuaApi {
-        region: args.setup_region.clone(),
+        region: "us-east-1".into(),
         endpoint: endpoint.clone(),
         vars: args.set.clone(),
         sqs: setup_sqs.clone(),
@@ -275,7 +286,7 @@ async fn main() {
     let app = Arc::new(App {
         services,
         store,
-        account_id: args.account_id,
+        default_account: args.account_id,
         unsupported: Default::default(),
         trace,
         gateway,
@@ -307,8 +318,8 @@ async fn main() {
     if let Some(path) = args.setup {
         let set_vars = args.set;
         let ctx = RequestContext {
-            account_id: app.account_id.clone(),
-            region: args.setup_region,
+            account_id: app.account_id(),
+            region: "us-east-1".into(),
             access_key: None,
             request_id: ids::request_id(),
             base_url: endpoint.clone(),
@@ -535,7 +546,7 @@ async fn s3_browser(
         ..Default::default()
     };
     let ctx = RequestContext {
-        account_id: app.account_id.clone(),
+        account_id: app.account_id(),
         region: "us-east-1".into(),
         access_key: None,
         request_id: ids::request_id(),
@@ -578,11 +589,13 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         .map(|s| s.service.clone())
         .or_else(|| host_service(&raw));
     let access_key = scope.as_ref().map(|s| s.access_key.clone());
-    let account_id = access_key
-        .as_deref()
-        .and_then(|k| app.services.values().find_map(|svc| svc.resolve_account(k)))
-        .or_else(|| access_key.as_deref().and_then(account_id_from_access_key))
-        .unwrap_or_else(|| app.account_id.clone());
+    let account_id = app.forced_account().unwrap_or_else(|| {
+        access_key
+            .as_deref()
+            .and_then(|k| app.services.values().find_map(|svc| svc.resolve_account(k)))
+            .or_else(|| access_key.as_deref().and_then(account_id_from_access_key))
+            .unwrap_or_else(|| app.default_account.clone())
+    });
     let ctx = RequestContext {
         account_id,
         region: scope
@@ -671,7 +684,7 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .unwrap_or_else(|| "127.0.0.1".into());
         let protocol = format!("{:?}", parts.version);
         let mut ctx = ctx;
-        ctx.account_id = app.account_id.clone();
+        ctx.account_id = app.account_id();
         ctx.access_key = None;
         let app = app.clone();
         let response_request = raw.clone();
@@ -1007,7 +1020,7 @@ mod discovery_tests {
         Arc::new(App {
             services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
             store,
-            account_id: "123456789012".into(),
+            default_account: "123456789012".into(),
             unsupported: Default::default(),
             trace: trace::Trace::create(None).unwrap(),
             gateway: Default::default(),
@@ -1072,7 +1085,7 @@ mod discovery_tests {
         let response = handler
             .handle(
                 &RequestContext {
-                    account_id: app.account_id.clone(),
+                    account_id: app.account_id(),
                     region: "us-east-1".into(),
                     access_key: None,
                     request_id: "reset".into(),
@@ -1114,7 +1127,7 @@ roto.hooks.request("iotdata", "Publish", function() return {status=429, body="th
         )
         .unwrap();
         let ctx = RequestContext {
-            account_id: app.account_id.clone(),
+            account_id: app.account_id(),
             region: "us-east-1".into(),
             access_key: None,
             request_id: "setup".into(),

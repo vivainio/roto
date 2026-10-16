@@ -531,7 +531,10 @@ fn describe_call(path: &str, strings: &[String]) -> (Option<String>, String, Opt
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct Hooks(Arc<std::sync::Mutex<HashMap<HookKey, Callback>>>);
+pub struct Hooks(
+    Arc<std::sync::Mutex<HashMap<HookKey, Callback>>>,
+    Arc<std::sync::Mutex<Option<String>>>,
+);
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum HookKey {
     Service(String, String),
@@ -576,6 +579,14 @@ impl Hooks {
     pub fn extend(&self, other: Hooks) {
         let added = other.0.lock().unwrap().clone();
         self.0.lock().unwrap().extend(added);
+        if let Some(account) = other.forced_account() {
+            *self.1.lock().unwrap() = Some(account);
+        }
+    }
+
+    /// Account forced by `roto.set_account`, if the script called it.
+    pub fn forced_account(&self) -> Option<String> {
+        self.1.lock().unwrap().clone()
     }
 
     pub fn matches(&self, service: &str, operation: Option<&str>) -> bool {
@@ -768,6 +779,32 @@ pub fn run_traced(
     run_source(source, ctx, vars, sqs, lambda, s3, services).map(|(hooks, _)| hooks)
 }
 
+/// Setup context whose account and region the script can change after startup.
+#[derive(Clone)]
+struct Scope {
+    base: RequestContext,
+    current: Arc<std::sync::Mutex<(String, String)>>,
+}
+
+impl Scope {
+    fn new(base: RequestContext) -> Self {
+        let current = (base.account_id.clone(), base.region.clone());
+        Self {
+            base,
+            current: Arc::new(std::sync::Mutex::new(current)),
+        }
+    }
+
+    fn get(&self) -> RequestContext {
+        let (account_id, region) = self.current.lock().unwrap().clone();
+        RequestContext {
+            account_id,
+            region,
+            ..self.base.clone()
+        }
+    }
+}
+
 /// Runs `source`; returns the hooks it registered and, for posted scripts, its return value.
 pub fn run_source(
     source: Source,
@@ -786,8 +823,44 @@ pub fn run_source(
     let roto = lua.create_table()?;
     roto.set("version", env!("CARGO_PKG_VERSION"))?;
     roto.set("api_version", LUA_API_VERSION)?;
+    // The script is the authority for account and region: these re-scope every later setup call.
+    let scope = Scope::new(ctx.clone());
     roto.set("account_id", ctx.account_id.clone())?;
     roto.set("region", ctx.region.clone())?;
+    let region_scope = scope.clone();
+    roto.set(
+        "set_region",
+        lua.create_function(move |lua, region: String| {
+            setup_only(lua)?;
+            let valid = !region.is_empty()
+                && region
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !valid {
+                return Err(mlua::Error::external(format!("Invalid region: {region}")));
+            }
+            region_scope.current.lock().unwrap().1 = region.clone();
+            lua.globals().get::<Table>("roto")?.set("region", region)
+        })?,
+    )?;
+    let account_scope = scope.clone();
+    let forced_account = hooks.clone();
+    roto.set(
+        "set_account",
+        lua.create_function(move |lua, account: String| {
+            setup_only(lua)?;
+            if account.len() != 12 || !account.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(mlua::Error::external(format!(
+                    "Invalid account id: {account} (expected 12 digits)"
+                )));
+            }
+            account_scope.current.lock().unwrap().0 = account.clone();
+            *forced_account.1.lock().unwrap() = Some(account.clone());
+            lua.globals()
+                .get::<Table>("roto")?
+                .set("account_id", account)
+        })?,
+    )?;
     roto.set("endpoint", ctx.base_url.clone())?;
     let roto_vars = lua.create_table()?;
     for (key, value) in vars {
@@ -839,7 +912,7 @@ pub fn run_source(
     let sqs_api = lua.create_table()?;
     let lambda_api = lua.create_table()?;
 
-    let (q_service, q_ctx) = (sqs.clone(), ctx.clone());
+    let (q_service, q_ctx) = (sqs.clone(), scope.clone());
     sqs_api.set("queue",lua.create_function(move |lua,(name,opts): (String,Option<Table>)| {
         setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
@@ -852,19 +925,19 @@ pub fn run_source(
             LuaValue::Nil => Default::default(), value => lua.from_value(value)?,
         };
         // Get first so changing attributes does not conflict with CreateQueue on persisted state.
-        let url = match roto_svc_sqs::dispatch(q_service.as_ref(),&q_ctx,"GetQueueUrl",&json!({"QueueName":name})) {
+        let url = match roto_svc_sqs::dispatch(q_service.as_ref(),&q_ctx.get(),"GetQueueUrl",&json!({"QueueName":name})) {
             Ok(r) => decode(r)?,
-            Err(e) if e.code == "AWS.SimpleQueueService.NonExistentQueue" => sqs_call(&q_service,&q_ctx,"CreateQueue",json!({"QueueName":name,"Attributes":attributes,"tags":tags}))?,
+            Err(e) if e.code == "AWS.SimpleQueueService.NonExistentQueue" => sqs_call(&q_service,&q_ctx.get(),"CreateQueue",json!({"QueueName":name,"Attributes":attributes,"tags":tags}))?,
             Err(e) => return Err(mlua::Error::external(e)),
         };
         let url = url["QueueUrl"].as_str().ok_or_else(|| mlua::Error::external("Missing queue URL"))?;
-        if !attributes.is_empty() { sqs_call(&q_service,&q_ctx,"SetQueueAttributes",json!({"QueueUrl":url,"Attributes":attributes}))?; }
-        if !tags.is_empty() { sqs_call(&q_service,&q_ctx,"TagQueue",json!({"QueueUrl":url,"Tags":tags}))?; }
-        lua.to_value(&json!({"name":name,"url":url,"arn":format!("arn:aws:sqs:{}:{}:{name}",q_ctx.region,q_ctx.account_id)}))
+        if !attributes.is_empty() { sqs_call(&q_service,&q_ctx.get(),"SetQueueAttributes",json!({"QueueUrl":url,"Attributes":attributes}))?; }
+        if !tags.is_empty() { sqs_call(&q_service,&q_ctx.get(),"TagQueue",json!({"QueueUrl":url,"Tags":tags}))?; }
+        lua.to_value(&json!({"name":name,"url":url,"arn":format!("arn:aws:sqs:{}:{}:{name}",q_ctx.get().region,q_ctx.get().account_id)}))
     })?)?;
 
     let s3_api = lua.create_table()?;
-    let (link_s3, link_ctx, link_parent) = (s3.clone(), ctx.clone(), parent.clone());
+    let (link_s3, link_ctx, link_parent) = (s3.clone(), scope.clone(), parent.clone());
     s3_api.set(
         "link",
         lua.create_function(
@@ -872,13 +945,19 @@ pub fn run_source(
                 setup_only(lua)?;
                 let attrs = link_attrs(lua, opts.as_ref(), &[])?;
                 link_s3
-                    .link_object(&link_ctx, &bucket, &key, &link_parent.join(&file), attrs)
+                    .link_object(
+                        &link_ctx.get(),
+                        &bucket,
+                        &key,
+                        &link_parent.join(&file),
+                        attrs,
+                    )
                     .map_err(mlua::Error::external)?;
                 lua.to_value(&json!({"bucket":bucket,"key":key}))
             },
         )?,
     )?;
-    let (link_s3, link_ctx, link_parent) = (s3.clone(), ctx.clone(), parent.clone());
+    let (link_s3, link_ctx, link_parent) = (s3.clone(), scope.clone(), parent.clone());
     s3_api.set(
         "link_dir",
         lua.create_function(
@@ -913,7 +992,7 @@ pub fn run_source(
                 for (rel, file) in &files {
                     link_s3
                         .link_object(
-                            &link_ctx,
+                            &link_ctx.get(),
                             &bucket,
                             &format!("{prefix}{rel}"),
                             file,
@@ -926,7 +1005,7 @@ pub fn run_source(
         )?,
     )?;
 
-    let (put_s3, put_ctx) = (s3.clone(), ctx.clone());
+    let (put_s3, put_ctx) = (s3.clone(), scope.clone());
     s3_api.set(
         "put",
         lua.create_function(
@@ -935,13 +1014,13 @@ pub fn run_source(
                 setup_only(lua)?;
                 let attrs = link_attrs(lua, opts.as_ref(), &[])?;
                 put_s3
-                    .put_inline(&put_ctx, &bucket, &key, body.as_bytes().to_vec(), attrs)
+                    .put_inline(&put_ctx.get(), &bucket, &key, body.as_bytes().to_vec(), attrs)
                     .map_err(mlua::Error::external)?;
                 lua.to_value(&json!({"bucket":bucket,"key":key}))
             },
         )?,
     )?;
-    let (bucket_s3, bucket_ctx) = (s3, ctx.clone());
+    let (bucket_s3, bucket_ctx) = (s3, scope.clone());
     let bucket_services = services.clone();
     s3_api.set(
         "bucket",
@@ -960,13 +1039,13 @@ pub fn run_source(
                 "bucket option",
             )?;
             bucket_s3
-                .ensure_bucket(&bucket_ctx, &name)
+                .ensure_bucket(&bucket_ctx.get(), &name)
                 .map_err(mlua::Error::external)?;
             let s3_call = |operation: &str, input: Value| -> mlua::Result<Value> {
                 let handler = bucket_services
                     .get("s3")
                     .ok_or_else(|| mlua::Error::external("Service unavailable: s3"))?;
-                aws_client::call(handler.as_ref(), &bucket_ctx, "s3", operation, &input)
+                aws_client::call(handler.as_ref(), &bucket_ctx.get(), "s3", operation, &input)
                     .map_err(mlua::Error::external)
             };
             if let Some(cors) = opts.get("cors") {
@@ -993,7 +1072,7 @@ pub fn run_source(
     )?;
 
     let dynamodb_api = lua.create_table()?;
-    let (table_services, table_ctx) = (services.clone(), ctx.clone());
+    let (table_services, table_ctx) = (services.clone(), scope.clone());
     dynamodb_api.set(
         "table",
         lua.create_function(move |lua, (name, opts): (String, LuaValue)| {
@@ -1007,7 +1086,13 @@ pub fn run_source(
                 .get("dynamodb")
                 .ok_or_else(|| mlua::Error::external("Service unavailable: dynamodb"))?;
             let call = |operation: &str, input: &Value| {
-                aws_client::call(handler.as_ref(), &table_ctx, "dynamodb", operation, input)
+                aws_client::call(
+                    handler.as_ref(),
+                    &table_ctx.get(),
+                    "dynamodb",
+                    operation,
+                    input,
+                )
             };
             // An existing table is kept as is: indexes cannot be reconciled in place.
             let description = match call("DescribeTable", &json!({"TableName":name})) {
@@ -1020,7 +1105,7 @@ pub fn run_source(
             lua.to_value(&json!({"name":name,"arn":description["TableArn"]}))
         })?,
     )?;
-    let (put_services, put_ctx) = (services.clone(), ctx.clone());
+    let (put_services, put_ctx) = (services.clone(), scope.clone());
     dynamodb_api.set(
         "put",
         lua.create_function(move |lua, (table, item): (String, LuaValue)| {
@@ -1037,7 +1122,7 @@ pub fn run_source(
             let item = attribute_value(&item)?["M"].clone();
             aws_client::call(
                 handler.as_ref(),
-                &put_ctx,
+                &put_ctx.get(),
                 "dynamodb",
                 "PutItem",
                 &json!({"TableName":table,"Item":item}),
@@ -1047,7 +1132,7 @@ pub fn run_source(
         })?,
     )?;
 
-    let (l_service, l_ctx, bind_parent) = (lambda.clone(), ctx.clone(), parent.clone());
+    let (l_service, l_ctx, bind_parent) = (lambda.clone(), scope.clone(), parent.clone());
     lambda_api.set(
         "bind",
         lua.create_function(move |lua, (name, value): (String, LuaValue)| {
@@ -1061,13 +1146,13 @@ pub fn run_source(
                 );
             }
             l_service
-                .bind_executor(&l_ctx, &name, executor)
+                .bind_executor(&l_ctx.get(), &name, executor)
                 .map_err(mlua::Error::external)?;
             lua.to_value(&json!({"name":name}))
         })?,
     )?;
 
-    let (l_service, l_ctx) = (lambda.clone(), ctx.clone());
+    let (l_service, l_ctx) = (lambda.clone(), scope.clone());
     let handler_lock = runtime_lock.clone();
     lambda_api.set("fn",lua.create_function(move |lua,(name,opts): (String,Table)| {
         setup_only(lua)?;
@@ -1096,22 +1181,22 @@ pub fn run_source(
             LuaValue::Nil => Default::default(), value => lua.from_value(value)?,
         };
         let mut input = json!({"FunctionName":name,"Timeout":timeout,"MemorySize":memory,"Description":description,"Environment":{"Variables":environment}});
-        let exists = roto_svc_lambda::dispatch(l_service.as_ref(),&l_ctx,"GetFunctionConfiguration",&json!({"FunctionName":name}));
+        let exists = roto_svc_lambda::dispatch(l_service.as_ref(),&l_ctx.get(),"GetFunctionConfiguration",&json!({"FunctionName":name}));
         let result = match exists {
-            Ok(_) => lambda_call(&l_service,&l_ctx,"UpdateFunctionConfiguration",input)?,
+            Ok(_) => lambda_call(&l_service,&l_ctx.get(),"UpdateFunctionConfiguration",input)?,
             Err(e) if e.code == "ResourceNotFoundException" => {
                 input["Runtime"] = json!("provided.al2023"); input["Handler"] = json!("external");
-                input["Role"] = json!(format!("arn:aws:iam::{}:role/roto-local",l_ctx.account_id));
+                input["Role"] = json!(format!("arn:aws:iam::{}:role/roto-local",l_ctx.get().account_id));
                 input["Code"] = json!({"ZipFile":""});
-                lambda_call(&l_service,&l_ctx,"CreateFunction",input)?
+                lambda_call(&l_service,&l_ctx.get(),"CreateFunction",input)?
             },
             Err(e) => return Err(mlua::Error::external(e)),
         };
-        l_service.bind_executor(&l_ctx,&name,executor).map_err(mlua::Error::external)?;
+        l_service.bind_executor(&l_ctx.get(),&name,executor).map_err(mlua::Error::external)?;
         lua.to_value(&json!({"name":name,"arn":result["FunctionArn"]}))
     })?)?;
 
-    let (m_service, m_ctx) = (lambda.clone(), ctx.clone());
+    let (m_service, m_ctx) = (lambda.clone(), scope.clone());
     lambda_api.set("event_source",lua.create_function(move |lua,(queue,function,opts): (Table,Table,Option<Table>)| {
         setup_only(lua)?;
         let opts = opts.unwrap_or(lua.create_table()?);
@@ -1120,21 +1205,21 @@ pub fn run_source(
         let function: String = function.get("arn")?;
         let mut input = json!({"EventSourceArn":source,"FunctionName":function,"BatchSize":opts.get::<Option<u32>>("batch_size")?.unwrap_or(10),"Enabled":opts.get::<Option<bool>>("enabled")?.unwrap_or(true)});
         if opts.get::<Option<bool>>("report_batch_item_failures")?.unwrap_or(false) { input["FunctionResponseTypes"] = json!(["ReportBatchItemFailures"]); }
-        let existing = lambda_call(&m_service,&m_ctx,"ListEventSourceMappings",json!({"EventSourceArn":source,"FunctionName":function}))?;
+        let existing = lambda_call(&m_service,&m_ctx.get(),"ListEventSourceMappings",json!({"EventSourceArn":source,"FunctionName":function}))?;
         let result = if let Some(mapping) = existing["EventSourceMappings"].as_array().and_then(|a| a.first()) {
             input.as_object_mut().unwrap().remove("EventSourceArn");
             input["UUID"] = mapping["UUID"].clone();
             // Explicitly reconcile partial responses, including turning the option off.
             {
                 input["FunctionResponseTypes"] = if opts.get::<Option<bool>>("report_batch_item_failures")?.unwrap_or(false) { json!(["ReportBatchItemFailures"]) } else { json!([]) };
-                lambda_call(&m_service,&m_ctx,"UpdateEventSourceMapping",input)?
+                lambda_call(&m_service,&m_ctx.get(),"UpdateEventSourceMapping",input)?
             }
-        } else { lambda_call(&m_service,&m_ctx,"CreateEventSourceMapping",input)? };
+        } else { lambda_call(&m_service,&m_ctx.get(),"CreateEventSourceMapping",input)? };
         lua.to_value(&result)
     })?)?;
 
     let call_services = services.clone();
-    let (call_sqs, call_lambda, call_ctx) = (sqs, lambda, ctx.clone());
+    let (call_sqs, call_lambda, call_ctx) = (sqs, lambda, scope.clone());
     roto.set(
         "call",
         lua.create_function(
@@ -1146,15 +1231,21 @@ pub fn run_source(
                 };
                 setup_only(lua)?;
                 let result = match service.as_str() {
-                    "sqs" => sqs_call(&call_sqs, &call_ctx, &operation, input)?,
-                    "lambda" => lambda_call(&call_lambda, &call_ctx, &operation, input)?,
+                    "sqs" => sqs_call(&call_sqs, &call_ctx.get(), &operation, input)?,
+                    "lambda" => lambda_call(&call_lambda, &call_ctx.get(), &operation, input)?,
                     other if aws_client::supports(other) => {
                         let name = aws_client::canonical(other);
                         let handler = call_services.get(name).ok_or_else(|| {
                             mlua::Error::external(format!("Service unavailable: {name}"))
                         })?;
-                        aws_client::call(handler.as_ref(), &call_ctx, name, &operation, &input)
-                            .map_err(mlua::Error::external)?
+                        aws_client::call(
+                            handler.as_ref(),
+                            &call_ctx.get(),
+                            name,
+                            &operation,
+                            &input,
+                        )
+                        .map_err(mlua::Error::external)?
                     }
                     _ => {
                         return Err(mlua::Error::external(format!(
@@ -1179,7 +1270,7 @@ pub fn run_source(
             value => serde_json::to_vec(&lua.from_value::<Value>(value)?).map_err(mlua::Error::external)?,
         };
         let handler = services.get(service.as_str()).ok_or_else(|| mlua::Error::external(format!("Unknown service: {service}")))?;
-        let response = handler.handle(&ctx,&RawRequest {method,path,query:opts.get::<Option<String>>("query")?.unwrap_or_default(),headers:headers.into_iter().map(|(k,v)| (k.to_ascii_lowercase(),v)).collect(),body}).map_err(mlua::Error::external)?;
+        let response = handler.handle(&scope.get(),&RawRequest {method,path,query:opts.get::<Option<String>>("query")?.unwrap_or_default(),headers:headers.into_iter().map(|(k,v)| (k.to_ascii_lowercase(),v)).collect(),body}).map_err(mlua::Error::external)?;
         if response.status >= 400 { return Err(mlua::Error::external(format!("AWS request failed ({}): {}",response.status,String::from_utf8_lossy(&response.body)))); }
         lua.to_value(&json!({"status":response.status,"headers":response.headers,"body":String::from_utf8_lossy(&response.body)}))
     })?)?;
@@ -1307,6 +1398,34 @@ mod tests {
         let path = dir.join("setup.lua");
         std::fs::write(&path, source).unwrap();
         path
+    }
+    #[test]
+    fn script_sets_account_and_region_for_later_calls() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(roto_svc_lambda::Lambda::new(&store, Default::default()).unwrap());
+        let path = script(
+            r#"
+roto.set_region("eu-west-1")
+roto.set_account("999999999999")
+assert(roto.region == "eu-west-1" and roto.account_id == "999999999999")
+local q = roto.sqs.queue("scoped")
+assert(q.arn == "arn:aws:sqs:eu-west-1:999999999999:scoped", q.arn)
+assert(not pcall(roto.set_region, "Not A Region"))
+assert(not pcall(roto.set_account, "123"))
+"#,
+        );
+        let hooks = run(
+            &path,
+            context(),
+            &[],
+            sqs,
+            lambda,
+            Arc::new(roto_svc_s3::S3::new(&store).unwrap()),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(hooks.forced_account().as_deref(), Some("999999999999"));
     }
     #[test]
     fn inline_handlers_and_interceptors_retain_closures_and_report_errors() {

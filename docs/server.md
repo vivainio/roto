@@ -18,8 +18,7 @@ roto-server --ephemeral --trace calls.jsonl
 | `--setup` | None | Lua resource setup and local Lambda executor bindings before listening or processing events |
 | `--lua-services <path>` | None | Optional Lua service directory or ZIP; also `ROTO_LUA_SERVICES` |
 | `--enable-lua-api` | Off | Accept Lua scripts at `POST /roto-api/lua` from loopback clients; see [Lua API](lua-api.md#running-scripts-on-a-live-server) |
-| `--setup-region` | `us-east-1` | Region used by Lua setup |
-| `--account-id` | `123456789012` | Default account; also `ROTO_ACCOUNT_ID` |
+| `--account-id` | `123456789012` | Default account (setup starts here; `roto.set_account` in the script overrides it and forces that account for all requests); also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
 
 Signed AWS service requests with known IAM access keys or STS session keys use

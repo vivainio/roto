@@ -99,7 +99,7 @@ async fn hook(app: &Arc<App>, operation: &str, mut request: Value) -> Result<Val
     }
     request["transport"] = json!("mqtt");
     request["operation"] = json!(operation);
-    let context = json!({"account_id":app.account_id,"region":"us-east-1",
+    let context = json!({"account_id":app.account_id(),"region":"us-east-1",
         "request_id":roto_core::ids::request_id()});
     let operation = operation.to_owned();
     tokio::task::spawn_blocking(move || hooks.mqtt(&operation, request, context))

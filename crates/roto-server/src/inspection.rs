@@ -555,7 +555,7 @@ pub async fn object(
         return error(StatusCode::NOT_FOUND, "S3 is not initialized");
     };
     let ctx = RequestContext {
-        account_id: app.account_id.clone(),
+        account_id: app.account_id(),
         region: "us-east-1".into(),
         access_key: None,
         request_id: ids::request_id(),

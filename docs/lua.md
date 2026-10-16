@@ -96,8 +96,10 @@ the AWS API. `fn` creates/updates the metadata and binds in one step. Executors 
 commands, HTTP endpoints, or RIE container image names; see [the Lambda reference](lambda.md).
 
 The script runs once on each startup after service initialization, before the HTTP listener
-and delivery workers start. `--account-id` and `--setup-region` (default `us-east-1`) set its
-scope. `roto.account_id`, `roto.region`, and `roto.endpoint` expose that scope to Lua.
+and delivery workers start. It starts in the `--account-id` account and `us-east-1`; the script owns its scope from
+there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
+`--set REGION=...` and `roto.vars` to take them from the command line).
+`roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
 `require("module")` searches the script directory first. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 

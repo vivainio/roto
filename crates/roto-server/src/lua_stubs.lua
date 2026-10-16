@@ -7,8 +7,10 @@
 ---@class roto
 ---@field version string Server version (informational).
 ---@field api_version integer Lua API level; bumped only on breaking changes.
----@field account_id string Setup account ID.
----@field region string Setup region.
+---@field account_id string Current setup account ID; change it with `set_account`.
+---@field region string Current setup region; change it with `set_region`.
+---@field set_account fun(account_id: string) Use this 12-digit account for later setup calls and force it for every request.
+---@field set_region fun(region: string) Scope later setup calls to this region.
 ---@field endpoint string Server base URL.
 ---@field vars table<string, string> Values from repeatable `--set KEY=VALUE` flags.
 ---@field null any Explicit JSON null.

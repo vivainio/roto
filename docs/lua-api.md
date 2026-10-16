@@ -54,8 +54,13 @@ roto-server --ephemeral --port 5071 --setup setup.lua
 ```
 
 Setup runs once on startup, after service initialization and before the listener
-and delivery workers start. `--account-id` and `--setup-region` select its scope
-(the default region is `us-east-1`). `require("module")` searches beside the
+and delivery workers start. the script starts in the `--account-id`
+account and `us-east-1`. The script is the authority for its scope: call
+`roto.set_region("eu-west-1")` and `roto.set_account("123456789012")` to re-scope every
+later setup call (`set_account` also forces that account for every request, whatever the
+access key says, which suits single-account apps), and read `roto.region` / `roto.account_id` for the current values. To
+take a value from the command line, pass `--set REGION=eu-west-1` and use
+`roto.set_region(roto.vars.REGION)`. `require("module")` searches beside the
 setup script first, including `module.lua` and `module/init.lua`.
 `--set KEY=VALUE` (repeatable) passes string parameters to the script as `roto.vars.KEY`.
 
@@ -516,7 +521,7 @@ For a full seed across eleven services, see the
 
 Start roto with `--enable-lua-api` to accept scripts at `POST /roto-api/lua`. The body is
 the Lua source. The script gets the same `roto.*` setup API as `--setup` (including
-`roto.s3.link`), with the `--setup-region` region and any `--set` variables. Relative paths
+`roto.s3.link`), starting in `us-east-1` and with any `--set` variables. Relative paths
 and `require` resolve against the server's working directory.
 
 ```sh

@@ -499,7 +499,7 @@ async fn invoke_lambda(
         .ok_or_else(|| "unsupported API Gateway integration URI".to_owned())?;
     let fields: Vec<_> = function.split(':').collect();
     let mut context = RequestContext {
-        account_id: app.account_id.clone(),
+        account_id: app.account_id(),
         region: "us-east-1".into(),
         access_key: None,
         request_id: roto_core::ids::request_id(),

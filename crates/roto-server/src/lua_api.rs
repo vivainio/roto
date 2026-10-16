@@ -80,7 +80,7 @@ pub async fn run(
         let _running = api.running.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::current_dir().map_err(|e| e.to_string())?;
         let ctx = RequestContext {
-            account_id: task_app.account_id.clone(),
+            account_id: task_app.account_id(),
             region: api.region.clone(),
             access_key: None,
             request_id: ids::request_id(),

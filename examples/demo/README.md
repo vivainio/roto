@@ -22,7 +22,7 @@ roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
 The script uses normal service APIs and finishes seeding before the server starts
 listening. Use a fresh store: fixed resource names make this a fixture seed, not
 an idempotent migration. EventBridge deliveries and S3 retries continue after
-startup. Resources follow `--account-id` and `--setup-region`; unsigned history
+startup. Resources follow `--account-id` and the script's `roto.set_region`; unsigned history
 inspection defaults to `us-east-1`.
 
 | Service | Sample data |
