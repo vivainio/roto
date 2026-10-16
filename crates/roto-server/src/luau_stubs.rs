@@ -13,36 +13,36 @@ const TEMPLATE: &str = include_str!("luau_stubs.d.luau");
 pub(crate) const MODELS: &[(&str, &str)] = &[
     (
         "cloudformation",
-        include_str!("../../../models/cloudformation/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/cloudformation.json")),
     ),
     (
         "dynamodb",
-        include_str!("../../../models/dynamodb/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/dynamodb.json")),
     ),
     (
         "events",
-        include_str!("../../../models/eventbridge/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/eventbridge.json")),
     ),
-    ("iam", include_str!("../../../models/iam/service-2.json")),
+    ("iam", include_str!(concat!(env!("OUT_DIR"), "/iam.json"))),
     (
         "kinesis",
-        include_str!("../../../models/kinesis/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/kinesis.json")),
     ),
-    ("kms", include_str!("../../../models/kms/service-2.json")),
+    ("kms", include_str!(concat!(env!("OUT_DIR"), "/kms.json"))),
     (
         "lambda",
-        include_str!("../../../models/lambda/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/lambda.json")),
     ),
-    ("logs", include_str!("../../../models/logs/service-2.json")),
-    ("s3", include_str!("../../../models/s3/service-2.json")),
+    ("logs", include_str!(concat!(env!("OUT_DIR"), "/logs.json"))),
+    ("s3", include_str!(concat!(env!("OUT_DIR"), "/s3.json"))),
     (
         "secretsmanager",
-        include_str!("../../../models/secretsmanager/service-2.json"),
+        include_str!(concat!(env!("OUT_DIR"), "/secretsmanager.json")),
     ),
-    ("sns", include_str!("../../../models/sns/service-2.json")),
-    ("sqs", include_str!("../../../models/sqs/service-2.json")),
-    ("ssm", include_str!("../../../models/ssm/service-2.json")),
-    ("sts", include_str!("../../../models/sts/service-2.json")),
+    ("sns", include_str!(concat!(env!("OUT_DIR"), "/sns.json"))),
+    ("sqs", include_str!(concat!(env!("OUT_DIR"), "/sqs.json"))),
+    ("ssm", include_str!(concat!(env!("OUT_DIR"), "/ssm.json"))),
+    ("sts", include_str!(concat!(env!("OUT_DIR"), "/sts.json"))),
 ];
 
 pub(crate) fn render() -> String {
