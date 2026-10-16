@@ -1,3 +1,4 @@
+--!strict
 roto.lambda.fn("warm-counter", {
   timeout = 30,
   executor = {container = "roto-lambda-warm:latest", warm = true},

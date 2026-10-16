@@ -1,3 +1,4 @@
+--!strict
 -- Demonstrate policy simulation using the decoded MQTT request dictionaries.
 roto.hooks.mqtt_connect(function(request, context)
   assert(request.transport == "mqtt" and request.operation == "Connect")
@@ -14,16 +15,17 @@ roto.hooks.mqtt_connect(function(request, context)
     assert(connect.username == "fake" and connect.password == "fake")
     assert(connect.password_base64 == "ZmFrZQ==")
     assert(connect.clean_session == false and connect.keep_alive == 1)
-    assert(connect.will.topic == "demo/will" and connect.will.qos == 1)
-    assert(connect.will.retain == false and connect.will.payload_base64 == "aWdub3JlZA==")
+    local will = assert(connect.will)
+    assert(will.topic == "demo/will" and will.qos == 1)
+    assert(will.retain == false and will.payload_base64 == "aWdub3JlZA==")
   end
   return nil -- Normal acceptance.
 end)
 
 roto.hooks.mqtt_subscribe(function(request, context)
   assert(request.connect.client_id and request.packet_id and context.account_id)
-  local codes = {}
-  for i, filter in ipairs(request.filters) do
+  local codes: { number } = {}
+  for i, filter in ipairs(assert(request.filters)) do
     if filter.topic == "demo/private/#" then
       codes[i] = 128 -- Reject this filter.
     else

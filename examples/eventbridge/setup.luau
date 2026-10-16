@@ -1,3 +1,4 @@
+--!strict
 local queue = roto.sqs.queue("events")
 local handler = roto.lambda.fn("events", {
     executor = {command = {"sh", "-c", "cat"}}, timeout = 5

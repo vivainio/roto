@@ -1,3 +1,4 @@
+--!strict
 roto.lambda.fn("container-echo", {
   timeout = 30,
   environment = {

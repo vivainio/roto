@@ -1,3 +1,4 @@
+--!strict
 roto.lambda.bind("process-upload", {
   command = {"python3", "handler.py"},
 })
