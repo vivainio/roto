@@ -2,7 +2,7 @@
 
 This example uses the installed `roto-server` command and Podman or Docker.
 Create an empty directory and save the three files shown below there:
-`Containerfile`, `app.py`, and `setup.lua`. No repository checkout is needed.
+`Containerfile`, `app.py`, and `setup.luau`. No repository checkout is needed.
 
 ## Invoke a Lambda container image
 
@@ -31,8 +31,8 @@ that identity alongside the original event:
 
 The Lua setup creates function metadata and binds the local image name:
 
-```lua title="setup.lua"
---8<-- "demos/lambda-container/setup.lua"
+```lua title="setup.luau"
+--8<-- "demos/lambda-container/setup.luau"
 ```
 
 After saving all three files, build the image from that directory:
@@ -45,7 +45,7 @@ Use `docker build` with the same arguments if Docker is your container engine.
 Then start Roto:
 
 ```sh
-roto-server --ephemeral --host 0.0.0.0 --setup setup.lua
+roto-server --ephemeral --host 0.0.0.0 --setup setup.luau
 ```
 
 The non-loopback listen address lets the container reach Roto through the container engine's

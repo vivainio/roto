@@ -9,7 +9,7 @@ symbol, option and return value (start with its symbol index).
 The binary embeds [Luau](https://luau.org) through `mlua`; no Lua installation is needed.
 Start a script with `--!strict` to get types: see [Luau types](lua-types.md).
 
-Save this as `setup.lua`:
+Save this as `setup.luau`:
 
 ```lua
 local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
@@ -22,7 +22,7 @@ roto.lambda.event_source(queue, handler)
 Start the server in one terminal:
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 In another terminal, send a message using the AWS CLI with local credentials
@@ -101,7 +101,7 @@ and delivery workers start. It starts in the `--account-id` account and `us-east
 there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
 `--set REGION=...` and `roto.vars` to take them from the command line).
 `roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
-`require("./module")` loads `module.luau` or `module.lua` beside the script. Command `cwd` defaults to that
+`require("./module")` loads `module.luau` or `module.luau` beside the script. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
 Setup errors include a source location and stop startup. Changes from earlier successful
@@ -173,11 +173,11 @@ With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same help
 ## Quick test data
 
 To explore populated services in the inspection UI, download the
-[example setup script](https://github.com/vivainio/roto/blob/main/examples/demo/setup.lua)
-and save it as `demo-setup.lua`. Run it with:
+[example setup script](https://github.com/vivainio/roto/blob/main/examples/demo/setup.luau)
+and save it as `demo-setup.luau`. Run it with:
 
 ```sh
-roto-server --ephemeral --port 5071 --setup demo-setup.lua
+roto-server --ephemeral --port 5071 --setup demo-setup.luau
 ```
 
 It creates useful data across eleven stateful services, including multi-page

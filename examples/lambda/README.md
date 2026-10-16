@@ -3,7 +3,7 @@
 Bind local executors through the Lua setup script:
 
 ```sh
-cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.lua
+cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.luau
 ```
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using the
@@ -116,7 +116,7 @@ Code packages are stored as metadata, not unpacked or executed. Only `$LATEST` i
 versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch logging, and automatic
 Kinesis event-source polling is not implemented. Policies are stored but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
-Use `--setup setup.lua` for Lua resource setup and executor bindings; see
+Use `--setup setup.luau` for Lua resource setup and executor bindings; see
 [Lua setup and SQS delivery](../lua/README.md) for supported options and retry behavior.
 
 ## Full SDK smoke test

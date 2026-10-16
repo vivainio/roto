@@ -37,8 +37,8 @@ class PackagingTests(unittest.TestCase):
             root = Path(directory)
             bundle = root / 'bundle'
             bundle.mkdir()
-            (root / 'outside.lua').write_text('return {}')
-            manifest = {'version': 1, 'services': [{'service': 'test', 'script': '../outside.lua'}]}
+            (root / 'outside.luau').write_text('return {}')
+            manifest = {'version': 1, 'services': [{'service': 'test', 'script': '../outside.luau'}]}
             (bundle / 'manifest.json').write_text(json.dumps(manifest))
             with self.assertRaises(ValueError):
                 package_module.package(bundle, root / 'bundle.zip')

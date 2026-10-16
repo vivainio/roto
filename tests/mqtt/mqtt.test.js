@@ -120,7 +120,7 @@ test('MQTT.js over WebSocket, including Lua policy denials', async () => {
   reservation.stop(true);
   const server = Bun.spawn([
     process.env.ROTO_SERVER || resolve(root, 'target/debug/roto-server'),
-    '--ephemeral', '--port', String(port), '--setup', 'demos/mqtt/setup.lua',
+    '--ephemeral', '--port', String(port), '--setup', 'demos/mqtt/setup.luau',
   ], { cwd: root, stdout: 'inherit', stderr: 'inherit' });
   try {
     const deadline = Date.now() + 10000;

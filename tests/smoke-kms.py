@@ -18,7 +18,7 @@ def main():
         port = sock.getsockname()[1]
     server = subprocess.Popen(
         [str(ROOT / "target/debug/roto-server"), "--ephemeral", "--setup",
-         str(ROOT / "examples/demo/setup.lua"), "--port", str(port)],
+         str(ROOT / "examples/demo/setup.luau"), "--port", str(port)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     url = f"http://127.0.0.1:{port}"

@@ -23,11 +23,11 @@ A bundle has one `manifest.json` at its root. For example:
 ```json
 {
   "version": 1,
-  "common": "common.lua",
+  "common": "common.luau",
   "services": [
     {
       "service": "cur",
-      "script": "cur/service.lua",
+      "script": "cur/service.luau",
       "target_prefix": "AWSOrigamiServiceGatewayService.",
       "json_version": "1.1"
     }
@@ -91,7 +91,7 @@ manifest fields, unsupported manifest/JSON versions and conflicting service name
 fail at startup. Unlisted files do not register services.
 
 The working CRUD example in `examples/lua-services` has one root manifest and a
-`widgets/service.lua` script:
+`widgets/service.luau` script:
 
 ```sh
 cargo run -p roto-server --locked -- --ephemeral --lua-services examples/lua-services
@@ -192,7 +192,7 @@ MiniStack code/tests and local botocore model inspection, not real AWS validatio
 | RDS (`rds`) | 21 | Instances/clusters, subnet groups, parameter groups and values, tags, cluster membership, deletion protection and pagination; account + region scoped | Synchronous configuration simulation; no SQL server, endpoint, credential management, snapshots, restore, DocumentDB or Data API |
 | Cloud Map (`servicediscovery`) | 26 | HTTP namespaces, service/instance CRUD, discovery, health, revisions, service attributes, operations and tags, account + region scoped | No DNS namespaces/Route 53, asynchronous workers, cross-account discovery or idempotency-token replay; mutations complete synchronously |
 
-Each `service.lua` lists its exported operations. Missing handlers return 501
+Each `service.luau` lists its exported operations. Missing handlers return 501
 `NotImplemented`. List pagination tokens are offsets over stable ID ordering;
 concurrent changes between pages can affect results. Cloud Map discovery supports
 `QueryParameters` and health selection; optional attribute ranking is not modeled.
@@ -239,7 +239,7 @@ The version 1 manifest also accepts `protocol` and `model` in place of
 `target_prefix` and `json_version`. For example:
 
 ```json
-{"service":"es","script":"opensearch/service.lua","protocol":"rest-json","model":"opensearch/model.json"}
+{"service":"es","script":"opensearch/service.luau","protocol":"rest-json","model":"opensearch/model.json"}
 ```
 
 `service` is the signing identity: managed OpenSearch SDK clients sign as `es`.
@@ -271,7 +271,7 @@ Exports: `CreateDomain`, `DescribeDomain`, `DescribeDomains`, `DeleteDomain`,
 `ListDomainNames`, `DescribeDomainConfig`, `UpdateDomainConfig`, `AddTags`,
 `RemoveTags`, `ListTags`.
 
-Supported configuration fields are listed in `opensearch/service.lua`. Config
+Supported configuration fields are listed in `opensearch/service.luau`. Config
 updates replace the supplied option objects and increment their local revision;
 creation/update timestamps describe local changes. `Active`/`Created` describe
 configuration state only. No `Endpoint` is returned. Access policy strings are

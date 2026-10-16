@@ -227,7 +227,7 @@ for helpers), the `resource` a helper names (a queue, table or `bucket/key`) and
 quickest way to see which step makes startup slow:
 
 ```sh
-roto-server --setup setup.lua --trace setup.jsonl
+roto-server --setup setup.luau --trace setup.jsonl
 jq -s 'sort_by(-.duration_ms) | .[:5][] | [.duration_ms, .operation, .resource, .location]' setup.jsonl
 ```
 
@@ -292,13 +292,13 @@ or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
 
 ## Lua setup
 
-Create `setup.lua` using the example in [Lua setup](lua.md).
+Create `setup.luau` using the example in [Lua setup](lua.md).
 
 Lua can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
 event-source mappings. See [Lua setup](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 ## Optional Lua service bundle

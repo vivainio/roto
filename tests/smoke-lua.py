@@ -53,7 +53,7 @@ def smoke():
     try:
         with tempfile.TemporaryDirectory(prefix="roto-lua-smoke-") as temp:
             temp = Path(temp)
-            script = temp / "setup.lua"
+            script = temp / "setup.luau"
             command = root / "examples/lua/process_jobs.sh"
             script.write_text(f'''
 local jobs = roto.sqs.queue("jobs", {{visibility_timeout=30}})

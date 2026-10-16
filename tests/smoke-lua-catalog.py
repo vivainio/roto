@@ -255,7 +255,7 @@ def run(name,sdk=False):
                 try:
                     empty(s,name);empty(s,name,unsigned=True)
                     fixture=checks[name](s)
-                    exported=set(re.findall(r'function ops\.(\w+)',(ROOT/'services'/name/'service.lua').read_text()))
+                    exported=set(re.findall(r'function ops\.(\w+)',(ROOT/'services'/name/'service.luau').read_text()))
                     covered={op for service,op in s.seen if service==name}
                     assert exported<=covered,(name,exported-covered)
                     empty(s,name,region='eu-west-1');empty(s,name,account='999999999999')

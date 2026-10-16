@@ -19,7 +19,7 @@ def smoke():
     with tempfile.TemporaryFile(mode='w+') as log:
         started = time.monotonic()
         proc = subprocess.Popen([str(root / 'target/debug/roto-server'), '--ephemeral', '--port', str(port),
-                                 '--setup', str(root / 'examples/demo/setup.lua')], stdout=log, stderr=log)
+                                 '--setup', str(root / 'examples/demo/setup.luau')], stdout=log, stderr=log)
 
         def get(path):
             with urllib.request.urlopen(endpoint + path, timeout=2) as response:

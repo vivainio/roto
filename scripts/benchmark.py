@@ -145,7 +145,7 @@ def measure_run(binary, mode, args):
         if mode != "persistent":
             argv.append("--ephemeral")
         if mode == "seeded":
-            argv.extend(["--setup", str(ROOT / "examples/demo/setup.lua")])
+            argv.extend(["--setup", str(ROOT / "examples/demo/setup.luau")])
         env = dict(os.environ, RUST_LOG="warn")
         with tempfile.TemporaryFile(mode="w+b") as logs:
             started = time.perf_counter_ns()

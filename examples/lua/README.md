@@ -5,13 +5,13 @@ process or POST their event to an HTTP endpoint. Inline Lua placeholder handlers
 The binary embeds Luau through `mlua`; no Lua installation is needed.
 
 ```sh
-cargo run -p roto-server -- --ephemeral --setup examples/lua/setup.lua
+cargo run -p roto-server -- --ephemeral --setup examples/lua/setup.luau
 aws --endpoint-url http://localhost:5070 sqs send-message \
   --queue-url http://localhost:5070/123456789012/jobs --message-body 'hello'
 curl http://localhost:5070/roto-api/lambda/invocations
 ```
 
-The shell example requires Python 3. See [setup.lua](setup.lua) for an optional HTTP binding.
+The shell example requires Python 3. See [setup.luau](setup.luau) for an optional HTTP binding.
 Both executors receive the AWS SQS event with a `Records` array. A shell script must read
 stdin and write exactly one JSON result to stdout; logs go to stderr. An HTTP endpoint must
 return a 2xx response containing one JSON result. The full contracts, environment variables,
@@ -57,7 +57,7 @@ and delivery workers start. It starts in the `--account-id` account and `us-east
 there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
 `--set REGION=...` and `roto.vars` to take them from the command line).
 `roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
-`require("./module")` loads `module.luau` or `module.lua` beside the script. Command `cwd` defaults to that
+`require("./module")` loads `module.luau` or `module.luau` beside the script. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
 Setup errors include a source location and stop startup. Changes from earlier successful

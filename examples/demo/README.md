@@ -9,14 +9,14 @@ scripts/demo.sh 5072         # use another free port
 ```
 
 The launcher builds the local binary and runs `--ephemeral --setup
-examples/demo/setup.lua`. It keeps running until Ctrl-C; restarting creates a
+examples/demo/setup.luau`. It keeps running until Ctrl-C; restarting creates a
 fresh dataset. No moto, boto3, standalone Lua installation, or Python packages
 are needed. Local Lambda executors use `sh`.
 
 To manage the server yourself (including a custom account or region):
 
 ```sh
-roto-server --ephemeral --port 5071 --setup examples/demo/setup.lua
+roto-server --ephemeral --port 5071 --setup examples/demo/setup.luau
 ```
 
 The script uses normal service APIs and finishes seeding before the server starts

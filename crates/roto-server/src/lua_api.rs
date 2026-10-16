@@ -35,7 +35,7 @@ fn reply(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// Query: `name` labels the chunk in error messages (default `script.lua`); `timeout` is the
+/// Query: `name` labels the chunk in error messages (default `script.luau`); `timeout` is the
 /// Lua instruction time limit in seconds (default 30, at most 600).
 pub async fn run(
     State(app): State<Arc<App>>,
@@ -62,7 +62,7 @@ pub async fn run(
     let name = params
         .get("name")
         .cloned()
-        .unwrap_or_else(|| "script.lua".into());
+        .unwrap_or_else(|| "script.luau".into());
     let limit = params
         .get("timeout")
         .and_then(|t| t.parse::<u64>().ok())

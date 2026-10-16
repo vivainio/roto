@@ -19,7 +19,7 @@ The default suite interleaves seven fresh processes for each of three modes:
 
 - `ephemeral`: empty in-memory state.
 - `persistent`: empty SQLite/filesystem state in a fresh temporary directory.
-- `seeded`: fresh ephemeral state populated by `examples/demo/setup.lua`.
+- `seeded`: fresh ephemeral state populated by `examples/demo/setup.luau`.
 
 It measures spawn-to-valid-STS-response startup time, idle process RSS, and
 sequential STS GetCallerIdentity, S3 PutObject/GetObject with a 1 KiB object,

@@ -1115,7 +1115,7 @@ mod discovery_tests {
         let lambda =
             Arc::new(roto_svc_lambda::Lambda::new(&app.store, Default::default()).unwrap());
         let s3 = Arc::new(roto_svc_s3::S3::new(&app.store).unwrap());
-        let path = std::env::temp_dir().join(format!("roto-hooks-{}.lua", ids::request_id()));
+        let path = std::env::temp_dir().join(format!("roto-hooks-{}.luau", ids::request_id()));
         std::fs::write(
             &path,
             r#"

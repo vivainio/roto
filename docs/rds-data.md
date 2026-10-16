@@ -12,7 +12,7 @@ you do not need to create one to use the Data API.
 ## Connect PostgreSQL
 
 You need a running PostgreSQL server and an existing database. Save this as
-`setup.lua`, replacing the connection string with your database's details:
+`setup.luau`, replacing the connection string with your database's details:
 
 ```lua
 roto.hooks.rds_data_connection(function(request, context)
@@ -23,7 +23,7 @@ end)
 Start Roto:
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 The hook receives `resource_arn`, `secret_arn`, and `database` in `request`, and

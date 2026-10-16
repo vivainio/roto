@@ -1,4 +1,4 @@
--- roto-server --ephemeral --setup examples/hooks/setup.lua
+-- roto-server --ephemeral --setup examples/hooks/setup.luau
 local jobs = roto.sqs.queue("jobs", {visibility_timeout = 5})
 local worker = roto.lambda.fn("quick-worker", {
   timeout = 5,

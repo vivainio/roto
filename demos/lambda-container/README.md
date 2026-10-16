@@ -15,7 +15,7 @@ Start Roto with the Lua setup:
 
 ```sh
 cargo run -p roto-server -- --ephemeral --host 0.0.0.0 \
-  --setup demos/lambda-container/setup.lua
+  --setup demos/lambda-container/setup.luau
 ```
 
 Invoke the function:

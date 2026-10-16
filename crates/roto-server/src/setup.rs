@@ -1408,7 +1408,7 @@ mod tests {
     fn script(source: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("roto-lua-{}", roto_core::ids::request_id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("setup.lua");
+        let path = dir.join("setup.luau");
         std::fs::write(&path, source).unwrap();
         path
     }
@@ -1674,7 +1674,7 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("setup.lua:2"), "{error}");
+        assert!(error.contains("setup.luau:2"), "{error}");
         assert!(error.contains("visiblity_timeout"));
         // Earlier operations remain persisted and rerunning setup is possible.
         assert!(
@@ -1749,7 +1749,7 @@ assert(not pcall(roto.decode_base64, "not base64!"))
 "#,
         );
         std::fs::write(
-            path.parent().unwrap().join("fixture.lua"),
+            path.parent().unwrap().join("fixture.luau"),
             "return { value = 'hello' }",
         )
         .unwrap();
@@ -1908,7 +1908,7 @@ roto.s3.bucket("assets", { bogus = true })
             .unwrap_err()
             .to_string();
         assert!(error.contains("Unknown bucket option: bogus"), "{error}");
-        assert!(error.contains("setup.lua:"), "{error}");
+        assert!(error.contains("setup.luau:"), "{error}");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -1973,7 +1973,7 @@ roto.aws.ssm.GetParameter({Name = "/p"})
             entries[5]["location"]
                 .as_str()
                 .unwrap()
-                .ends_with("setup.lua:7"),
+                .ends_with("setup.luau:7"),
             "{}",
             entries[5]
         );
@@ -1984,7 +1984,7 @@ roto.aws.ssm.GetParameter({Name = "/p"})
             entries[1]["location"]
                 .as_str()
                 .unwrap()
-                .ends_with("setup.lua:3"),
+                .ends_with("setup.luau:3"),
             "{}",
             entries[1]
         );
@@ -2066,7 +2066,7 @@ roto.dynamodb.table("admin", { bogus = true })
             .unwrap_err()
             .to_string();
         assert!(error.contains("Unknown table option: bogus"), "{error}");
-        assert!(error.contains("setup.lua:"), "{error}");
+        assert!(error.contains("setup.luau:"), "{error}");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -2163,7 +2163,7 @@ assert(roto.s3.link_dir("filtered", "g/", "data", {include = {"*.nope"}}).count 
             .unwrap_err()
             .to_string();
             assert!(
-                error.contains("setup.lua:1") && error.contains(expected),
+                error.contains("setup.luau:1") && error.contains(expected),
                 "{error}"
             );
         }
@@ -2178,7 +2178,7 @@ assert(roto.s3.link_dir("filtered", "g/", "data", {include = {"*.nope"}}).count 
         let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
         let output = Arc::new(std::sync::Mutex::new(Vec::new()));
         let source = |code: &str, limit| Source {
-            name: "=posted.lua".into(),
+            name: "=posted.luau".into(),
             code: code.into(),
             dir: std::env::temp_dir(),
             posted: Some(Posted {
@@ -2212,6 +2212,6 @@ assert(roto.s3.link_dir("filtered", "g/", "data", {include = {"*.nope"}}).count 
         let error = call(source("\nerror('boom')", 5000))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("posted.lua:2"), "{error}");
+        assert!(error.contains("posted.luau:2"), "{error}");
     }
 }

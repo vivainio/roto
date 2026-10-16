@@ -487,7 +487,7 @@ def main():
                     try:
                         empty(s, name)
                         fixture = checks[name](s)
-                        exported = set(re.findall(r'function ops\.(\w+)', (ROOT / 'services' / name / 'service.lua').read_text()))
+                        exported = set(re.findall(r'function ops\.(\w+)', (ROOT / 'services' / name / 'service.luau').read_text()))
                         covered = {op for service, op in s.seen if service == name}
                         assert exported <= covered, (name, 'Operations missing successful coverage', exported - covered)
                         if args.sdk:

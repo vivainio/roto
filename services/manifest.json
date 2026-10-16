@@ -5,68 +5,68 @@
       "service": "acm",
       "target_prefix": "CertificateManager.",
       "json_version": "1.1",
-      "script": "acm/service.lua"
+      "script": "acm/service.luau"
     },
     {
       "service": "budgets",
       "target_prefix": "AWSBudgetServiceGateway.",
       "json_version": "1.1",
-      "script": "budgets/service.lua"
+      "script": "budgets/service.luau"
     },
     {
       "service": "config",
       "target_prefix": "StarlingDoveService.",
       "json_version": "1.1",
-      "script": "config/service.lua"
+      "script": "config/service.luau"
     },
     {
       "service": "cur",
       "target_prefix": "AWSOrigamiServiceGatewayService.",
       "json_version": "1.1",
-      "script": "cur/service.lua"
+      "script": "cur/service.luau"
     },
     {
       "service": "organizations",
       "target_prefix": "AWSOrganizationsV20161128.",
       "json_version": "1.1",
-      "script": "organizations/service.lua"
+      "script": "organizations/service.luau"
     },
     {
       "service": "servicediscovery",
       "target_prefix": "Route53AutoNaming_v20170314.",
       "json_version": "1.1",
-      "script": "servicediscovery/service.lua"
+      "script": "servicediscovery/service.luau"
     },
     {
       "service": "es",
       "protocol": "rest-json",
-      "script": "opensearch/service.lua",
+      "script": "opensearch/service.luau",
       "model": "opensearch/model.json"
     },
     {
       "service": "rds",
       "protocol": "query",
-      "script": "rds/service.lua",
+      "script": "rds/service.luau",
       "model": "rds/model.json"
     },
     {
       "service": "ecr",
       "target_prefix": "AmazonEC2ContainerRegistry_V20150921.",
       "json_version": "1.1",
-      "script": "ecr/service.lua"
+      "script": "ecr/service.luau"
     },
     {
       "service": "ecs",
       "target_prefix": "AmazonEC2ContainerServiceV20141113.",
       "json_version": "1.1",
-      "script": "ecs/service.lua"
+      "script": "ecs/service.luau"
     },
     {
       "service": "glue",
       "target_prefix": "AWSGlue.",
       "json_version": "1.1",
-      "script": "glue/service.lua"
+      "script": "glue/service.luau"
     }
   ],
-  "common": "common.lua"
+  "common": "common.luau"
 }

@@ -61,7 +61,7 @@ def smoke():
     threading.Thread(target=http.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory(prefix="roto-lambda-smoke-") as temp:
-            setup = Path(temp) / "setup.lua"
+            setup = Path(temp) / "setup.luau"
             command = ", ".join(json.dumps(arg) for arg in
                                   [sys.executable, str(Path(__file__).resolve()), "--handler"])
             url = json.dumps(f"http://127.0.0.1:{http.server_port}/invoke")

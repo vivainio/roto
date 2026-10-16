@@ -52,7 +52,7 @@ loads MQTT.js from a CDN and includes acceptance checks; it requires no Node
 installation. See `demos/mqtt/README.md` for launch instructions. Its **Run
 acceptance checks** button verifies connection, QoS grants, topic filtering,
 binary payload delivery, unsubscribe, keepalive, and reconnect. Start Roto with
-`--setup demos/mqtt/setup.lua` and the demo server with `--hooks` to additionally
+`--setup demos/mqtt/setup.luau` and the demo server with `--hooks` to additionally
 verify Lua connection refusals and per-filter subscription denial.
 
 ## Custom JSON WebSocket

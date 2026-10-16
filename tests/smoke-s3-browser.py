@@ -19,7 +19,7 @@ def smoke():
     endpoint = f'http://127.0.0.1:{port}'
     with tempfile.TemporaryFile(mode='w+') as log:
         proc = subprocess.Popen([str(ROOT / 'target/debug/roto-server'), '--ephemeral', '--port', str(port),
-                                 '--setup', str(ROOT / 'examples/demo/setup.lua')], stdout=log, stderr=log)
+                                 '--setup', str(ROOT / 'examples/demo/setup.luau')], stdout=log, stderr=log)
         def request(path, method='GET', data=None, headers=None, follow=True):
             req = urllib.request.Request(endpoint + path, data=data, method=method, headers=headers or {})
             try:

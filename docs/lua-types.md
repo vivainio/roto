@@ -27,7 +27,7 @@ Neovim, Zed and others) completion and hover for the definitions:
 
 ```sh
 roto-server --lua-stubs types          # writes types/roto.d.luau
-luau-lsp analyze --platform=standard --definitions=types/roto.d.luau setup.lua
+luau-lsp analyze --platform=standard --definitions=types/roto.d.luau setup.luau
 ```
 
 In an editor, point luau-lsp at the file:

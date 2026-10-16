@@ -26,7 +26,7 @@ starts with normal OS caches, rather than cold-boot or cleared-filesystem-cache
 tests. The executable was 28.8 MiB before stripping; this is the file size, not a
 container image or download size.
 
-The seeded mode runs `examples/demo/setup.lua` through ordinary service APIs on a
+The seeded mode runs `examples/demo/setup.luau` through ordinary service APIs on a
 fresh store. It includes resource setup and the fixtures across eleven stateful
 services, including Lambda execution results, logs, and notification deliveries.
 It does not launch Lambda containers. Persistent mode uses a fresh on-disk store
@@ -97,7 +97,7 @@ state from an earlier test. The suite itself exercises 21 disposable launches.
 
 Build the binary once before running tests, choose a free port for each server,
 wait for a successful readiness response, and stop the process in fixture cleanup.
-Use `--ephemeral --setup examples/demo/setup.lua` when populated state helps;
+Use `--ephemeral --setup examples/demo/setup.luau` when populated state helps;
 setup is included in the seeded startup measurement. Async deliveries may continue
 after readiness, so wait for the expected delivery result when testing them.
 For tests that intentionally share resources, a server per test collection remains

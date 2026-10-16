@@ -33,7 +33,7 @@ are not implemented. Client publishes are acknowledged when necessary and droppe
 
 ## Simulate connection and subscription denials
 
-Start Roto with `--setup demos/mqtt/setup.lua` and add `--hooks` to the Python
+Start Roto with `--setup demos/mqtt/setup.luau` and add `--hooks` to the Python
 server command. The acceptance checks additionally exercise CONNECT refusal,
 hook errors and invalid results, per-filter SUBACK failure, and verify that
 refused filters receive no messages while accepted filters still work.
@@ -61,7 +61,7 @@ For the Lua denial checks, start the two servers with these commands instead
 (in separate terminals), then run the same browser commands:
 
 ```sh
-target/debug/roto-server --ephemeral --port 5071 --setup demos/mqtt/setup.lua
+target/debug/roto-server --ephemeral --port 5071 --setup demos/mqtt/setup.luau
 python3 demos/mqtt/serve.py --hooks
 ```
 

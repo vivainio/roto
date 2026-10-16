@@ -1,6 +1,6 @@
 # Quick test data
 
-Use the reusable Lua seed at `examples/demo/setup.lua` when you need populated
+Use the reusable Lua seed at `examples/demo/setup.luau` when you need populated
 service state for API development, integration tests, manual exploration, or the
 inspection UI. It uses normal service APIs and seeds eleven stateful services;
 no moto installation or Python packages are needed.
@@ -16,7 +16,7 @@ is disposable; restarting the launcher creates a fresh fixture set. Use a free
 port alongside any existing server.
 
 For tests that manage their own server, pass
-`--ephemeral --setup examples/demo/setup.lua` to `roto-server`. Run the seed on a
+`--ephemeral --setup examples/demo/setup.luau` to `roto-server`. Run the seed on a
 fresh store: resource names are fixed and the seed is not an idempotent migration.
 The setup finishes before the listener starts; EventBridge deliveries and S3
 notification retries continue afterward.

@@ -1,5 +1,5 @@
 --!strict
--- Disposable test/demo data: roto-server --ephemeral --setup examples/demo/setup.lua
+-- Disposable test/demo data: roto-server --ephemeral --setup examples/demo/setup.luau
 -- Uses the installed services' normal APIs; no database writes or network setup calls.
 local tags = { purpose = "demo-fixtures", owner = "local" }
 local function s3(method: string, path: string, body: (string | { [string]: any })?, query: string?, headers: { [string]: string }?)

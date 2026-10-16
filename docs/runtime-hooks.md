@@ -118,7 +118,7 @@ and are not included in the AWS HTTP request trace. Without hooks, valid
 connections and QoS 0/1 subscriptions are accepted. This simulates policy
 outcomes; it does not implement AWS IoT IAM policies or signature validation.
 
-See `demos/mqtt/setup.lua` and the browser demo's Lua denial checks.
+See `demos/mqtt/setup.luau` and the browser demo's Lua denial checks.
 
 ## Execution limits
 
@@ -134,10 +134,10 @@ Lambda invocations from deadlocking the shared VM. Runtime callbacks may use
 `roto.array` and `roto.null`. Bindings and registrations remain after resource
 reset; reset does not rerun setup.
 
-Save the example as `setup.lua` and run it with:
+Save the example as `setup.luau` and run it with:
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 Post-create resource callbacks and a catch-all fallback remain future work.

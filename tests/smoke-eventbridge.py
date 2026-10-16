@@ -27,7 +27,7 @@ def smoke():
         port = sock.getsockname()[1]
     endpoint = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory() as temp:
-        proc = subprocess.Popen([str(root / "target/debug/roto-server"), "--port", str(port), "--data-dir", temp, "--setup", str(root / "examples/eventbridge/setup.lua")], stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen([str(root / "target/debug/roto-server"), "--port", str(port), "--data-dir", temp, "--setup", str(root / "examples/eventbridge/setup.luau")], stdout=subprocess.DEVNULL)
         try:
             def healthy():
                 try:

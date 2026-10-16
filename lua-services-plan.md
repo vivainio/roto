@@ -53,7 +53,7 @@ request-local subprocess/HTTP tricks as the architecture for delivery engines.
 Sources:
 
 - [Bundle interface and limits](services/README.md), [manifest](services/manifest.json),
-  [loader](crates/roto-server/src/lua_service.rs), [shared helpers](services/common.lua).
+  [loader](crates/roto-server/src/lua_service.rs), [shared helpers](services/common.luau).
 - [HTTP/SDK checks](tests/smoke-lua-services.py),
   [packaging checks](tests/test_package_lua_services.py), [.github/workflows/ci.yml](.github/workflows/ci.yml).
 - Local inspiration: `~/r/MiniStack/ministack/services/` and its `tests/` directory.
@@ -90,7 +90,7 @@ python3 tests/test_package_lua_services.py
 Extend the smoke runner before using a new service name. Runtime changes also
 need `cargo test -p roto-server --locked` and any affected crate checks. Add
 relevant Moto runs with distinct `ROTO_TRACE_FILE` paths when applicable; record
-unsupported/known failures explicitly. If changing `examples/demo/setup.lua`,
+unsupported/known failures explicitly. If changing `examples/demo/setup.luau`,
 run `python3 tests/smoke-demo.py` on its fresh disposable server.
 
 ## Runtime prerequisites

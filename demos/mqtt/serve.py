@@ -11,7 +11,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=5072)
 parser.add_argument('--roto-port', type=int, default=5071)
-parser.add_argument('--hooks', action='store_true', help='Include Lua denial checks; start Roto with demos/mqtt/setup.lua')
+parser.add_argument('--hooks', action='store_true', help='Include Lua denial checks; start Roto with demos/mqtt/setup.luau')
 args = parser.parse_args()
 
 

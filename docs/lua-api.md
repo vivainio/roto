@@ -13,7 +13,7 @@ are available through the [Luau type definitions](lua-types.md).
 
 There are two separate environments with different `roto` tables:
 
-- **Setup environment**: `--setup setup.lua` and `POST /roto-api/lua`. One shared VM that
+- **Setup environment**: `--setup setup.luau` and `POST /roto-api/lua`. One shared VM that
   creates resources, seeds services and registers runtime callbacks.
 - **Service-module environment**: `--lua-services bundle`. Each module gets its own VM and
   transactional storage. See [Service modules](#service-modules).
@@ -54,7 +54,7 @@ Return shapes differ by design: the helpers return small lowercase tables, while
 ## Context and values
 
 ```sh
-roto-server --ephemeral --port 5071 --setup setup.lua
+roto-server --ephemeral --port 5071 --setup setup.luau
 ```
 
 Setup runs once on startup, after service initialization and before the listener
@@ -64,7 +64,7 @@ account and `us-east-1`. The script is the authority for its scope: call
 later setup call (`set_account` also forces that account for every request, whatever the
 access key says, which suits single-account apps), and read `roto.region` / `roto.account_id` for the current values. To
 take a value from the command line, pass `--set REGION=eu-west-1` and use
-`roto.set_region(roto.vars.REGION)`. `require("./module")` loads `module.luau`, `module.lua` or
+`roto.set_region(roto.vars.REGION)`. `require("./module")` loads `module.luau`, `module.luau` or
 `module/init.luau` beside the setup script (Luau string requires: the path is relative to
 the requiring file and must start with `./` or `../`).
 `--set KEY=VALUE` (repeatable) passes string parameters to the script as `roto.vars.KEY`.
@@ -530,7 +530,7 @@ the Lua source. The script gets the same `roto.*` setup API as `--setup` (includ
 and `require` resolve against the server's working directory.
 
 ```sh
-curl -X POST localhost:5070/roto-api/lua --data-binary @seed.lua
+curl -X POST localhost:5070/roto-api/lua --data-binary @seed.luau
 curl -X POST localhost:5070/roto-api/lua --data-binary 'return roto.call("sqs", "ListQueues")'
 ```
 
@@ -682,7 +682,7 @@ include account and region when isolation is required. Setup APIs are not
 exposed here.
 
 ```lua
--- service.lua
+-- service.luau
 return {
   PutNote = function(ctx, input, db)
     if type(input.Id) ~= "string" or input.Id == "" then
@@ -705,9 +705,9 @@ For bundle manifests, protocol routing, and a runnable CRUD example, see
 and [widgets example](https://github.com/vivainio/roto/tree/main/examples/lua-services).
 Service VMs load lazily and serialize requests per service.
 
-### Shared helpers from `services/common.lua`
+### Shared helpers from `services/common.luau`
 
-These functions are Lua helpers supplied by the bundled `common.lua`, rather
+These functions are Lua helpers supplied by the bundled `common.luau`, rather
 than built-in bindings. They are available when the manifest includes that file
 as `common`; custom bundles can omit or replace it.
 
@@ -728,7 +728,7 @@ against the cap, and uses a decimal offset `NextToken`. Its default error code i
 `InvalidInput`. It preserves the supplied sequence order; callers choose sorting.
 
 ```lua
--- In an operation in a bundle with common.lua:
+-- In an operation in a bundle with common.luau:
 local id = roto.required(input, "Id", "InvalidInputException")
 local ns = roto.scope(ctx, "notes")
 db.put(ns, id, {Id = id, Text = input.Text})

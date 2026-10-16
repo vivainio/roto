@@ -141,7 +141,7 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         Some(value) => {
             let path = value
                 .as_str()
-                .filter(|p| relative_path(p) && p.ends_with(".lua"))
+                .filter(|p| relative_path(p) && p.ends_with(".luau"))
                 .ok_or_else(|| invalid("common must be a relative Lua script path"))?;
             Some(path.to_owned())
         }
@@ -184,7 +184,7 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         }
         let script = entry["script"]
             .as_str()
-            .filter(|p| relative_path(p) && p.ends_with(".lua"))
+            .filter(|p| relative_path(p) && p.ends_with(".luau"))
             .ok_or_else(|| invalid("script must be a relative Lua script path"))?;
         let protocol = entry["protocol"].as_str().unwrap_or("json");
         let wire = match protocol {
@@ -682,7 +682,7 @@ mod tests {
         json!({"version":1,"services":[entry]})
     }
     fn widget_entry() -> Value {
-        json!({"service":"widgets","script":"widgets/service.lua","target_prefix":"Widgets.","json_version":"1.0"})
+        json!({"service":"widgets","script":"widgets/service.luau","target_prefix":"Widgets.","json_version":"1.0"})
     }
 
     #[test]
@@ -696,16 +696,16 @@ mod tests {
             json!({"version":2,"services":[]}),
             json!({"version":1,"services":{}}),
             json!({"version":1,"services":[],"typo":true}),
-            json!({"version":1,"common":"../common.lua","services":[]}),
+            json!({"version":1,"common":"../common.luau","services":[]}),
             json!({"version":1,"services":[widget_entry(),widget_entry()]}),
         ];
         for (key, value) in [
             ("service", "../widgets"),
             ("target_prefix", "Widgets"),
             ("json_version", "2.0"),
-            ("script", "../outside.lua"),
-            ("script", "/outside.lua"),
-            ("script", "C:/outside.lua"),
+            ("script", "../outside.luau"),
+            ("script", "/outside.luau"),
+            ("script", "C:/outside.luau"),
             ("typo", "true"),
         ] {
             let mut entry = widget_entry();
@@ -753,7 +753,7 @@ mod tests {
         zip.start_file("manifest.json", options).unwrap();
         zip.write_all(manifest(widget_entry()).to_string().as_bytes())
             .unwrap();
-        zip.start_file("widgets/service.lua", options).unwrap();
+        zip.start_file("widgets/service.luau", options).unwrap();
         zip.write_all(
             b"return { ListWidgets = function(ctx,input,db) return {Widgets=roto.array()} end }",
         )
@@ -1025,7 +1025,7 @@ mod tests {
             std::env::temp_dir().join(format!("roto-lua-service-{}", roto_core::ids::request_id()));
         let bundle = dir.join("bundle");
         std::fs::create_dir_all(bundle.join("organizations")).unwrap();
-        std::fs::write(bundle.join("manifest.json"), manifest(json!({"service":"organizations","script":"organizations/service.lua","target_prefix":"AWSOrganizationsV20161128.","json_version":"1.1"})).to_string()).unwrap();
+        std::fs::write(bundle.join("manifest.json"), manifest(json!({"service":"organizations","script":"organizations/service.luau","target_prefix":"AWSOrganizationsV20161128.","json_version":"1.1"})).to_string()).unwrap();
         let ctx = context("123456789012", "us-east-1");
         let created;
         {
@@ -1038,10 +1038,10 @@ mod tests {
             );
             assert!(store.existing_db("organizations").is_none());
             std::fs::write(
-                bundle.join("organizations/service.lua"),
+                bundle.join("organizations/service.luau"),
                 std::fs::read(
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../services/organizations/service.lua"),
+                        .join("../../services/organizations/service.luau"),
                 )
                 .unwrap(),
             )

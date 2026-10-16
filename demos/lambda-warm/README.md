@@ -4,7 +4,7 @@ Build the image, then start a disposable Roto server:
 
 ```sh
 podman build -t roto-lambda-warm:latest -f demos/lambda-warm/Containerfile demos/lambda-warm
-cargo run -p roto-server -- --ephemeral --setup demos/lambda-warm/setup.lua
+cargo run -p roto-server -- --ephemeral --setup demos/lambda-warm/setup.luau
 ```
 
 Docker works with the same build arguments. The image uses the Python Lambda base

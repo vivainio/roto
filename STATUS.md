@@ -110,7 +110,7 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 
 ## Local Lambda execution
 
-`--setup <file.lua>` declares resources and binds command, HTTP, or RIE container-image
+`--setup <file.luau>` declares resources and binds command, HTTP, or RIE container-image
 executors using embedded Lua. See [examples/lambda/README.md](examples/lambda/README.md) for
 configuration and [the container demo](demos/lambda-container/README.md). SQS failures retry through visibility
 timeout and queue DLQ redrive, with optional partial batch responses.

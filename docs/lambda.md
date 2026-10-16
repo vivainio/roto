@@ -1,6 +1,6 @@
 # Lambda
 
-Save this executor binding as `setup.lua`:
+Save this executor binding as `setup.luau`:
 
 ```lua
 roto.lambda.bind("process-upload", {command = {"sh", "-c", "cat"}})
@@ -9,7 +9,7 @@ roto.lambda.bind("process-upload", {command = {"sh", "-c", "cat"}})
 Start Roto with that file:
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 Create function metadata through the usual Lambda API (SDK, CLI, or Terraform), using a name
@@ -50,10 +50,10 @@ roto.lambda.fn("greet", {
 })
 ```
 
-Save this as `setup.lua`, start the server, and invoke it:
+Save this as `setup.luau`, start the server, and invoke it:
 
 ```sh
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 aws --endpoint-url http://localhost:5070 lambda invoke \
   --function-name greet --cli-binary-format raw-in-base64-out \
   --payload '{"name":"Ada"}' result.json
@@ -140,7 +140,7 @@ roto.lambda.fn("process-upload", {
   environment = {MODE = "development"},
   executor = {
     command = {"python3", "handler.py"},
-    cwd = "./workers", -- Relative to this setup.lua file.
+    cwd = "./workers", -- Relative to this setup.luau file.
     env = {DEBUG = "1"},
   },
 })
@@ -285,7 +285,7 @@ RIE generates the runtime request ID, which can differ from Roto's invocation ID
 
 ### Try warm and cold invocations
 
-Download [setup.lua](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/setup.lua),
+Download [setup.luau](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/setup.luau),
 [app.py](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/app.py), and
 [Containerfile](https://github.com/vivainio/roto/blob/main/demos/lambda-warm/Containerfile)
 into an empty directory, then run these commands from that directory. The setup
@@ -294,7 +294,7 @@ creates both functions using an image whose Python handler increments a module-l
 ```sh
 podman build -t roto-lambda-warm:latest \
   -f Containerfile .
-roto-server --ephemeral --setup setup.lua
+roto-server --ephemeral --setup setup.luau
 ```
 
 Use Docker instead of Podman if needed. Invoke each function twice:
@@ -361,7 +361,7 @@ available through the [limited CloudWatch Logs API](cloudwatch-logs.md). Policie
 but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
 [EventBridge rules](eventbridge.md) can also enqueue invocations from custom or S3 events.
-Use `--setup setup.lua` for Lua resource setup and executor bindings; see
+Use `--setup setup.luau` for Lua resource setup and executor bindings; see
 [Lua setup and SQS delivery](lua.md) for supported options and retry behavior.
 
 ## SQS handler configuration in Lua
@@ -409,7 +409,7 @@ test virtualenv includes it), and does not change the example config or an exist
 
 Expose Lambda functions through API Gateway HTTP API v2 proxy events:
 
-Save this function as `setup.lua`:
+Save this function as `setup.luau`:
 
 ```lua
 roto.lambda.fn("process-order", {
@@ -424,7 +424,7 @@ roto.lambda.fn("process-order", {
 ```
 
 Save the following route file as `routes.json` and start
-`roto-server --ephemeral --setup setup.lua --http-routes routes.json`.
+`roto-server --ephemeral --setup setup.luau --http-routes routes.json`.
 A `POST /roto-http/orders/42` invokes this handler.
 
 The route file contains a `routes` array. Each route specifies `method`, `path`,
