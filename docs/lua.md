@@ -165,6 +165,12 @@ On restart, interrupted SQS invocations are marked failed in history and retry t
 Reset clears resources, mappings and history. Local executor bindings remain; setup is not
 automatically rerun after reset.
 
+## Type-checking a script
+
+Start the script with `--!strict` and check it with the Roto definitions file before you run
+it: a wrong option, a missing field or a misspelled AWS member shows up as a type error. The
+[Luau types](lua-types.md) chapter explains the three commands and what is covered.
+
 ## Running scripts against a live server
 
 With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
