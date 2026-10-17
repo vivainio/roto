@@ -62,8 +62,8 @@ roto-server --lua-services ./roto-lua-services-vX.Y.Z.zip
 ```
 
 Use the actual downloaded filename in place of `vX.Y.Z`; no extraction or
-separate Luau runtime is needed. See [Getting started](getting-started.md#add-optional-lua-services)
-and the [server reference](server.md#optional-lua-service-bundle) for loading options.
+separate Luau runtime is needed. See [Getting started](getting-started.md#add-optional-luau-services)
+and the [server reference](server.md#optional-luau-service-bundle) for loading options.
 
 | Service | Available behavior | Main gaps |
 | --- | --- | --- |

@@ -28,8 +28,8 @@ administration rather than everyday application workloads. They have a narrower
 scope and do not carry the same first-class experience goal. Adding them requires
 downloading a **separate service bundle** from a GitHub release and passing
 `--lua-services` when starting the server; installing `roto-aws` alone does not
-include them. See [optional Luau service coverage](services.md#optional-lua-services-completeness-coverage)
-and [bundle installation](getting-started.md#add-optional-lua-services).
+include them. See [optional Luau service coverage](services.md#optional-luau-services-completeness-coverage)
+and [bundle installation](getting-started.md#add-optional-luau-services).
 
 ## Why an open-source LocalStack alternative
 

@@ -112,7 +112,7 @@ The standard installation includes the hand-tuned Rust core services, where roto
 focuses on a first-class local development experience. Most users can start with
 these: services such as S3, SQS, DynamoDB, Lambda, SNS, and EventBridge are the
 building blocks of typical AWS applications. The
-[optional Luau services](services.md#optional-lua-services-completeness-coverage)
+[optional Luau services](services.md#optional-luau-services-completeness-coverage)
 provide completeness coverage, mostly simple CRUD and configuration simulation
 for service administration.
 They require a separate service bundle download.
@@ -128,7 +128,7 @@ roto-server --port 5070 --lua-services ./roto-lua-services-vX.Y.Z.zip
 The ZIP is loaded directly; no extraction or separate Luau runtime is needed.
 Pass the bundle on each start, or set `ROTO_LUA_SERVICES` to its path. Without
 this option or environment variable, only the core Rust services are registered.
-See the [server reference](server.md#optional-lua-service-bundle) for details.
+See the [server reference](server.md#optional-luau-service-bundle) for details.
 
 ## If something goes wrong
 
