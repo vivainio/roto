@@ -55,8 +55,9 @@ roto.lambda.fn("greet", {
 The `event` annotation documents the payload this function expects and lets `--check` catch
 a misspelled field. Without it `event` is `any`, because its shape depends on what invokes
 the function. `context` is typed by Roto. For events Roto delivers itself, name the type
-instead of spelling out its shape: `SqsEvent` for an SQS event source and `S3Event` for an
-S3 bucket notification.
+instead of spelling out its shape: `SqsEvent` for an SQS event source, `S3Event` for an
+S3 bucket notification, `EventBridgeEvent` for an EventBridge target and `HttpApiEvent` for an
+`--http-routes` route.
 
 Save this as `setup.luau`, start the server, and invoke it:
 
@@ -431,7 +432,7 @@ Save this function as `setup.luau`:
 ```luau
 --!strict
 roto.lambda.fn("process-order", {
-  handler = function(event, context)
+  handler = function(event: HttpApiEvent, context)
     return {
       statusCode = 201,
       headers = {["content-type"] = "application/json"},

@@ -162,6 +162,51 @@ declare extern type S3Event with
 	Records: { S3Record }
 end
 
+declare extern type EventBridgeEvent with
+	version: string
+	id: string
+	source: string
+	["detail-type"]: string
+	account: string
+	region: string
+	time: string
+	resources: { string }
+	detail: { [string]: any }
+end
+declare extern type HttpApiHttp with
+	method: string
+	path: string
+	protocol: string
+	sourceIp: string
+	userAgent: string
+end
+declare extern type HttpApiRequestContext with
+	accountId: string
+	apiId: string
+	domainName: string
+	domainPrefix: string
+	requestId: string
+	routeKey: string
+	stage: string
+	time: string
+	timeEpoch: number
+	http: HttpApiHttp
+end
+-- HTTP API payload format 2.0, as sent for a route in the `--http-routes` file.
+declare extern type HttpApiEvent with
+	version: string
+	routeKey: string
+	rawPath: string
+	rawQueryString: string
+	headers: { [string]: string }
+	isBase64Encoded: boolean
+	requestContext: HttpApiRequestContext
+	body: string?
+	pathParameters: { [string]: string }?
+	queryStringParameters: { [string]: string }?
+	cookies: { string }?
+end
+
 type HookContext = { account_id: string, region: string, request_id: string }
 type LambdaContext = HookContext
 
