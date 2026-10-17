@@ -116,27 +116,119 @@ fn alias(service: &str, shape: &str) -> String {
     format!("aws_{service}_{clean}")
 }
 
-fn luau_type(service: &str, model: &Value, spec: &Value) -> String {
+/// Whether `shape` is, or contains, an enum. Such structures get a second, input-side alias
+/// whose enum members are literal unions.
+fn has_enum(model: &Value, name: &str, seen: &mut std::collections::HashMap<String, bool>) -> bool {
+    if let Some(known) = seen.get(name) {
+        return *known;
+    }
+    // A cycle is resolved to false on the way in; any enum elsewhere in the cycle still counts.
+    seen.insert(name.to_string(), false);
+    let shape = &model["shapes"][name];
+    let found = match shape["type"].as_str().unwrap_or("string") {
+        "structure" => shape["members"].as_object().is_some_and(|members| {
+            members
+                .values()
+                .any(|m| has_enum(model, m["shape"].as_str().unwrap_or_default(), seen))
+        }),
+        "list" => has_enum(
+            model,
+            shape["member"]["shape"].as_str().unwrap_or_default(),
+            seen,
+        ),
+        "map" => has_enum(
+            model,
+            shape["value"]["shape"].as_str().unwrap_or_default(),
+            seen,
+        ),
+        "string" => shape["enum"].as_array().is_some_and(|e| !e.is_empty()),
+        _ => false,
+    };
+    seen.insert(name.to_string(), found);
+    found
+}
+
+/// Every shape reachable from `name`, inserted into `out`.
+fn reach(model: &Value, name: &str, out: &mut std::collections::HashSet<String>) {
+    if !out.insert(name.to_string()) {
+        return;
+    }
+    let shape = &model["shapes"][name];
+    let children: Vec<&Value> = match shape["type"].as_str().unwrap_or("string") {
+        "structure" => shape["members"]
+            .as_object()
+            .map(|m| m.values().collect())
+            .unwrap_or_default(),
+        "list" => vec![&shape["member"]],
+        "map" => vec![&shape["value"]],
+        _ => Vec::new(),
+    };
+    for child in children {
+        reach(model, child["shape"].as_str().unwrap_or_default(), out);
+    }
+}
+
+/// Which side of a request a type is written for. Inputs restrict enum members to their known
+/// values so a misspelled one is an error; outputs stay `string` because AWS adds enum values.
+#[derive(Clone, Copy, PartialEq)]
+enum Side {
+    Input,
+    Output,
+}
+
+fn luau_type(
+    service: &str,
+    model: &Value,
+    spec: &Value,
+    side: Side,
+    enums: &mut std::collections::HashMap<String, bool>,
+) -> String {
     let name = spec["shape"].as_str().unwrap_or_default();
     let shape = &model["shapes"][name];
     match shape["type"].as_str().unwrap_or("string") {
+        "structure" if side == Side::Input && has_enum(model, name, enums) => {
+            format!("{}In", alias(service, name))
+        }
         "structure" => alias(service, name),
-        "list" => format!("{{ {} }}", luau_type(service, model, &shape["member"])),
+        "list" => format!(
+            "{{ {} }}",
+            luau_type(service, model, &shape["member"], side, enums)
+        ),
         "map" => format!(
             "{{ [string]: {} }}",
-            luau_type(service, model, &shape["value"])
+            luau_type(service, model, &shape["value"], side, enums)
         ),
         "integer" | "long" | "float" | "double" => "number".into(),
         "boolean" => "boolean".into(),
         "timestamp" => "(number | string)".into(),
         "document" => "any".into(),
-        // Enum members stay plain strings: literal unions are rejected inside nested tables by
-        // the old Luau solver, and AWS enums are open-ended in practice.
-        _ => "string".into(),
+        // Literal unions in nested tables need the new Luau solver, which `--check` uses.
+        _ => match shape["enum"].as_array() {
+            Some(values) if side == Side::Input && !values.is_empty() => {
+                let members: Vec<String> = values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|v| format!("{v:?}"))
+                    .collect();
+                format!("({})", members.join(" | "))
+            }
+            _ => "string".into(),
+        },
     }
 }
 
 fn write_service(service: &str, model: &Value, clients: &mut String, shapes: &mut String) {
+    let mut enums = std::collections::HashMap::new();
+    let mut input_shapes = std::collections::HashSet::new();
+    for op in model["operations"]
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.values())
+    {
+        if let Some(name) = op["input"]["shape"].as_str() {
+            reach(model, name, &mut input_shapes);
+        }
+    }
     let mut operations: Vec<&String> = model["operations"]
         .as_object()
         .map(|ops| ops.keys().collect())
@@ -154,7 +246,7 @@ fn write_service(service: &str, model: &Value, clients: &mut String, shapes: &mu
                     .is_none_or(Vec::is_empty);
                 format!(
                     "input: {}{}",
-                    luau_type(service, model, &op["input"]),
+                    luau_type(service, model, &op["input"], Side::Input, &mut enums),
                     if all_optional { "?" } else { "" }
                 )
             }
@@ -162,7 +254,7 @@ fn write_service(service: &str, model: &Value, clients: &mut String, shapes: &mu
         let output = if op["output"].is_null() {
             "()".to_string()
         } else {
-            luau_type(service, model, &op["output"])
+            luau_type(service, model, &op["output"], Side::Output, &mut enums)
         };
         let _ = writeln!(shapes, "\t{}: ({input}) -> {output},", key(operation));
     }
@@ -191,21 +283,30 @@ fn write_service(service: &str, model: &Value, clients: &mut String, shapes: &mu
             .map(|m| m.iter().collect())
             .unwrap_or_default();
         members.sort_by_key(|(name, _)| name.as_str());
-        let _ = writeln!(shapes, "type {} = {{", alias(service, name));
-        for (member, spec) in members {
-            let optional = if required.contains(&member.as_str()) {
-                ""
+        let sides: &[Side] =
+            if input_shapes.contains(name.as_str()) && has_enum(model, name, &mut enums) {
+                &[Side::Output, Side::Input]
             } else {
-                "?"
+                &[Side::Output]
             };
-            let _ = writeln!(
-                shapes,
-                "\t{}: {}{optional},",
-                key(member),
-                luau_type(service, model, spec)
-            );
+        for &side in sides {
+            let suffix = if side == Side::Input { "In" } else { "" };
+            let _ = writeln!(shapes, "type {}{suffix} = {{", alias(service, name));
+            for (member, spec) in &members {
+                let optional = if required.contains(&member.as_str()) {
+                    ""
+                } else {
+                    "?"
+                };
+                let _ = writeln!(
+                    shapes,
+                    "\t{}: {}{optional},",
+                    key(member),
+                    luau_type(service, model, spec, side, &mut enums)
+                );
+            }
+            let _ = writeln!(shapes, "}}\n");
         }
-        let _ = writeln!(shapes, "}}\n");
     }
 }
 
@@ -347,7 +448,7 @@ mod tests {
             );
         }
         assert!(defs.contains("eventbridge: aws_events_Client,"));
-        assert!(defs.contains("PutBucketCors: (input: aws_s3_PutBucketCorsRequest) -> ()"));
+        assert!(defs.contains("PutBucketCors: (input: aws_s3_PutBucketCorsRequestIn) -> ()"));
         assert!(defs.contains("type aws_s3_CORSRule = {"));
     }
 
@@ -361,5 +462,15 @@ mod tests {
             .collect();
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(names.len(), unique.len(), "duplicate type aliases");
+    }
+
+    #[test]
+    fn input_enums_are_literal_unions_and_outputs_stay_strings() {
+        let defs = render();
+        assert!(defs.contains("Type: (\"String\" | \"StringList\" | \"SecureString\")?,"));
+        // `Parameter` is an output-only shape: its `Type` must stay a plain string.
+        let parameter = defs.split("type aws_ssm_Parameter = {").nth(1).unwrap();
+        let parameter = parameter.split("\n}").next().unwrap();
+        assert!(parameter.contains("Type: string?,"), "{parameter}");
     }
 }

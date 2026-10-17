@@ -156,8 +156,11 @@ service, set it to `"implemented"`.
   A missing required field and a wrong value type are.
 - HTTP methods in `roto.wire` and `cors.methods` are literal unions, so a misspelled method is an
   error. Luau has no numeric literal types, so MQTT QoS and return codes stay `number`.
-- AWS enum members are typed as `string`, not as a union of the allowed values. (Literal
-  unions are rejected inside nested tables by the old Luau solver.)
+- Enum members in AWS **inputs** are unions of the known values, so a misspelled
+  `Type = "Strng"` is an error, and a `string` variable does not fit (use a literal, or a
+  `local x = "String"` binding). Members in **outputs** stay `string`, because AWS adds enum
+  values over time and a union would make `if result.Status == "NewValue"` an error. Literal
+  unions in nested tables need the new Luau solver.
 - Most definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own
   annotations: Luau definition files do not export type aliases. Annotate with
   `typeof(...)` or let inference carry the types. The exceptions are the types of
