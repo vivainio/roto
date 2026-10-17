@@ -262,9 +262,11 @@ type MqttConnect = {
 	client_id: string,
 	clean_session: boolean,
 	keep_alive: number,
-	username: any,
-	password: any,
-	password_base64: any,
+	username: string?,
+	-- Only when the password is valid UTF-8.
+	password: string?,
+	-- Always set when a password was sent; preserves binary passwords.
+	password_base64: string?,
 	will: MqttWill?,
 }
 type MqttRequest = {
