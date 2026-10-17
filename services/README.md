@@ -155,10 +155,13 @@ roto-server --lua-stubs types    # also writes types/roto-service.d.luau for edi
 ```
 
 Start a module with `--!strict` and annotate handlers as
-`function ops.Name(ctx: Ctx, input: NameInput, db: Db)`. `ACM` and `common.luau` are
-annotated; the other modules are not yet, and `scripts/check-luau-types.sh` checks only files
-that carry `--!strict`. `roto.error` is declared `never`, but the checker does not narrow on
-it, so a `Db.get` result needs a `:: Type` cast after the not-found check.
+`function ops.Name(ctx: Ctx, input: NameInput, db: Db)`. Every module and `common.luau` is
+annotated this way, and `scripts/check-luau-types.sh` (run in CI) checks the files that carry
+`--!strict`. Input types list the request fields a handler reads, each as `any` because the
+values are untrusted JSON validated at the point of use; the list catches misspelled fields.
+Stored documents are typed where their shape is fixed (ACM, CUR, Budgets, OpenSearch) and left
+as `any` elsewhere. `roto.error` is declared `never`, but the checker does not narrow on it, so
+a `Db.get` result needs a `:: Type` cast after the not-found check.
 
 ## Organizations scope
 

@@ -1,40 +1,44 @@
+--!strict
 -- Trusted service module. Account membership is global, never partitioned by region.
+-- Request fields are untrusted JSON, so each is `any` and validated where it is used.
+type PageInput = { MaxResults: any, NextToken: any }
+type CreateOrganizationInput = { FeatureSet: any }
 local ops = {}
-local function required(input, key)
+local function required(input: any, key: any)
     local value = input[key]
     if type(value) ~= "string" or value == "" then
         roto.error("InvalidInputException", key .. " must be a nonempty string")
     end
     return value
 end
-local function organization(ctx, db)
+local function organization(ctx: Ctx, db: Db)
     local membership = db.get("memberships", ctx.account_id)
     local org = membership and db.get("organizations", membership.OrganizationId)
     if not org then roto.error("AWSOrganizationsNotInUseException", "Account is not in an organization") end
     return org
 end
-local function management(ctx, db)
+local function management(ctx: Ctx, db: Db)
     local org = organization(ctx, db)
     if org.MasterAccountId ~= ctx.account_id then
         roto.error("AccessDeniedException", "Operation requires the management account")
     end
     return org
 end
-local function namespace(org, collection) return org.Id .. "/" .. collection end
-local function arn(org, kind, id)
+local function namespace(org: any, collection: any) return org.Id .. "/" .. collection end
+local function arn(org: any, kind: any, id: any)
     return "arn:aws:organizations::" .. org.MasterAccountId .. ":" .. kind .. "/" .. org.Id .. "/" .. id
 end
-local function page(input, values, key)
-    local limit = input.MaxResults or 20
+local function page(input: PageInput, values: any, key: any)
+    local limit: any = input.MaxResults or 20
     if type(limit) ~= "number" or limit % 1 ~= 0 or limit < 1 or limit > 20 then
         roto.error("InvalidInputException", "MaxResults must be between 1 and 20")
     end
-    local offset = 0
+    local offset: number = 0
     if input.NextToken ~= nil then
-        if type(input.NextToken) ~= "string" or not input.NextToken:match("^offset:%d+$") then
+        if type(input.NextToken) ~= "string" or not string.match(input.NextToken, "^offset:%d+$") then
             roto.error("InvalidInputException", "Invalid NextToken")
         end
-        offset = tonumber(input.NextToken:sub(8))
+        offset = tonumber(string.sub(input.NextToken, 8)) :: number
         if offset > #values then roto.error("InvalidInputException", "Invalid NextToken") end
     end
     local result = {[key] = roto.array()}
@@ -44,24 +48,24 @@ local function page(input, values, key)
     if offset + limit < #values then result.NextToken = "offset:" .. (offset + limit) end
     return result
 end
-local function parent(org, db, id)
+local function parent(org: any, db: Db, id: any)
     local value = db.get(namespace(org, "roots"), id) or db.get(namespace(org, "ous"), id)
     if not value then roto.error("ParentNotFoundException", "Unknown parent " .. id) end
     return value
 end
-local function ou(org, db, id)
+local function ou(org: any, db: Db, id: any)
     local value = db.get(namespace(org, "ous"), id)
     if not value then roto.error("OrganizationalUnitNotFoundException", "Unknown OU " .. id) end
     return value
 end
-local function public_ou(value) return {Id=value.Id, Arn=value.Arn, Name=value.Name} end
-local function resource(org, db, id)
+local function public_ou(value: any) return {Id=value.Id, Arn=value.Arn, Name=value.Name} end
+local function resource(org: any, db: Db, id: any)
     local value = db.get(namespace(org, "roots"), id)
         or db.get(namespace(org, "ous"), id) or db.get(namespace(org, "accounts"), id)
     if not value then roto.error("TargetNotFoundException", "Unknown resource " .. id) end
     return value
 end
-local function set_tags(org, db, id, tags)
+local function set_tags(org: any, db: Db, id: any, tags: any)
     local existing = db.get(namespace(org, "tags"), id) or {}
     if type(tags) ~= "table" then roto.error("InvalidInputException", "Tags must be a list") end
     for _, tag in ipairs(tags) do
@@ -72,7 +76,7 @@ local function set_tags(org, db, id, tags)
     db.put(namespace(org, "tags"), id, existing)
 end
 
-function ops.CreateOrganization(ctx, input, db)
+function ops.CreateOrganization(ctx: Ctx, input: CreateOrganizationInput, db: Db)
     if db.get("memberships", ctx.account_id) then
         roto.error("AlreadyInOrganizationException", "Account already belongs to an organization")
     end
@@ -99,11 +103,11 @@ function ops.CreateOrganization(ctx, input, db)
         JoinedMethod="INVITED", JoinedTimestamp=0, ParentId=root})
     return {Organization=org}
 end
-function ops.DescribeOrganization(ctx, _, db) return {Organization=organization(ctx,db)} end
-function ops.ListRoots(ctx, input, db)
+function ops.DescribeOrganization(ctx: Ctx, _: any, db: Db) return {Organization=organization(ctx,db)} end
+function ops.ListRoots(ctx: Ctx, input: PageInput, db: Db)
     return page(input, db.list(namespace(management(ctx,db), "roots")), "Roots")
 end
-function ops.DeleteOrganization(ctx, _, db)
+function ops.DeleteOrganization(ctx: Ctx, _: any, db: Db)
     local org = management(ctx,db)
     if #db.list(namespace(org,"accounts")) > 1 then
         roto.error("OrganizationNotEmptyException", "Remove member accounts first")
@@ -121,7 +125,7 @@ function ops.DeleteOrganization(ctx, _, db)
     db.delete("organizations", org.Id)
     return {}
 end
-function ops.CreateOrganizationalUnit(ctx, input, db)
+function ops.CreateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local name, parent_id = required(input,"Name"), required(input,"ParentId")
     parent(org,db,parent_id)
@@ -137,10 +141,10 @@ function ops.CreateOrganizationalUnit(ctx, input, db)
     if input.Tags then set_tags(org,db,id,input.Tags) end
     return {OrganizationalUnit=public_ou(value)}
 end
-function ops.DescribeOrganizationalUnit(ctx, input, db)
+function ops.DescribeOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     return {OrganizationalUnit=public_ou(ou(management(ctx,db),db,required(input,"OrganizationalUnitId")))}
 end
-function ops.UpdateOrganizationalUnit(ctx, input, db)
+function ops.UpdateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local value = ou(org,db,required(input,"OrganizationalUnitId"))
     local name = required(input,"Name")
@@ -153,7 +157,7 @@ function ops.UpdateOrganizationalUnit(ctx, input, db)
     db.put(namespace(org,"ous"), value.Id, value)
     return {OrganizationalUnit=public_ou(value)}
 end
-function ops.DeleteOrganizationalUnit(ctx, input, db)
+function ops.DeleteOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local value = ou(org,db,required(input,"OrganizationalUnitId"))
     for _, collection in ipairs({"ous","accounts"}) do
@@ -165,7 +169,7 @@ function ops.DeleteOrganizationalUnit(ctx, input, db)
     db.delete(namespace(org,"ous"), value.Id)
     return {}
 end
-function ops.ListOrganizationalUnitsForParent(ctx, input, db)
+function ops.ListOrganizationalUnitsForParent(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ParentId")
     parent(org,db,id)
@@ -175,24 +179,24 @@ function ops.ListOrganizationalUnitsForParent(ctx, input, db)
     end
     return page(input,values,"OrganizationalUnits")
 end
-local function public_account(value)
+local function public_account(value: any)
     local result = {}
     for key, item in pairs(value) do if key ~= "ParentId" then result[key] = item end end
     return result
 end
-function ops.ListAccounts(ctx, input, db)
+function ops.ListAccounts(ctx: Ctx, input: PageInput, db: Db)
     local org = management(ctx,db)
     local values = roto.array()
     for _, value in ipairs(db.list(namespace(org,"accounts"))) do table.insert(values,public_account(value)) end
     return page(input,values,"Accounts")
 end
-function ops.DescribeAccount(ctx, input, db)
+function ops.DescribeAccount(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local value = db.get(namespace(org,"accounts"),required(input,"AccountId"))
     if not value then roto.error("AccountNotFoundException", "Unknown account") end
     return {Account=public_account(value)}
 end
-function ops.ListAccountsForParent(ctx, input, db)
+function ops.ListAccountsForParent(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ParentId")
     parent(org,db,id)
@@ -202,7 +206,7 @@ function ops.ListAccountsForParent(ctx, input, db)
     end
     return page(input,values,"Accounts")
 end
-function ops.ListParents(ctx, input, db)
+function ops.ListParents(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ChildId")
     local value = db.get(namespace(org,"ous"),id) or db.get(namespace(org,"accounts"),id)
@@ -211,7 +215,7 @@ function ops.ListParents(ctx, input, db)
     table.insert(values, {Id=value.ParentId, Type=value.ParentId:sub(1,2)=="r-" and "ROOT" or "ORGANIZATIONAL_UNIT"})
     return page(input,values,"Parents")
 end
-function ops.TagResource(ctx, input, db)
+function ops.TagResource(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
@@ -219,7 +223,7 @@ function ops.TagResource(ctx, input, db)
     set_tags(org,db,id,input.Tags)
     return {}
 end
-function ops.UntagResource(ctx, input, db)
+function ops.UntagResource(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
@@ -232,13 +236,13 @@ function ops.UntagResource(ctx, input, db)
     db.put(namespace(org,"tags"),id,tags)
     return {}
 end
-function ops.ListTagsForResource(ctx, input, db)
+function ops.ListTagsForResource(ctx: Ctx, input: any, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
     local values = roto.array()
     for key, value in pairs(db.get(namespace(org,"tags"),id) or {}) do table.insert(values,{Key=key,Value=value}) end
-    table.sort(values,function(a,b) return a.Key < b.Key end)
+    table.sort(values,function(a: any, b: any) return a.Key < b.Key end)
     return page(input,values,"Tags")
 end
 return ops

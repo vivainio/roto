@@ -1,33 +1,41 @@
+--!strict
 -- Synchronous configuration simulation. No SQL server, credentials or endpoints.
-local M={}
-local specs={
+local M: { [string]: (Ctx, any, Db) -> any }={}
+-- Per-kind settings (identifier key, ARN key, error codes, accepted fields), shared by the generated operations.
+type Spec = { [string]: any }
+local specs: { [string]: Spec }={
     DBInstance={id='DBInstanceIdentifier',plural='DBInstances',arn='DBInstanceArn',kind='db',missing='DBInstanceNotFound',exists='DBInstanceAlreadyExists',fields={'Engine','EngineVersion','DBInstanceClass','AllocatedStorage','StorageType','MultiAZ','PubliclyAccessible','BackupRetentionPeriod','DBName','MasterUsername','DBClusterIdentifier','DeletionProtection','Port'}},
     DBCluster={id='DBClusterIdentifier',plural='DBClusters',arn='DBClusterArn',kind='cluster',missing='DBClusterNotFoundFault',exists='DBClusterAlreadyExistsFault',fields={'Engine','EngineVersion','DatabaseName','MasterUsername','BackupRetentionPeriod','StorageEncrypted','DeletionProtection','Port'}},
     DBSubnetGroup={id='DBSubnetGroupName',plural='DBSubnetGroups',arn='DBSubnetGroupArn',kind='subgrp',missing='DBSubnetGroupNotFoundFault',exists='DBSubnetGroupAlreadyExistsFault',fields={'DBSubnetGroupDescription'}},
     DBParameterGroup={id='DBParameterGroupName',plural='DBParameterGroups',arn='DBParameterGroupArn',kind='pg',missing='DBParameterGroupNotFound',exists='DBParameterGroupAlreadyExists',fields={'DBParameterGroupFamily','Description'}},
 }
-local function space(ctx,kind) return roto.scope(ctx,kind) end
-local function identifier(input,s)
+-- Request fields are untrusted JSON, so each is `any` and validated where it is used.
+type DescribeDBParametersInput = { Filters: any, Marker: any, MaxRecords: any, Source: any }
+type TaggedInput = { ResourceName: any }
+type AddTagsToResourceInput = { ResourceName: any, Tags: any }
+type RemoveTagsFromResourceInput = { ResourceName: any, TagKeys: any }
+local function space(ctx: Ctx, kind: string) return roto.scope(ctx,kind) end
+local function identifier(input: any, s: any)
     local name=roto.required(input,s.id,'InvalidParameterValue'):lower()
     if #name>63 or not name:match('^[a-z][a-z0-9%-]*$') or name:match('%-%-') or name:match('%-$') then roto.error('InvalidParameterValue','Invalid resource identifier') end
     return name
 end
-local function get(ctx,input,db,kind)
+local function get(ctx: Ctx, input: any, db: Db, kind: string): any
     local s=specs[kind];local id=identifier(input,s);local d=db.get(space(ctx,kind),id)
     if not d then roto.error(s.missing,'Resource not found: '..id,404) end
     return d
 end
-local function public(d)
-    local out={};for k,v in pairs(d) do if k:sub(1,1)~='_' then out[k]=v end end;return out
+local function public(d: any): any
+    local out={};for k,v in pairs(d) do if tostring(k):sub(1,1)~='_' then out[k]=v end end;return out
 end
-local function check(input,s,extra)
+local function check(input: any, s: any, extra: any)
     for k in pairs(input) do
         if k~=s.id and k~='Tags' and not roto.contains(s.fields,k) and not roto.contains(extra or {},k) then
             roto.error('NotImplemented','Unsupported setting: '..k,501)
         end
     end
 end
-local function list(ctx,input,db,kind)
+local function list(ctx: Ctx, input: any, db: Db, kind: string)
     local s=specs[kind];local values=roto.array()
     if input.Filters then roto.error('NotImplemented','Describe filters are unsupported',501) end
     if input[s.id] then table.insert(values,public(get(ctx,input,db,kind)))
@@ -35,7 +43,7 @@ local function list(ctx,input,db,kind)
     return roto.page({MaxResults=input.MaxRecords,NextToken=input.Marker},values,s.plural,100,100,'InvalidParameterValue')
 end
 for kind,s in pairs(specs) do
-    M['Create'..kind]=function(ctx,input,db)
+    M['Create'..kind]=function(ctx: Ctx, input: any, db: Db)
         check(input,s,(kind=='DBInstance' or kind=='DBCluster') and {'MasterUserPassword'} or (kind=='DBSubnetGroup' and {'SubnetIds'} or {}))
         local id=identifier(input,s)
         if db.get(space(ctx,kind),id) then roto.error(s.exists,'Resource already exists') end
@@ -73,10 +81,10 @@ for kind,s in pairs(specs) do
         if kind=='DBParameterGroup' then return {DBParameterGroup=public(d)} end
         return {[kind]=public(d)}
     end
-    M['Describe'..s.plural]=function(ctx,input,db)
+    M['Describe'..s.plural]=function(ctx: Ctx, input: any, db: Db)
         local out=list(ctx,input,db,kind);out.Marker=out.NextToken;out.NextToken=nil;return out
     end
-    M['Delete'..kind]=function(ctx,input,db)
+    M['Delete'..kind]=function(ctx: Ctx, input: any, db: Db)
         check(input,s,(kind=='DBInstance' or kind=='DBCluster') and {'SkipFinalSnapshot','FinalDBSnapshotIdentifier'} or {})
         local d=get(ctx,input,db,kind)
         if d.DeletionProtection then roto.error('InvalidParameterCombination','Deletion protection is enabled') end
@@ -96,7 +104,7 @@ for kind,s in pairs(specs) do
         return {[kind]=public(d)}
     end
     if kind~='DBParameterGroup' then
-        M['Modify'..kind]=function(ctx,input,db)
+        M['Modify'..kind]=function(ctx: Ctx, input: any, db: Db)
             check(input,s,{'ApplyImmediately','MasterUserPassword','SubnetIds'})
             if input.MasterUserPassword then roto.error('NotImplemented','Credential changes are unsupported',501) end
             local d=get(ctx,input,db,kind)
@@ -110,7 +118,7 @@ for kind,s in pairs(specs) do
         end
     end
 end
-function M.ModifyDBParameterGroup(ctx,input,db)
+function M.ModifyDBParameterGroup(ctx: Ctx, input: any, db: Db)
     local d=get(ctx,input,db,'DBParameterGroup')
     for _,p in ipairs(roto.list(input.Parameters,'InvalidParameterValue','Parameters')) do
         local name=roto.required(p,'ParameterName','InvalidParameterValue');roto.required(p,'ParameterValue','InvalidParameterValue')
@@ -119,29 +127,29 @@ function M.ModifyDBParameterGroup(ctx,input,db)
     end
     db.put(space(ctx,'DBParameterGroup'),d.DBParameterGroupName,d);return {DBParameterGroupName=d.DBParameterGroupName}
 end
-function M.ResetDBParameterGroup(ctx,input,db)
+function M.ResetDBParameterGroup(ctx: Ctx, input: any, db: Db)
     local d=get(ctx,input,db,'DBParameterGroup')
     if input.ResetAllParameters then d._Parameters={}
     else for _,p in ipairs(roto.list(input.Parameters,'InvalidParameterValue','Parameters')) do d._Parameters[roto.required(p,'ParameterName','InvalidParameterValue')]=nil end end
     db.put(space(ctx,'DBParameterGroup'),d.DBParameterGroupName,d);return {DBParameterGroupName=d.DBParameterGroupName}
 end
-function M.DescribeDBParameters(ctx,input,db)
+function M.DescribeDBParameters(ctx: Ctx, input: DescribeDBParametersInput, db: Db)
     local d=get(ctx,input,db,'DBParameterGroup');local values=roto.array();local keys={}
     if input.Filters then roto.error('NotImplemented','Parameter filters are unsupported',501) end
     for key in pairs(d._Parameters) do table.insert(keys,key) end;table.sort(keys)
     for _,key in ipairs(keys) do local p=d._Parameters[key];if not input.Source or input.Source==p.Source then table.insert(values,p) end end
     local out=roto.page({MaxResults=input.MaxRecords,NextToken=input.Marker},values,'Parameters',100,100,'InvalidParameterValue');out.Marker=out.NextToken;out.NextToken=nil;return out
 end
-local function tagged(ctx,input,db)
+local function tagged(ctx: Ctx, input: TaggedInput, db: Db): (any, string, Spec)
     local arn=roto.required(input,'ResourceName','InvalidParameterValue')
     for kind,s in pairs(specs) do for _,d in ipairs(db.list(space(ctx,kind))) do if d[s.arn]==arn then return d,kind,s end end end
-    roto.error('DBInstanceNotFound','Resource ARN not found',404)
+    return roto.error('DBInstanceNotFound','Resource ARN not found',404)
 end
-function M.AddTagsToResource(ctx,input,db)
+function M.AddTagsToResource(ctx: Ctx, input: AddTagsToResourceInput, db: Db)
     local d,kind,s=tagged(ctx,input,db);d._Tags=roto.tags(d._Tags,input.Tags,'InvalidParameterValue');db.put(space(ctx,kind),d[s.id],d);return {}
 end
-function M.RemoveTagsFromResource(ctx,input,db)
+function M.RemoveTagsFromResource(ctx: Ctx, input: RemoveTagsFromResourceInput, db: Db)
     local d,kind,s=tagged(ctx,input,db);d._Tags=roto.untag(d._Tags,input.TagKeys,'InvalidParameterValue');db.put(space(ctx,kind),d[s.id],d);return {}
 end
-function M.ListTagsForResource(ctx,input,db) return {TagList=tagged(ctx,input,db)._Tags} end
+function M.ListTagsForResource(ctx: Ctx, input: TaggedInput, db: Db) return {TagList=tagged(ctx,input,db)._Tags} end
 return M

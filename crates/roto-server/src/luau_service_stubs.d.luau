@@ -13,7 +13,7 @@ declare extern type Ctx with
 end
 
 -- Documents are plain JSON values chosen by the service; annotate the result of `get` and
--- `list` with the service's own document type. The functions are called with `.`, not `:`.
+-- `list` with the service's own document type. `get` returns nil when the document is absent. The functions are called with `.`, not `:`.
 declare extern type Db with
 	get: (namespace: string, id: string) -> any?
 	put: (namespace: string, id: string, document: any) -> ()
