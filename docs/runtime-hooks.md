@@ -8,6 +8,7 @@ interceptors. Roto retains their Luau closures after startup. See
 ## Inline placeholder Lambdas
 
 ```luau
+--!strict
 roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
@@ -31,6 +32,7 @@ an AWS Luau runtime. `print` writes to the server console, not invocation logs.
 ## Request interception
 
 ```luau
+--!strict
 roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {
@@ -75,6 +77,7 @@ A later registration for the same MQTT hook replaces the previous callback.
 For example:
 
 ```luau
+--!strict
 roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then
     return {return_code = 5} -- Not authorized.
@@ -83,8 +86,8 @@ roto.hooks.mqtt_connect(function(request, context)
 end)
 
 roto.hooks.mqtt_subscribe(function(request, context)
-  local codes = {}
-  for i, filter in ipairs(request.filters) do
+  local codes: {number} = {}
+  for i, filter in ipairs(request.filters or {}) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
   end
   return {return_codes = roto.array(codes)}

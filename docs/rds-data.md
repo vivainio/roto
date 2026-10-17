@@ -15,6 +15,7 @@ You need a running PostgreSQL server and an existing database. Save this as
 `setup.luau`, replacing the connection string with your database's details:
 
 ```luau
+--!strict
 roto.hooks.rds_data_connection(function(request, context)
   return "postgres://postgres:pw@localhost:5432/app"
 end)

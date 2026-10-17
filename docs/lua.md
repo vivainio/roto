@@ -12,6 +12,7 @@ Start a script with `--!strict` to get types: see [Luau types](lua-types.md).
 Save this as `setup.luau`:
 
 ```luau
+--!strict
 local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
 local handler = roto.lambda.fn("echo-job", {
   executor = {command = {"sh", "-c", "cat"}}, timeout = 5
@@ -78,6 +79,7 @@ LuaRocks libraries, which a setup script has no need for.
 This expands the first example with queue settings and function options:
 
 ```luau
+--!strict
 local dead = roto.sqs.queue("dead")
 local queue = roto.sqs.queue("jobs", {
   visibility_timeout = 30,
@@ -105,6 +107,7 @@ local mapping = roto.lambda.event_source(queue, handler, {
 For a quick placeholder, supply `handler` instead of `executor`:
 
 ```luau
+--!strict
 roto.lambda.fn("greet", {
   handler = function(event, context)
     return {message = "Hello " .. event.name}
@@ -160,6 +163,7 @@ See [Service access](lua-api.md#service-access) for supported services and
 for a comparison including object metadata.
 
 ```luau
+--!strict
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })

@@ -97,6 +97,7 @@ the requiring file and must start with `./` or `../`).
 | `roto.encode_base64(text)`, `roto.decode_base64(text)` | Standard base64 of a string, and back; both are binary-safe, and invalid base64 raises an error |
 
 ```luau
+--!strict
 local settings = {
   region = roto.region,
   optional = roto.null,
@@ -140,6 +141,7 @@ supplied. Attributes and tags are merged; existing messages remain. Unknown
 options raise an error.
 
 ```luau
+--!strict
 local jobs = roto.sqs.queue("jobs", {
   visibility_timeout = 30,
   attributes = {MessageRetentionPeriod = "86400"},
@@ -174,6 +176,7 @@ Lambda destinations are delivered; topic destinations are stored but not deliver
 [Object notifications](s3.md#object-notifications).
 
 ```luau
+--!strict
 local events = roto.sqs.queue("s3-events")
 local scanner = roto.sqs.queue("scanner")
 roto.s3.bucket("attachments", {
@@ -194,6 +197,8 @@ setup writes a new version. Options are the same as for `link`: `content_type`,
 `metadata` and `headers`. Returns `{bucket, key}`.
 
 ```luau
+--!strict
+local pdf_bytes = "%PDF-1.4 ..."
 roto.s3.put("attachments", "tenant1/Invoice.pdf", pdf_bytes, {content_type = "application/pdf"})
 ```
 
@@ -212,6 +217,7 @@ Options: `content_type` (otherwise guessed from the extension; `.gz` and `.tgz` 
 `website_redirect_location`). Returns `{bucket = string, key = string}`.
 
 ```luau
+--!strict
 roto.s3.link("assets", "demodata/rows.csv.gz", "Assets/demodata/rows.csv.gz")
 ```
 
@@ -228,6 +234,7 @@ matches the path relative to `dir`. `*` and `?` do not cross a `/`; `**` does, a
 also matches no directory at all.
 
 ```luau
+--!strict
 local linked = roto.s3.link_dir("assets", "static/", "public")  -- static/<relative path>
 print(linked.count .. " files linked")
 
@@ -258,6 +265,7 @@ is safe; indexes are not reconciled in place. Tables are pay-per-request. Return
 Key attribute definitions are derived from `hash`, `range` and the index keys.
 
 ```luau
+--!strict
 roto.dynamodb.table("admin", {
   hash = "PK", range = "SK",
   gsis = {{ name = "GSI1", hash = "GSI1PK", range = "GSI1SK" }},
@@ -273,6 +281,7 @@ numbers, booleans, `roto.null`, `roto.array` lists and nested tables become `S`,
 need `roto.call("dynamodb", "PutItem", ...)`. Returns `{table}`.
 
 ```luau
+--!strict
 roto.dynamodb.put("admin", {
   PK = "TENANTS", SK = "TENANT#acme", Enabled = true, Seats = 25,
   Tags = roto.array({"pilot"}), Contact = { Region = "DUB" },
@@ -312,6 +321,7 @@ Choose one executor form:
 | Container | `container`: local RIE image name; optional `warm`: boolean, default `false` |
 
 ```luau
+--!strict
 local worker = roto.lambda.fn("echo", {
   timeout = 5,
   executor = {command = {"sh", "-c", "cat"}, env = {MODE = "demo"}},
@@ -335,6 +345,7 @@ that metadata. Accepts the same executor forms and path resolution as above;
 returns `{name = string}`.
 
 ```luau
+--!strict
 -- The function must already exist, for example through an AWS SDK call.
 roto.lambda.bind("existing-worker", {command = {"sh", "-c", "cat"}})
 ```
@@ -352,6 +363,7 @@ configuration, including `UUID`. Repeated setup preserves the mapping UUID.
 | `report_batch_item_failures` | Boolean | `false` |
 
 ```luau
+--!strict
 local queue = roto.sqs.queue("tasks", {visibility_timeout = 30})
 local worker = roto.lambda.fn("task-worker", {
   handler = function(event, context)
@@ -407,6 +419,7 @@ the same S3 `PutObject` operation.
 directly, without a network connection. Metadata becomes `x-amz-meta-*` headers:
 
 ```luau
+--!strict
 roto.wire("s3", "PUT", "/fixtures/hello.txt", {
   headers = {
     ["content-type"] = "text/plain",
@@ -421,6 +434,7 @@ roto.wire("s3", "PUT", "/fixtures/hello.txt", {
 translates the bucket and key into the path, and the metadata into headers:
 
 ```luau
+--!strict
 roto.call("s3", "PutObject", {
   Bucket = "fixtures",
   Key = "hello.txt",
@@ -464,6 +478,7 @@ Service errors raise Luau errors; operation coverage follows the service's
 implementation.
 
 ```luau
+--!strict
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
@@ -495,6 +510,7 @@ Handler errors and HTTP status codes of 400 or higher raise Luau errors.
 | `body` | String bytes or JSON-compatible Luau value | Empty body |
 
 ```luau
+--!strict
 roto.wire("s3", "PUT", "/fixtures")
 roto.wire("s3", "PUT", "/fixtures/hello.txt", {body = "hello"})
 local object = roto.wire("s3", "GET", "/fixtures/hello.txt")
@@ -516,6 +532,7 @@ interceptors. For a larger runnable seed, use
 `roto.wire` bodies are raw strings. Decode JSON ones with `roto.json_decode`:
 
 ```luau
+--!strict
 local fn = roto.lambda.fn("greeter", {handler = function(e) return {hi = e.name} end})
 local out = roto.wire("lambda", "POST",
   "/2015-03-31/functions/" .. fn.name .. "/invocations", {body = {name = "ada"}})
@@ -525,6 +542,7 @@ assert(roto.json_decode(out.body).hi == "ada")
 ### Seeding a service without a helper
 
 ```luau
+--!strict
 -- KMS and Logs go through roto.call
 local key = roto.call("kms", "CreateKey", {Description = "demo"})
 roto.call("logs", "CreateLogGroup", {logGroupName = "/app/web"})
@@ -567,6 +585,7 @@ fail the invocation. Captured locals persist across invocations. Results are
 limited to 6 MiB. `print` writes to the server console, not Lambda invocation logs.
 
 ```luau
+--!strict
 local invocations = 0
 roto.lambda.fn("greet", {
   handler = function(event, context)
@@ -589,6 +608,7 @@ raw string `body`, and `input` when the body parses as JSON. Authorization is
 omitted from headers. `context` contains `account_id`, `region`, and `request_id`.
 
 ```luau
+--!strict
 roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {status = 503,
@@ -612,6 +632,7 @@ or `nil` to reject the request with `BadRequestException`. The request has
 A later registration replaces the earlier one. Connections use plain TCP (no TLS).
 
 ```luau
+--!strict
 roto.hooks.rds_data_connection(function(request, context)
   return "postgres://postgres:pw@localhost:5432/app"
 end)
@@ -632,12 +653,14 @@ authorized). Subscribe returns `{return_codes = roto.array(codes)}` with one
 entry per filter: 0 or 1 grants up to the requested QoS; 128 rejects.
 
 ```luau
+--!strict
 roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then return {return_code = 5} end
+  return nil
 end)
 roto.hooks.mqtt_subscribe(function(request, context)
-  local codes = {}
-  for i, filter in ipairs(request.filters) do
+  local codes: {number} = {}
+  for i, filter in ipairs(request.filters or {}) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
   end
   return {return_codes = roto.array(codes)}

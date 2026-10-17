@@ -3,6 +3,7 @@
 Save this executor binding as `setup.luau`:
 
 ```luau
+--!strict
 roto.lambda.bind("process-upload", {command = {"sh", "-c", "cat"}})
 ```
 
@@ -38,6 +39,7 @@ script. The event is decoded JSON, so you can examine its fields and return a
 custom JSON payload directly:
 
 ```luau
+--!strict
 roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
@@ -70,6 +72,7 @@ invocations. Luau errors fail the invocation, and results have a 6 MiB limit.
 For a stateful Luau placeholder, capture a counter outside the callback:
 
 ```luau
+--!strict
 local invocations = 0
 roto.lambda.fn("lua-counter", {
   handler = function(event, context)
@@ -96,6 +99,7 @@ helpers and `roto.call`/`roto.wire` are unavailable inside runtime callbacks.
 Setup scripts can also inspect incoming AWS requests and supply custom responses:
 
 ```luau
+--!strict
 roto.hooks.request("lambda", "Invoke", function(request, context)
   if request.input and request.input.preview then
     return {
@@ -125,6 +129,7 @@ for the full contract and limits, including a setup example you can save locally
 Bind an echo command to function metadata created through the AWS API:
 
 ```luau
+--!strict
 roto.lambda.bind("command-echo", {
   command = {"sh", "-c", "cat"},
 })
@@ -133,6 +138,7 @@ roto.lambda.bind("command-echo", {
 To create the function and configure every command binding option together:
 
 ```luau
+--!strict
 roto.lambda.fn("process-upload", {
   timeout = 10,
   memory_size = 256,
@@ -186,6 +192,7 @@ container isolation or Lambda memory-limit enforcement.
 Bind an already running JSON handler:
 
 ```luau
+--!strict
 roto.lambda.bind("http-worker", {
   url = "http://127.0.0.1:8080/invoke",
   headers = {
@@ -198,6 +205,7 @@ roto.lambda.bind("http-worker", {
 Or create the metadata and binding in one step. Headers are optional:
 
 ```luau
+--!strict
 roto.lambda.fn("http-echo", {
   timeout = 10,
   executor = {url = "http://127.0.0.1:8080/echo"},
@@ -241,6 +249,7 @@ Roto does not inject or mount the emulator. See [AWS's container image requireme
 For a RIE-compatible image, bind its image name:
 
 ```luau
+--!strict
 -- Fresh container for every invocation (the default).
 roto.lambda.bind("cold-worker", {container = "my-worker:latest", warm = false})
 
@@ -310,6 +319,7 @@ cat result.json
 The setup is:
 
 ```luau
+--!strict
 roto.lambda.fn("warm-counter", {
   timeout = 30,
   executor = {container = "roto-lambda-warm:latest", warm = true},
@@ -369,6 +379,7 @@ Use `--setup setup.luau` for Luau resource setup and executor bindings; see
 Create a queue and function together, then enable partial batch failure reporting:
 
 ```luau
+--!strict
 local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
 local worker = roto.lambda.fn("process-orders", {
   timeout = 10,
@@ -412,6 +423,7 @@ Expose Lambda functions through API Gateway HTTP API v2 proxy events:
 Save this function as `setup.luau`:
 
 ```luau
+--!strict
 roto.lambda.fn("process-order", {
   handler = function(event, context)
     return {

@@ -9,6 +9,7 @@ Upload an object through your usual SDK pointed at `http://localhost:5070`.
 The setup script is:
 
 ```luau
+--!strict
 local queue = roto.sqs.queue("events")
 local handler = roto.lambda.fn("events", {
     executor = {command = {"sh", "-c", "cat"}}, timeout = 5

@@ -320,7 +320,7 @@ mod tests {
 const INSTALL_HINT: &str = "\
 error: `luau-lsp` was not found, and `roto-server --check` needs it to type-check scripts.
 Install it from https://github.com/JohnnyMorganz/luau-lsp/releases and put the binary on your PATH,
-or set ROTO_LUAU_LSP to its full path. See docs/lua-types.md.";
+or set ROTO_LUAU_LSP to its full path. Steps per platform are in docs/lua-types.md (Install luau-lsp).";
 
 /// `roto-server --check`: type-checks setup scripts against the definitions of this build by
 /// running `luau-lsp analyze`. Returns the process exit code.

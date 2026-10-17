@@ -26,8 +26,8 @@ checker's findings and exits non-zero on a type error, so it works in CI. Roto's
 every script under `examples/` and `demos/` this way (`scripts/check-luau-types.sh`).
 
 `luau-lsp` must be installed and on your `PATH` (or set `ROTO_LUAU_LSP` to its path). If it is
-missing, `--check` stops and tells you where to get it. It also warns about a file without
-`--!strict`.
+missing, `--check` stops and points you to [Install luau-lsp](#install-luau-lsp). It also warns
+about a file without `--!strict`.
 
 To run the checker yourself, write the definitions file and pass it explicitly:
 
@@ -49,6 +49,30 @@ install the luau-lsp extension or plugin and point it at the same file:
 
 The definitions work with both Luau type solvers. The new solver (`LuauSolverV2`) gives
 better diagnostics and is the one to use.
+
+## Install luau-lsp
+
+`luau-lsp` is a single binary. Homebrew and most Linux package managers do not carry it, so
+download it from the [releases page](https://github.com/JohnnyMorganz/luau-lsp/releases):
+
+| Platform | Asset |
+| --- | --- |
+| macOS (Apple silicon and Intel) | `luau-lsp-macos.zip` |
+| Linux x86-64 | `luau-lsp-linux-x86_64.zip` |
+| Linux arm64 | `luau-lsp-linux-arm64.zip` |
+| Windows | `luau-lsp-win64.zip` |
+
+Unzip it and put the `luau-lsp` binary on your `PATH`, for example on macOS or Linux:
+
+```sh
+unzip luau-lsp-macos.zip -d ~/.local/bin
+chmod +x ~/.local/bin/luau-lsp
+luau-lsp --version
+```
+
+On macOS, if Gatekeeper blocks the downloaded binary, clear the quarantine flag with
+`xattr -d com.apple.quarantine ~/.local/bin/luau-lsp`. If you would rather not change your
+`PATH`, leave the binary anywhere and set `ROTO_LUAU_LSP=/full/path/to/luau-lsp`.
 
 ## What you see
 
