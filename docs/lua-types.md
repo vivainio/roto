@@ -52,7 +52,7 @@ better diagnostics and is the one to use.
 
 ## What you see
 
-```lua
+```luau
 --!strict
 local queue = roto.sqs.queue("jobs", { visibility_timeout = "30" })
 roto.aws.sqs.SendMessage({ QueueUrl = queue.url })
@@ -90,7 +90,7 @@ exactly the shape the AWS API documents.
 exactly what `roto.call("<service>", "<Operation>", input)` does, including tracing, but
 the definitions give each operation its own input and output type:
 
-```lua
+```luau
 --!strict
 local queue = roto.sqs.queue("jobs")
 roto.aws.sqs.SendMessage({ QueueUrl = queue.url, MessageBody = "{}" })   -- checked
@@ -139,13 +139,13 @@ service, set it to `"implemented"`.
   callback is still a runtime error.
 - The old solver reports a false error for some deeply nested DynamoDB items. Use the new
   solver.
-- Lua service modules (`services/*/service.luau`) use a different `roto` environment and
+- Luau service modules (`services/*/service.luau`) use a different `roto` environment and
   are not covered by these definitions.
 
 ## The helper definitions
 
 This is the part of the file that describes the setup helpers, options and callbacks.
 
-```lua
+```luau
 --8<-- "docs/roto.d.luau:helpers"
 ```

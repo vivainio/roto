@@ -1,13 +1,13 @@
-# Runtime Lua handlers and request interception
+# Runtime Luau handlers and request interception
 
 A `--setup` script can register inline Lambda handlers and exact-operation request
-interceptors. Roto retains their Lua closures after startup. See
-[Lua setup](lua.md) for resource creation and executor bindings, and the
-[Lua API reference](lua-api.md) for every binding and callback contract.
+interceptors. Roto retains their Luau closures after startup. See
+[Luau setup](lua.md) for resource creation and executor bindings, and the
+[Luau API reference](lua-api.md) for every binding and callback contract.
 
 ## Inline placeholder Lambdas
 
-```lua
+```luau
 roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
@@ -19,18 +19,18 @@ roto.lambda.fn("greet", {
 Use `handler` instead of `executor`. The function receives a decoded JSON event
 and a context table with `function_arn`, `request_id`, `region`, `environment`,
 and `timeout` (seconds). Return a JSON-compatible value; use `roto.array({})` and
-`roto.null` for empty arrays and null. Captured Lua locals survive invocations.
+`roto.null` for empty arrays and null. Captured Luau locals survive invocations.
 
 These functions use the normal Lambda invocation machinery, including direct
 Invoke, asynchronous delivery, SQS mappings, S3 notifications, EventBridge, and
-invocation history. Lua errors become failed Lambda invocations. Results are
+invocation history. Luau errors become failed Lambda invocations. Results are
 limited to 6 MiB. Inline handlers are local configuration; rerun setup after
 restarting the server. They do not execute uploaded Lambda packages or emulate
-an AWS Lua runtime. `print` writes to the server console, not invocation logs.
+an AWS Luau runtime. `print` writes to the server console, not invocation logs.
 
 ## Request interception
 
-```lua
+```luau
 roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {
@@ -60,7 +60,7 @@ in query parameters and headers; do not log those indiscriminately.
 Interceptors run for external AWS HTTP requests, including IoT Publish, and
 are recorded in request traces. Internal service-to-service calls and startup
 setup calls do not trigger them. Requests without a matching registration do
-not enter Lua. Callback errors and invalid responses return an internal AWS
+not enter Luau. Callback errors and invalid responses return an internal AWS
 error. There is no global interceptor or missing-support fallback registration.
 
 ## MQTT connection and subscription hooks
@@ -69,12 +69,12 @@ Register `roto.hooks.mqtt_connect(callback)` or
 `roto.hooks.mqtt_subscribe(callback)` to simulate policies.
 These MQTT lifecycle hooks are separate from AWS service request interception.
 They receive decoded MQTT dictionaries and return MQTT decisions. They share
-the Lua VM, serialization lock, and execution limits with service interceptors.
+the Luau VM, serialization lock, and execution limits with service interceptors.
 A later registration for the same MQTT hook replaces the previous callback.
 
 For example:
 
-```lua
+```luau
 roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then
     return {return_code = 5} -- Not authorized.
@@ -112,19 +112,19 @@ filters do not. Rejecting a repeat subscription does not revoke an existing
 subscription; use unsubscribe to remove it.
 
 Errors, timeouts, and invalid results fail closed: CONNECT receives code 3,
-and SUBSCRIBE receives failure codes for every filter. The hooks share the Lua
+and SUBSCRIBE receives failure codes for every filter. The hooks share the Luau
 serialization and execution limits below, run after the WebSocket upgrade,
 and are not included in the AWS HTTP request trace. Without hooks, valid
 connections and QoS 0/1 subscriptions are accepted. This simulates policy
 outcomes; it does not implement AWS IoT IAM policies or signature validation.
 
-See `demos/mqtt/setup.luau` and the browser demo's Lua denial checks.
+See `demos/mqtt/setup.luau` and the browser demo's Luau denial checks.
 
 ## Execution limits
 
-Callbacks from one setup script execute serially. Lua deadline checks run
+Callbacks from one setup script execute serially. Luau deadline checks run
 at function calls and loop iterations: one second for an interceptor, and the
-configured function timeout for a Lambda. These checks interrupt Lua loops;
+configured function timeout for a Lambda. These checks interrupt Luau loops;
 they cannot interrupt a blocking native call.
 Use command or HTTP executors for workloads that need external processes.
 

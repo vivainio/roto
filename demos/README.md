@@ -7,6 +7,6 @@ Small, runnable experiments that exercise Roto from external tools and SDKs.
 - [CloudFormation demo](cloudformation/README.md): create queues and a topic,
   use a nested stack, then import an exported value from a second stack.
 - [Lambda container demo](lambda-container/README.md): build a small Lambda image
-  and invoke it through RIE using a Lua executor binding.
+  and invoke it through RIE using a Luau executor binding.
 - [MQTT.js browser demo](mqtt/README.md): receive IoT publishes over MQTT
   WebSocket and run browser acceptance checks without Node.

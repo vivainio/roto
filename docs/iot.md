@@ -41,7 +41,7 @@ DISCONNECT are supported. Client PUBLISH payloads are dropped; QoS 1 receives
 PUBACK so the client does not stall.
 
 Client IDs, credentials, clean session, keepalive settings, and wills do not
-create persistent state or authentication. Optional [Lua hooks](runtime-hooks.md#mqtt-connection-and-subscription-hooks)
+create persistent state or authentication. Optional [Luau hooks](runtime-hooks.md#mqtt-connection-and-subscription-hooks)
 (`roto.hooks.mqtt_connect` and `roto.hooks.mqtt_subscribe`) receive this metadata and
 can refuse connections or individual subscription filters. MQTT 5, QoS 2, retained messages,
 and offline delivery are unsupported. Clients must resubscribe on reconnect.
@@ -53,7 +53,7 @@ installation. See `demos/mqtt/README.md` for launch instructions. Its **Run
 acceptance checks** button verifies connection, QoS grants, topic filtering,
 binary payload delivery, unsubscribe, keepalive, and reconnect. Start Roto with
 `--setup demos/mqtt/setup.luau` and the demo server with `--hooks` to additionally
-verify Lua connection refusals and per-filter subscription denial.
+verify Luau connection refusals and per-filter subscription denial.
 
 ## Custom JSON WebSocket
 

@@ -1,13 +1,13 @@
-# Lua API reference
+# Luau API reference
 
-This chapter is the single reference for every Roto-provided Lua symbol. Roto embeds
+This chapter is the single reference for every Roto-provided Luau symbol. Roto embeds
 [Luau](https://luau.org) (through `mlua`); no separate installation is required. The Luau
 standard library is available (`string`, `table`, `math`, `bit32`, `utf8`, `buffer`, and
 `os.time`/`os.date`/`os.clock`); there is no `io`, `os.execute` or `os.getenv`, so a
 script reaches the machine only through `roto.*` and the executors it configures.
 Scripts are trusted local code. Luau is gradually typed: start a script with `--!strict`
 to check it against the [type definitions](lua-types.md).
-For a guided introduction see [Lua setup](lua.md); for worked callback examples see
+For a guided introduction see [Luau setup](lua.md); for worked callback examples see
 [Runtime hooks](runtime-hooks.md). Editor completion and checks for every symbol here
 are available through the [Luau type definitions](lua-types.md).
 
@@ -16,7 +16,7 @@ are available through the [Luau type definitions](lua-types.md).
 Setup scripts now run on Luau instead of Lua 5.4. What changes:
 
 - Name script files `*.luau`. `--setup` takes any path, but `require` only finds `.luau`
-  (or `.lua`) files beside the requiring script, and Lua service bundles need `.luau`.
+  (or `.lua`) files beside the requiring script, and Luau service bundles need `.luau`.
 - `require("module")` becomes `require("./module")` (relative to the requiring file).
 - `io`, `os.execute` and `os.getenv` are gone. Pass values with `--set KEY=VALUE`
   (`roto.vars`) and do work through `roto.*` or an executor.
@@ -86,7 +86,7 @@ the requiring file and must start with `./` or `../`).
 | Value or function | Meaning |
 | --- | --- |
 | `roto.version` | Server version string (informational) |
-| `roto.api_version` | Integer Lua API level; bumped only on breaking changes (currently 2: version 1 had `roto.lambda.function_`, `roto.request`, `roto.intercept_request` and `roto.mqtt.on_*`, now `roto.lambda.fn`, `roto.wire` and `roto.hooks.*`). Additive changes keep it, so feature-detect new functions with `if roto.s3.link_dir then` |
+| `roto.api_version` | Integer Luau API level; bumped only on breaking changes (currently 2: version 1 had `roto.lambda.function_`, `roto.request`, `roto.intercept_request` and `roto.mqtt.on_*`, now `roto.lambda.fn`, `roto.wire` and `roto.hooks.*`). Additive changes keep it, so feature-detect new functions with `if roto.s3.link_dir then` |
 | `roto.account_id` | Setup account ID string |
 | `roto.region` | Setup region string |
 | `roto.endpoint` | Server base URL string |
@@ -96,7 +96,7 @@ the requiring file and must start with `./` or `../`).
 | `roto.json_decode(text)` | Decodes a JSON string; malformed JSON raises an error |
 | `roto.encode_base64(text)`, `roto.decode_base64(text)` | Standard base64 of a string, and back; both are binary-safe, and invalid base64 raises an error |
 
-```lua
+```luau
 local settings = {
   region = roto.region,
   optional = roto.null,
@@ -104,7 +104,7 @@ local settings = {
 }
 ```
 
-JSON objects become Lua tables and JSON arrays become marked sequence tables.
+JSON objects become Luau tables and JSON arrays become marked sequence tables.
 Use string keys for objects and consecutive integer keys starting at 1 for
 arrays. An unmarked empty table encodes as `{}`; `roto.array({})` encodes as `[]`.
 `nil` omits an object field; use `roto.null` to keep a field with a null value.
@@ -139,7 +139,7 @@ Creates a missing queue or updates an existing queue. Returns
 supplied. Attributes and tags are merged; existing messages remain. Unknown
 options raise an error.
 
-```lua
+```luau
 local jobs = roto.sqs.queue("jobs", {
   visibility_timeout = 30,
   attributes = {MessageRetentionPeriod = "86400"},
@@ -173,7 +173,7 @@ must exist when the bucket is configured unless `skip_validation` is set. Queue 
 Lambda destinations are delivered; topic destinations are stored but not delivered. See
 [Object notifications](s3.md#object-notifications).
 
-```lua
+```luau
 local events = roto.sqs.queue("s3-events")
 local scanner = roto.sqs.queue("scanner")
 roto.s3.bucket("attachments", {
@@ -187,13 +187,13 @@ roto.s3.bucket("attachments", {
 
 #### `roto.s3.put(bucket, key, body, options?)`
 
-Stores `body` (a Lua string, so binary-safe) as a new version of `key`, creating the
+Stores `body` (a Luau string, so binary-safe) as a new version of `key`, creating the
 bucket if needed. It is the inline counterpart of `link`: the bytes are copied into the
 store, versioning and notifications apply as for a normal `PutObject`, and rerunning
 setup writes a new version. Options are the same as for `link`: `content_type`,
 `metadata` and `headers`. Returns `{bucket, key}`.
 
-```lua
+```luau
 roto.s3.put("attachments", "tenant1/Invoice.pdf", pdf_bytes, {content_type = "application/pdf"})
 ```
 
@@ -211,7 +211,7 @@ Options: `content_type` (otherwise guessed from the extension; `.gz` and `.tgz` 
 `content_disposition`, `content_encoding`, `content_language`, `expires`,
 `website_redirect_location`). Returns `{bucket = string, key = string}`.
 
-```lua
+```luau
 roto.s3.link("assets", "demodata/rows.csv.gz", "Assets/demodata/rows.csv.gz")
 ```
 
@@ -227,7 +227,7 @@ file is linked when it matches any `include` glob (or `include` is empty or omit
 matches the path relative to `dir`. `*` and `?` do not cross a `/`; `**` does, and `**/`
 also matches no directory at all.
 
-```lua
+```luau
 local linked = roto.s3.link_dir("assets", "static/", "public")  -- static/<relative path>
 print(linked.count .. " files linked")
 
@@ -257,7 +257,7 @@ is safe; indexes are not reconciled in place. Tables are pay-per-request. Return
 
 Key attribute definitions are derived from `hash`, `range` and the index keys.
 
-```lua
+```luau
 roto.dynamodb.table("admin", {
   hash = "PK", range = "SK",
   gsis = {{ name = "GSI1", hash = "GSI1PK", range = "GSI1SK" }},
@@ -267,12 +267,12 @@ roto.dynamodb.table("sessions", { hash = "PK" })
 
 #### `roto.dynamodb.put(table, item)`
 
-Writes an item given as plain Lua values, so there are no `{S = ...}` wrappers. Strings,
+Writes an item given as plain Luau values, so there are no `{S = ...}` wrappers. Strings,
 numbers, booleans, `roto.null`, `roto.array` lists and nested tables become `S`, `N`,
 `BOOL`, `NULL`, `L` and `M`. An unmarked empty table is an empty map. Binary and set types
 need `roto.call("dynamodb", "PutItem", ...)`. Returns `{table}`.
 
-```lua
+```luau
 roto.dynamodb.put("admin", {
   PK = "TENANTS", SK = "TENANT#acme", Enabled = true, Seats = 25,
   Tags = roto.array({"pilot"}), Contact = { Region = "DUB" },
@@ -284,7 +284,7 @@ roto.dynamodb.put("admin", {
 #### `roto.lambda.fn(name, options)`
 
 Creates or updates function metadata and binds its local implementation. Returns
-`{name = string, arn = string}`. The name is `fn` because `function` is a Lua
+`{name = string, arn = string}`. The name is `fn` because `function` is a Luau
 keyword. Supply exactly one of `executor` or `handler`.
 
 | Option | Type | Default |
@@ -311,7 +311,7 @@ Choose one executor form:
 | HTTP | `url`: HTTP/HTTPS URL; optional `headers`: string map |
 | Container | `container`: local RIE image name; optional `warm`: boolean, default `false` |
 
-```lua
+```luau
 local worker = roto.lambda.fn("echo", {
   timeout = 5,
   executor = {command = {"sh", "-c", "cat"}, env = {MODE = "demo"}},
@@ -334,7 +334,7 @@ Binds an executor to existing function metadata without creating or updating
 that metadata. Accepts the same executor forms and path resolution as above;
 returns `{name = string}`.
 
-```lua
+```luau
 -- The function must already exist, for example through an AWS SDK call.
 roto.lambda.bind("existing-worker", {command = {"sh", "-c", "cat"}})
 ```
@@ -351,7 +351,7 @@ configuration, including `UUID`. Repeated setup preserves the mapping UUID.
 | `enabled` | Boolean | `true` |
 | `report_batch_item_failures` | Boolean | `false` |
 
-```lua
+```luau
 local queue = roto.sqs.queue("tasks", {visibility_timeout = 30})
 local worker = roto.lambda.fn("task-worker", {
   handler = function(event, context)
@@ -391,7 +391,7 @@ with `pcall`; other services need `roto.wire`.
 
 For the XML-protocol services `roto.call` works like boto3: it reads the botocore model
 for the operation, routes each input member to the URI, query string, headers or XML/form
-body, and converts the XML response back to a PascalCase table. Lists are Lua arrays,
+body, and converts the XML response back to a PascalCase table. Lists are Luau arrays,
 maps are tables, booleans and numbers are native. Timestamps and blobs are strings
 (blobs are base64-encoded for you, so pass raw bytes; a `GetObject` `Body` comes back
 as a UTF-8 string with replacement, so use `roto.wire` for binary objects). Unknown
@@ -403,10 +403,10 @@ Each example uploads `hello.txt` to an existing `fixtures` bucket with the same
 contents, content type, and custom metadata. Run any one of them; they perform
 the same S3 `PutObject` operation.
 
-**Lua: `roto.wire`** spells out the HTTP request. It calls Roto's service handler
+**Luau: `roto.wire`** spells out the HTTP request. It calls Roto's service handler
 directly, without a network connection. Metadata becomes `x-amz-meta-*` headers:
 
-```lua
+```luau
 roto.wire("s3", "PUT", "/fixtures/hello.txt", {
   headers = {
     ["content-type"] = "text/plain",
@@ -417,10 +417,10 @@ roto.wire("s3", "PUT", "/fixtures/hello.txt", {
 })
 ```
 
-**Lua: `roto.call`** takes the operation name and AWS-shaped arguments. Roto
+**Luau: `roto.call`** takes the operation name and AWS-shaped arguments. Roto
 translates the bucket and key into the path, and the metadata into headers:
 
-```lua
+```luau
 roto.call("s3", "PutObject", {
   Bucket = "fixtures",
   Key = "hello.txt",
@@ -460,10 +460,10 @@ when you have an operation name and structured arguments.
 
 Calls a supported service operation with AWS-shaped input and returns decoded
 JSON. Omitted input becomes `{}`. Supported service names are listed above.
-Service errors raise Lua errors; operation coverage follows the service's
+Service errors raise Luau errors; operation coverage follows the service's
 implementation.
 
-```lua
+```luau
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
@@ -486,15 +486,15 @@ Calls any installed service directly through its wire handler, before the HTTP
 listener starts. Use the registered service name; the `eventbridge` alias belongs
 only to `roto.call`. Returns `{status, headers, body}`, where `body` is a raw
 string (response bytes are converted to UTF-8 with replacement for invalid bytes).
-Handler errors and HTTP status codes of 400 or higher raise Lua errors.
+Handler errors and HTTP status codes of 400 or higher raise Luau errors.
 
 | Option | Type | Default |
 | --- | --- | --- |
 | `headers` | String map; names are lowercased | Empty |
 | `query` | Raw query string without `?` | `""` |
-| `body` | String bytes or JSON-compatible Lua value | Empty body |
+| `body` | String bytes or JSON-compatible Luau value | Empty body |
 
-```lua
+```luau
 roto.wire("s3", "PUT", "/fixtures")
 roto.wire("s3", "PUT", "/fixtures/hello.txt", {body = "hello"})
 local object = roto.wire("s3", "GET", "/fixtures/hello.txt")
@@ -515,7 +515,7 @@ interceptors. For a larger runnable seed, use
 
 `roto.wire` bodies are raw strings. Decode JSON ones with `roto.json_decode`:
 
-```lua
+```luau
 local fn = roto.lambda.fn("greeter", {handler = function(e) return {hi = e.name} end})
 local out = roto.wire("lambda", "POST",
   "/2015-03-31/functions/" .. fn.name .. "/invocations", {body = {name = "ada"}})
@@ -524,7 +524,7 @@ assert(roto.json_decode(out.body).hi == "ada")
 
 ### Seeding a service without a helper
 
-```lua
+```luau
 -- KMS and Logs go through roto.call
 local key = roto.call("kms", "CreateKey", {Description = "demo"})
 roto.call("logs", "CreateLogGroup", {logGroupName = "/app/web"})
@@ -539,7 +539,7 @@ For a full seed across eleven services, see the
 ## Running scripts on a live server
 
 Start roto with `--enable-lua-api` to accept scripts at `POST /roto-api/lua`. The body is
-the Lua source. The script gets the same `roto.*` setup API as `--setup` (including
+the Luau source. The script gets the same `roto.*` setup API as `--setup` (including
 `roto.s3.link`), starting in `us-east-1` and with any `--set` variables. Relative paths
 and `require` resolve against the server's working directory.
 
@@ -550,7 +550,7 @@ curl -X POST localhost:5070/roto-api/lua --data-binary 'return roto.call("sqs", 
 
 Success returns `{"result": <return value>, "output": [<print lines>]}`. A failure returns
 status 400 with `{"error": "...name:line: message...", "output": [...]}`. Query `name=`
-labels the chunk in errors and `timeout=` sets the Lua time limit in seconds (default 30,
+labels the chunk in errors and `timeout=` sets the Luau time limit in seconds (default 30,
 at most 600). Scripts run one at a time. `roto.hooks.request` hooks a script registers
 stay active.
 
@@ -562,11 +562,11 @@ loopback peers, and rejects any request carrying an `Origin` header (browsers).
 ### Inline Lambda `handler(event, context)`
 
 `event` is decoded JSON. `context` contains `function_arn`, `request_id`, `region`,
-`environment`, and `timeout` in seconds. Return a JSON-compatible value; Lua errors
+`environment`, and `timeout` in seconds. Return a JSON-compatible value; Luau errors
 fail the invocation. Captured locals persist across invocations. Results are
 limited to 6 MiB. `print` writes to the server console, not Lambda invocation logs.
 
-```lua
+```luau
 local invocations = 0
 roto.lambda.fn("greet", {
   handler = function(event, context)
@@ -588,7 +588,7 @@ response. `status` must be 100–599; `body` must be a string.
 raw string `body`, and `input` when the body parses as JSON. Authorization is
 omitted from headers. `context` contains `account_id`, `region`, and `request_id`.
 
-```lua
+```luau
 roto.hooks.request("sqs", "SendMessage", function(request, context)
   if request.input and request.input.MessageBody == "fail" then
     return {status = 503,
@@ -611,7 +611,7 @@ or `nil` to reject the request with `BadRequestException`. The request has
 `resource_arn`, `secret_arn` and `database`; the context has `account_id` and `region`.
 A later registration replaces the earlier one. Connections use plain TCP (no TLS).
 
-```lua
+```luau
 roto.hooks.rds_data_connection(function(request, context)
   return "postgres://postgres:pw@localhost:5432/app"
 end)
@@ -631,7 +631,7 @@ behavior. Connect may return `{return_code = code}`: 0 accepts; 1–5 refuse
 authorized). Subscribe returns `{return_codes = roto.array(codes)}` with one
 entry per filter: 0 or 1 grants up to the requested QoS; 128 rejects.
 
-```lua
+```luau
 roto.hooks.mqtt_connect(function(request, context)
   if request.connect.client_id == "blocked" then return {return_code = 5} end
 end)
@@ -658,7 +658,7 @@ for connection closure and repeat-subscription behavior.
 
 ### Callback limits
 
-All callbacks from one setup script execute serially. Lua deadline checks run
+All callbacks from one setup script execute serially. Luau deadline checks run
 at function calls and loop iterations: one second for interceptors and MQTT hooks, and the
 configured timeout for Lambdas. Blocking native calls such as file I/O or
 file I/O in an executor cannot be interrupted by these checks. Runtime callbacks may use
@@ -695,7 +695,7 @@ Namespace and ID arguments are strings. Namespaces are not automatically scoped:
 include account and region when isolation is required. Setup APIs are not
 exposed here.
 
-```lua
+```luau
 -- service.luau
 return {
   PutNote = function(ctx, input, db)
@@ -721,7 +721,7 @@ Service VMs load lazily and serialize requests per service.
 
 ### Shared helpers from `services/common.luau`
 
-These functions are Lua helpers supplied by the bundled `common.luau`, rather
+These functions are Luau helpers supplied by the bundled `common.luau`, rather
 than built-in bindings. They are available when the manifest includes that file
 as `common`; custom bundles can omit or replace it.
 
@@ -741,7 +741,7 @@ as `common`; custom bundles can omit or replace it.
 against the cap, and uses a decimal offset `NextToken`. Its default error code is
 `InvalidInput`. It preserves the supplied sequence order; callers choose sorting.
 
-```lua
+```luau
 -- In an operation in a bundle with common.luau:
 local id = roto.required(input, "Id", "InvalidInputException")
 local ns = roto.scope(ctx, "notes")

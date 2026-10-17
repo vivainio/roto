@@ -1,7 +1,7 @@
 # Lambda container invocation
 
 This demo builds a small AWS Lambda Python image, then has Roto invoke it through the
-Runtime Interface Emulator (RIE). Roto only needs the image name in Lua; it does not build
+Runtime Interface Emulator (RIE). Roto only needs the image name in Luau; it does not build
 or pull the image.
 
 Build the image with Podman or Docker:
@@ -11,7 +11,7 @@ podman build -t roto-lambda-container:latest \
   -f demos/lambda-container/Containerfile demos/lambda-container
 ```
 
-Start Roto with the Lua setup:
+Start Roto with the Luau setup:
 
 ```sh
 cargo run -p roto-server -- --ephemeral --host 0.0.0.0 \

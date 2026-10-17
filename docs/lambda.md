@@ -2,7 +2,7 @@
 
 Save this executor binding as `setup.luau`:
 
-```lua
+```luau
 roto.lambda.bind("process-upload", {command = {"sh", "-c", "cat"}})
 ```
 
@@ -28,16 +28,16 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
   --payload '{"hello":"world"}' result.json
 ```
 
-The [Lua setup chapter](lua.md) covers resource creation and executor bindings. The
+The [Luau setup chapter](lua.md) covers resource creation and executor bindings. The
 [Demos chapter](demos.md#invoke-a-lambda-container-image) shows the RIE image invocation.
 
-## Inline Lua placeholder functions
+## Inline Luau placeholder functions
 
 For a quick local function, provide `handler` instead of `executor` in a setup
 script. The event is decoded JSON, so you can examine its fields and return a
 custom JSON payload directly:
 
-```lua
+```luau
 roto.lambda.fn("greet", {
   timeout = 3,
   handler = function(event, context)
@@ -64,12 +64,12 @@ The result contains `message: "Hello Ada"`, the original event, and the invocati
 request ID. Context also contains `function_arn`, `region`, `environment`, and
 `timeout` in seconds. Return JSON-compatible values; `roto.array({})` represents
 an empty array and `roto.null` represents JSON null. Captured locals survive
-invocations. Lua errors fail the invocation, and results have a 6 MiB limit.
+invocations. Luau errors fail the invocation, and results have a 6 MiB limit.
 `print` writes to the server console rather than invocation logs.
 
-For a stateful Lua placeholder, capture a counter outside the callback:
+For a stateful Luau placeholder, capture a counter outside the callback:
 
-```lua
+```luau
 local invocations = 0
 roto.lambda.fn("lua-counter", {
   handler = function(event, context)
@@ -80,22 +80,22 @@ roto.lambda.fn("lua-counter", {
 ```
 
 This closure retains its state until restart regardless of the RIE `warm` option,
-which applies only to container executors. Use `handler` for Lua callbacks; the
+which applies only to container executors. Use `handler` for Luau callbacks; the
 serialized `inline` executor ID is internal and is not a user binding option.
 
 Inline functions use the normal invocation and event delivery machinery. Their
 bindings are process-local: rerun setup after restarting. Already-persisted jobs
 referencing an earlier process's inline handler fail rather than invoke a new
-handler accidentally. Callbacks from one setup script execute serially. Lua
-deadline checks (at calls and loop iterations) enforce the function timeout for Lua code,
+handler accidentally. Callbacks from one setup script execute serially. Luau
+deadline checks (at calls and loop iterations) enforce the function timeout for Luau code,
 but cannot interrupt a blocking native call. Resource setup
 helpers and `roto.call`/`roto.wire` are unavailable inside runtime callbacks.
 
-## Intercept AWS requests from Lua
+## Intercept AWS requests from Luau
 
 Setup scripts can also inspect incoming AWS requests and supply custom responses:
 
-```lua
+```luau
 roto.hooks.request("lambda", "Invoke", function(request, context)
   if request.input and request.input.preview then
     return {
@@ -116,7 +116,7 @@ native validation or execution, so a short-circuit response does not create a
 Lambda invocation record. It does appear in the request trace.
 
 Interceptors match an exact service/operation pair, can stub unsupported
-operations, and have a one-second Lua instruction deadline. Internal service
+operations, and have a one-second Luau instruction deadline. Internal service
 calls and setup calls do not trigger them. See [runtime hooks](runtime-hooks.md)
 for the full contract and limits, including a setup example you can save locally.
 
@@ -124,7 +124,7 @@ for the full contract and limits, including a setup example you can save locally
 
 Bind an echo command to function metadata created through the AWS API:
 
-```lua
+```luau
 roto.lambda.bind("command-echo", {
   command = {"sh", "-c", "cat"},
 })
@@ -132,7 +132,7 @@ roto.lambda.bind("command-echo", {
 
 To create the function and configure every command binding option together:
 
-```lua
+```luau
 roto.lambda.fn("process-upload", {
   timeout = 10,
   memory_size = 256,
@@ -160,7 +160,7 @@ json.dump({"received": event, "mode": os.environ["MODE"]}, sys.stdout)
 
 
 `command` is an argv array. Shell syntax requires an explicit `["sh", "-c", "..."]`.
-`cwd` is resolved relative to the setup Lua file; it defaults to that file's directory.
+`cwd` is resolved relative to the setup Luau file; it defaults to that file's directory.
 Use an absolute executable path when selecting a particular interpreter or local binary.
 The example uses `python3` from PATH and has no Python dependencies.
 
@@ -185,7 +185,7 @@ container isolation or Lambda memory-limit enforcement.
 
 Bind an already running JSON handler:
 
-```lua
+```luau
 roto.lambda.bind("http-worker", {
   url = "http://127.0.0.1:8080/invoke",
   headers = {
@@ -197,7 +197,7 @@ roto.lambda.bind("http-worker", {
 
 Or create the metadata and binding in one step. Headers are optional:
 
-```lua
+```luau
 roto.lambda.fn("http-echo", {
   timeout = 10,
   executor = {url = "http://127.0.0.1:8080/echo"},
@@ -240,7 +240,7 @@ Roto does not inject or mount the emulator. See [AWS's container image requireme
 
 For a RIE-compatible image, bind its image name:
 
-```lua
+```luau
 -- Fresh container for every invocation (the default).
 roto.lambda.bind("cold-worker", {container = "my-worker:latest", warm = false})
 
@@ -309,7 +309,7 @@ cat result.json
 
 The setup is:
 
-```lua
+```luau
 roto.lambda.fn("warm-counter", {
   timeout = 30,
   executor = {container = "roto-lambda-warm:latest", warm = true},
@@ -321,7 +321,7 @@ roto.lambda.fn("cold-counter", {
 ```
 
 See the [container invocation demo](demos.md#invoke-a-lambda-container-image) for a sample
-`Containerfile` and Lua setup. If a handler calls AWS APIs against roto, start roto on a host
+`Containerfile` and Luau setup. If a handler calls AWS APIs against roto, start roto on a host
 interface reachable from the container (for example `--host 0.0.0.0`); `AWS_ENDPOINT_URL` is
 rewritten to the host alias for the selected container engine.
 
@@ -361,14 +361,14 @@ available through the [limited CloudWatch Logs API](cloudwatch-logs.md). Policie
 but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
 [EventBridge rules](eventbridge.md) can also enqueue invocations from custom or S3 events.
-Use `--setup setup.luau` for Lua resource setup and executor bindings; see
-[Lua setup and SQS delivery](lua.md) for supported options and retry behavior.
+Use `--setup setup.luau` for Luau resource setup and executor bindings; see
+[Luau setup and SQS delivery](lua.md) for supported options and retry behavior.
 
-## SQS handler configuration in Lua
+## SQS handler configuration in Luau
 
 Create a queue and function together, then enable partial batch failure reporting:
 
-```lua
+```luau
 local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
 local worker = roto.lambda.fn("process-orders", {
   timeout = 10,
@@ -411,7 +411,7 @@ Expose Lambda functions through API Gateway HTTP API v2 proxy events:
 
 Save this function as `setup.luau`:
 
-```lua
+```luau
 roto.lambda.fn("process-order", {
   handler = function(event, context)
     return {

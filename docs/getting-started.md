@@ -106,13 +106,13 @@ The bucket and object remain in `./roto-data`. To keep the same environment
 regardless of your working directory, use `--data-dir /path/to/roto-data` on
 each start. See [Storage](storage.md) for how the data is stored.
 
-## Add optional Lua services
+## Add optional Luau services
 
 The standard installation includes the hand-tuned Rust core services, where roto
 focuses on a first-class local development experience. Most users can start with
 these: services such as S3, SQS, DynamoDB, Lambda, SNS, and EventBridge are the
 building blocks of typical AWS applications. The
-[optional Lua services](services.md#optional-lua-services-completeness-coverage)
+[optional Luau services](services.md#optional-lua-services-completeness-coverage)
 provide completeness coverage, mostly simple CRUD and configuration simulation
 for service administration.
 They require a separate service bundle download.
@@ -125,7 +125,7 @@ restart it with the downloaded ZIP (replace `vX.Y.Z` with its actual tag):
 roto-server --port 5070 --lua-services ./roto-lua-services-vX.Y.Z.zip
 ```
 
-The ZIP is loaded directly; no extraction or separate Lua runtime is needed.
+The ZIP is loaded directly; no extraction or separate Luau runtime is needed.
 Pass the bundle on each start, or set `ROTO_LUA_SERVICES` to its path. Without
 this option or environment variable, only the core Rust services are registered.
 See the [server reference](server.md#optional-lua-service-bundle) for details.

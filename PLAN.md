@@ -86,26 +86,26 @@ $ROTO_DATA_DIR/s3/
 Everything else in moto is out of scope. Order after DynamoDB: **SNS, SSM, Secrets Manager, KMS, Kinesis**, then
 **IAM completion** (managed policies, groups, instance profiles). Lambda now has a local execution
 backend: command argv or HTTP POST bindings, configured separately from AWS function metadata,
-with synchronous/asynchronous Invoke and S3 notifications. Embedded Lua (`mlua`) provides startup resource setup over the same service operations, including
+with synchronous/asynchronous Invoke and S3 notifications. Embedded Luau (`mlua`) provides startup resource setup over the same service operations, including
 standard SQS event-source mappings. EventBridge now routes custom/S3 events to Lambda and SQS
 through persisted pattern rules and delivery retries; schedules and input transformers remain future work. Packaged runtimes, FIFO polling and Kinesis polling remain future work.
 Deprioritised on request: DynamoDB backups/PartiQL/import-table, and chasing exact error wording in long tails.
 
-### Runtime Lua hooks
+### Runtime Luau hooks
 
 Unsupported-call discovery is implemented: server warnings on stderr and
 `GET /roto-api/unsupported` provide deduplicated HTTP calls and counts without
 capturing payloads. See the book's server reference for limits and reset behavior.
 
 The primary lifecycle feature is a post-create callback registered from
-startup Lua, such as `hooks.created("lambda", "worker", callback)`. When a
+startup Luau, such as `hooks.created("lambda", "worker", callback)`. When a
 matching resource is successfully created, the callback receives the resulting
 resource metadata and can apply local configuration—for example, bind a command
 or HTTP executor to a Lambda function created through the Lambda API. Resource
 matching across logical IDs, physical names and ARNs, update behavior, duplicate
 deliveries, and callback error handling need to be defined.
 
-Inline Lua Lambda handlers and exact-operation request interception are implemented.
+Inline Luau Lambda handlers and exact-operation request interception are implemented.
 Setup retains closures and serializes callbacks, with instruction deadline checks.
 The primary post-create lifecycle callback and catch-all fallback remain planned.
 See [runtime hooks](docs/runtime-hooks.md) for the current API.

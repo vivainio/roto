@@ -15,7 +15,7 @@ roto-server --port 5070
 [development](https://vivainio.github.io/roto/development/).
 
 The hand-tuned Rust core services are where we aim to offer a first-class
-experience for typical AWS applications. Optional Lua services provide basic
+experience for typical AWS applications. Optional Luau services provide basic
 administration and configuration APIs and require a separate bundle download;
 see the book's [installation guide](https://vivainio.github.io/roto/getting-started/#add-optional-lua-services).
 

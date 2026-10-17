@@ -2,7 +2,7 @@
 
 AWS services use four wire protocols. Roto handles each in both directions:
 the server side decodes requests and encodes responses for real SDKs, and
-`roto.call` does the opposite for setup Lua.
+`roto.call` does the opposite for setup Luau.
 
 | Protocol | Services | Request | Response | Server codec | `roto.call` |
 | --- | --- | --- | --- | --- | --- |
@@ -27,7 +27,7 @@ falling back to `claims_unsigned` for unsigned calls.
 ## `roto.call` (client side)
 
 `crates/roto-server/src/aws_client.rs` is a runtime interpreter of the same
-botocore models, going the other way: Lua table in, `RawRequest` out, and the
+botocore models, going the other way: Luau table in, `RawRequest` out, and the
 `RawResponse` back into a PascalCase table. It never touches the network; it
 calls the handler's `handle()` directly.
 

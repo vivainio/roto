@@ -1,7 +1,7 @@
 # RDS Data API
 
 Roto's RDS Data API runs SQL against a PostgreSQL server you provide. Applications
-use the usual `rds-data` client pointed at Roto; a Lua hook selects the PostgreSQL
+use the usual `rds-data` client pointed at Roto; a Luau hook selects the PostgreSQL
 connection. The Data API is built into `roto-server` and needs no optional service
 bundle.
 
@@ -14,7 +14,7 @@ you do not need to create one to use the Data API.
 You need a running PostgreSQL server and an existing database. Save this as
 `setup.luau`, replacing the connection string with your database's details:
 
-```lua
+```luau
 roto.hooks.rds_data_connection(function(request, context)
   return "postgres://postgres:pw@localhost:5432/app"
 end)

@@ -1,7 +1,7 @@
-# Lua services roadmap
+# Luau services roadmap
 
 The working backlog is now maintained in the root
-[Lua services implementation plan](https://github.com/vivainio/roto/blob/main/lua-services-plan.md).
+[Luau services implementation plan](https://github.com/vivainio/roto/blob/main/lua-services-plan.md).
 
 That plan lists prioritized service slices, runtime prerequisites, existing-service
 upgrades, validation requirements and a progress log. Initial managed OpenSearch, RDS, ECR and ECS configuration slices and the Glue

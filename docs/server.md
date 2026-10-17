@@ -15,9 +15,9 @@ roto-server --ephemeral --trace calls.jsonl
 | `--data-dir` | `roto-data` | Persistent storage directory; also `ROTO_DATA_DIR` |
 | `--ephemeral` | Off | In-memory databases and temporary S3 files |
 | `--durable` | Off | SQLite `synchronous=FULL`, syncing each commit |
-| `--setup` | None | Lua resource setup and local Lambda executor bindings before listening or processing events |
-| `--lua-services <path>` | None | Optional Lua service directory or ZIP; also `ROTO_LUA_SERVICES` |
-| `--enable-lua-api` | Off | Accept Lua scripts at `POST /roto-api/lua` from loopback clients; see [Lua API](lua-api.md#running-scripts-on-a-live-server) |
+| `--setup` | None | Luau resource setup and local Lambda executor bindings before listening or processing events |
+| `--lua-services <path>` | None | Optional Luau service directory or ZIP; also `ROTO_LUA_SERVICES` |
+| `--enable-lua-api` | Off | Accept Luau scripts at `POST /roto-api/lua` from loopback clients; see [Luau API](lua-api.md#running-scripts-on-a-live-server) |
 | `--account-id` | `123456789012` | Default account (setup starts here; `roto.set_account` in the script overrides it and forces that account for all requests); also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
 
@@ -48,7 +48,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
-| `POST` | `/roto-api/lua` | Runs a Lua script with the setup API; needs `--enable-lua-api`, loopback only |
+| `POST` | `/roto-api/lua` | Runs a Luau script with the setup API; needs `--enable-lua-api`, loopback only |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
@@ -216,13 +216,13 @@ each request.
 
 ### Setup calls
 
-Calls made by a [Lua setup script](lua-api.md) happen in process, not over HTTP, but they
+Calls made by a [Luau setup script](lua-api.md) happen in process, not over HTTP, but they
 are traced too: every `roto.call`, `roto.wire`, and resource helper (`roto.s3.link`,
 `roto.dynamodb.table`, and so on) adds an entry with `"source": "setup"` (or `"lua-api"`
 for a script posted to `/roto-api/lua`). The entry has the same `service`, `outcome`,
 `error_code`, `duration_ms` and timestamp fields as a request, plus the `operation` (the
 AWS operation for `roto.call`, `METHOD /path` for `roto.wire`, `roto.<service>.<helper>`
-for helpers), the `resource` a helper names (a queue, table or `bucket/key`) and the Lua
+for helpers), the `resource` a helper names (a queue, table or `bucket/key`) and the Luau
 `location` that made the call. Setup entries have no `method`, `path` or `status`. This is the
 quickest way to see which step makes startup slow:
 
@@ -268,7 +268,7 @@ unseen operations, observed successes, observed errors, and unsupported calls;
 clicking an operation shows the correlated trace IDs. These are observations
 from the selected traces, not a claim that unseen APIs are unimplemented.
 The recorder stores no request bodies, query strings, or headers. Paths remain
-visible, including resource names supplied in the URL. Payload capture and Lua
+visible, including resource names supplied in the URL. Payload capture and Luau
 fallback handlers are not implemented yet.
 
 Future fallback handlers will also need a response contract: either raw HTTP
@@ -290,25 +290,25 @@ a role in another account switches the request account. Unknown keys use the
 default account. These mechanisms route requests; they do not verify signatures
 or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
 
-## Lua setup
+## Luau setup
 
-Create `setup.luau` using the example in [Lua setup](lua.md).
+Create `setup.luau` using the example in [Luau setup](lua.md).
 
-Lua can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
-event-source mappings. See [Lua setup](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
+Luau can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
+event-source mappings. See [Luau setup](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
 
 ```sh
 roto-server --ephemeral --setup setup.luau
 ```
 
-## Optional Lua service bundle
+## Optional Luau service bundle
 
-Lua services provide completeness coverage, mostly simple CRUD, metadata storage,
+Luau services provide completeness coverage, mostly simple CRUD, metadata storage,
 and configuration simulation. The hand-tuned Rust core services are where roto
 aims to offer a first-class local development experience; see
 [service coverage](services.md) for the distinction and limits.
 
-The server binary and `roto-aws` installation do not include Lua service scripts.
+The server binary and `roto-aws` installation do not include Luau service scripts.
 Download the optional
 `roto-lua-services-<tag>.zip` asset from the matching
 [GitHub release](https://github.com/vivainio/roto/releases) and pass it
@@ -320,7 +320,7 @@ roto-server --ephemeral --lua-services ./roto-lua-services-vX.Y.Z.zip
 
 A directory such as the checkout's `services/` works with the same flag.
 `ROTO_LUA_SERVICES` sets the default bundle path; the CLI option overrides it.
-Without either setting no Lua services are registered. The root `manifest.json`
+Without either setting no Luau services are registered. The root `manifest.json`
 describes services and their script paths, and scripts are loaded lazily. See
 [the bundle README](https://github.com/vivainio/roto/blob/main/services/README.md)
 for the manifest format, packaging and service limitations.

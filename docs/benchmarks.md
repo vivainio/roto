@@ -34,7 +34,7 @@ for every run, with normal SQLite settings and without `--durable`.
 
 Startup starts immediately before spawning the built binary and ends after the
 first successful STS `GetCallerIdentity` response with the expected account ID.
-It includes process creation, service initialization, any Lua setup, and that
+It includes process creation, service initialization, any Luau setup, and that
 HTTP request. It excludes compilation and benchmark temporary-directory setup.
 Readiness is polled at roughly 1 ms intervals, so these are end-to-end readiness
 measurements rather than internal initialization timings.
@@ -46,7 +46,7 @@ medians. RSS includes resident shared pages and is not the same as total
 application memory, macOS physical footprint, or container memory accounting.
 The Python client, OS caches, and any external executors are outside that number.
 
-## Startup with a Lua setup script
+## Startup with a Luau setup script
 
 A [setup script](lua-api.md) runs inside the server process before the listener opens, so
 its calls are function calls, not HTTP requests, and they are cheap. As a realistic case,
@@ -85,7 +85,7 @@ that nothing reads, use the `include` and `exclude` globs of `roto.s3.link_dir` 
 the ones you do not need.
 
 To find the slow step in your own script, start the server with `--trace setup.jsonl`:
-every setup call is recorded with its duration and Lua line (see
+every setup call is recorded with its duration and Luau line (see
 [Setup calls](server.md#setup-calls)).
 
 ## Launching Roto from test code

@@ -57,7 +57,7 @@ agent-browser --session roto-mqtt-check get text '#log'
 agent-browser --session roto-mqtt-check close
 ```
 
-For the Lua denial checks, start the two servers with these commands instead
+For the Luau denial checks, start the two servers with these commands instead
 (in separate terminals), then run the same browser commands:
 
 ```sh
@@ -66,7 +66,7 @@ python3 demos/mqtt/serve.py --hooks
 ```
 
 The final status should be `PASS: all MQTT.js browser acceptance checks including
-Lua denials`. If the wait times out, inspect `#status` and `#log`, or run
+Luau denials`. If the wait times out, inspect `#status` and `#log`, or run
 `agent-browser --session roto-mqtt-check errors` and
 `agent-browser --session roto-mqtt-check console`. Close the browser session
 when finished and stop the disposable servers with Ctrl-C. If you selected
@@ -74,7 +74,7 @@ another demo port, adjust the browser URL accordingly.
 
 ## Run the MQTT.js integration checks with Bun
 
-The CI integration test runs MQTT.js 5.16.0 under Bun 1.4.3, including the Lua
+The CI integration test runs MQTT.js 5.16.0 under Bun 1.4.3, including the Luau
 policy denial checks. It starts a fresh ephemeral Roto server on a free port and
 stops it afterward; no browser or Python demo server is needed.
 

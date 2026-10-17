@@ -16,8 +16,8 @@ is a regression.
 | **SSM** | 13 / 152 | 75 / 156 | Parameter Store complete for normal use (versions, labels, history, hierarchy, tags, SecureString, filters). Not done: documents, commands, maintenance windows, patch baselines, public AMI/service parameters. |
 | **Secrets Manager** | 20 / 23 | 104 / 134 (2 skipped) | Secrets, versions and staging labels, deletion/restore, tags, resource policies, rotation bookkeeping (no Lambda invocation), listing with filters, random passwords, batch get. Missing: cross-region replication, rotation via Lambda. |
 | **SNS** | 19 / 42 | 126 / 184 (1 skipped) | Topics, subscriptions (SQS fan-out in-process, raw delivery, filter policies on attributes or body), publish/batch, FIFO checks, tags, permissions. Not done: platform applications/endpoints, SMS attributes, HTTP/Lambda/email delivery. |
-| **Lambda** | 19 / 85 | 8 / 125 (30 skipped) | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Lua startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
-| **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Lua setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
+| **Lambda** | 19 / 85 | 8 / 125 (30 skipped) | Function metadata/code bookkeeping, tags, stored permissions, Invoke (sync/async/dry-run), local command and HTTP executors, persistent jobs/results/logs. S3 notifications and standard SQS event-source mappings supported; embedded Luau startup setup. Native executor/restart tests and SDK smoke; no versions/aliases, packaged-runtime execution, FIFO or Kinesis polling. |
+| **EventBridge** | 15 / 57 | 23 / 136 (5 skipped) | Default/custom buses, pattern rules, Lambda/SQS targets, persistent delivery/retries, S3 bucket events, Luau setup. No schedules, input transformers, archives/replays, cross-account targets or permission APIs. |
 | **CloudFormation** | 18 / 90 | 25 resource integration tests | Synchronous stacks for SQS/SNS/S3/DynamoDB/Kinesis/IAM/Lambda, recursive nested stacks from S3 templates, child parameters and outputs, parent/root IDs, cross-stack exports/imports, change sets, events, refs/conditions, tags, persistence, rollback attempts, retention, stack policies, termination protection. Missing: nested change sets, imports of existing resources, transforms, rollback triggers, Lambda configuration updates, full policy semantics. |
 | **CloudWatch Logs** | 9 / 113 | Not measured | Minimal log-group CRUD, retention, tags, basic event filtering, and local Lambda output in `/aws/lambda/<function>`. No stream APIs, direct `PutLogEvents`, Insights, or retention enforcement. |
 | **Kinesis** | 28 / 39 | 76 / 76 | Persisted streams/shards/records, hash routing, iterators, split/merge/scaling, retention, tags, consumer registration, stored encryption/monitoring settings, CloudFormation streams. No enhanced fan-out streaming, Lambda polling, throughput enforcement, resource policies or actual encryption. |
@@ -60,10 +60,10 @@ behaviour. `scripts/gen.sh` regenerates; CI fails if generated code is stale.
   `<data>/s3/.roto/`. Writes are temp-file + atomic rename. A key that is also a prefix
   (`a` and `a/b`) is stored as `a/.roto-self`; unsafe key segments (`..`, empty, control
   characters, over-long) are escaped. SQLite is the source of truth for metadata and all listings.
-* **Linked objects:** Lua setup `roto.s3.link` / `link_dir` register host files as objects
+* **Linked objects:** Luau setup `roto.s3.link` / `link_dir` register host files as objects
   without copying them (`objects.path` is `link:<host path>`); reads come from the file, which
   roto never writes, moves or deletes. Size and a size+mtime pseudo-ETag are captured at link time.
-* **Live Lua:** `--enable-lua-api` serves `POST /roto-api/lua` (loopback, no browsers) to run
+* **Live Luau:** `--enable-lua-api` serves `POST /roto-api/lua` (loopback, no browsers) to run
   scripts with the setup API against a running server.
 * Not yet: `roto s3 rescan` (re-importing files edited by hand), crash-recovery reconciliation,
   and fsync controls beyond SQLite's `--durable`.
@@ -106,12 +106,12 @@ depends on enforcement (anonymous access, bucket policies, presigned-URL auth).
 * `scripts/sync-moto-tests.sh <test_dir>...` - vendors tests from the pinned moto tag; modules
   that need moto's in-process internals are listed in `tests/moto/not_portable.txt`.
 * CI (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, unit tests, generated-code drift,
-  vendored moto suites, Lua/EventBridge SDK smokes, and `tests/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
+  vendored moto suites, Luau/EventBridge SDK smokes, and `tests/smoke-lambda.py` (SDK command/HTTP Invoke and S3 → command → SQS).
 
 ## Local Lambda execution
 
 `--setup <file.luau>` declares resources and binds command, HTTP, or RIE container-image
-executors using embedded Lua. See [examples/lambda/README.md](examples/lambda/README.md) for
+executors using embedded Luau. See [examples/lambda/README.md](examples/lambda/README.md) for
 configuration and [the container demo](demos/lambda-container/README.md). SQS failures retry through visibility
 timeout and queue DLQ redrive, with optional partial batch responses.
 Async jobs retry up to three attempts and persist across restart. Invocation history is at

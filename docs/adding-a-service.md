@@ -5,8 +5,8 @@ A Rust service is one crate, one model file and a few registration lines. Read
 model uses. For a small worked example, see the CRUD service section in
 [Development](development.md) (`roto-svc-logs`).
 
-Services can also be written in Lua without a Rust crate; see
-[Lua setup](lua.md) and the Lua services roadmap.
+Services can also be written in Luau without a Rust crate; see
+[Luau setup](lua.md) and the Luau services roadmap.
 
 ## Checklist
 

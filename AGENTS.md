@@ -1,6 +1,6 @@
 # Quick test data
 
-Use the reusable Lua seed at `examples/demo/setup.luau` when you need populated
+Use the reusable Luau seed at `examples/demo/setup.luau` when you need populated
 service state for API development, integration tests, manual exploration, or the
 inspection UI. It uses normal service APIs and seeds eleven stateful services;
 no moto installation or Python packages are needed.

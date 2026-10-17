@@ -10,7 +10,7 @@ with persistent resources that survive server restarts. Point your AWS clients
 at its local endpoint, create your development environment once, and keep using
 its buckets, queues, tables, and other supported resources across sessions.
 
-## Core services and optional Lua services
+## Core services and optional Luau services
 
 roto's **core services** are hand-tuned in Rust and built into the server binary.
 These are where we aim to offer a **first-class local development experience**,
@@ -22,13 +22,13 @@ event-driven code. See
 [core service coverage](services.md#core-services-first-class-experience)
 for the supported behavior and remaining gaps.
 
-The optional **Lua services** are provided for completeness and mostly offer
+The optional **Luau services** are provided for completeness and mostly offer
 simple CRUD, metadata storage, and configuration simulation, mainly for service
 administration rather than everyday application workloads. They have a narrower
 scope and do not carry the same first-class experience goal. Adding them requires
 downloading a **separate service bundle** from a GitHub release and passing
 `--lua-services` when starting the server; installing `roto-aws` alone does not
-include them. See [optional Lua service coverage](services.md#optional-lua-services-completeness-coverage)
+include them. See [optional Luau service coverage](services.md#optional-lua-services-completeness-coverage)
 and [bundle installation](getting-started.md#add-optional-lua-services).
 
 ## Why an open-source LocalStack alternative
@@ -54,9 +54,9 @@ the MIT license. roto aims to offer solid support for core AWS services in a
 dependency-free Rust binary you can drop into a development environment or CI
 without Docker containers or language runtimes. Check roto's
 [service coverage](services.md) to see whether it supports your workload.
-An embedded Lua interpreter lets you [create and wire services](lua.md), define
+An embedded Luau interpreter lets you [create and wire services](lua.md), define
 inline Lambda handlers, and [intercept AWS requests](runtime-hooks.md), without
-installing a separate Lua runtime.
+installing a separate Luau runtime.
 
 **roto will be free forever.** This project has no revenue goal and no interest
 in monetization. There is no plan for paid tiers, license fees, or a commercial
@@ -93,14 +93,14 @@ or read [Architecture](architecture.md) to work on the implementation.
 See [Performance](benchmarks.md) for measured startup, idle RSS, and API latency,
 with a reproducible suite and raw results.
 
-The book also covers [Lua setup](lua.md), the [full Lua API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
+The book also covers [Luau setup](lua.md), the [full Luau API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Core service guides cover [S3](s3.md), [Lambda](lambda.md),
 [CloudWatch Logs](cloudwatch-logs.md), [EventBridge](eventbridge.md), and
 [Kinesis](kinesis.md). Other service guides cover
 [RDS Data API](rds-data.md), [CloudFormation](cloudformation.md), [KMS](kms.md), and
 [IoT topics and WebSockets](iot.md).
-The [runtime Lua handler and interception guide](runtime-hooks.md) covers inline
+The [runtime Luau handler and interception guide](runtime-hooks.md) covers inline
 Lambda handlers and request interceptors.
 
 ## Project maturity

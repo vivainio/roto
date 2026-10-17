@@ -41,7 +41,7 @@ not encrypted and no CloudWatch metrics are emitted.
 
 `AWS::Kinesis::Stream` is supported by [CloudFormation](cloudformation.md), including
 names, shard count, retention, tags, mode and encryption settings. Kinesis APIs
-also work through Lua startup setup. Streams and records are available in the
+also work through Luau startup setup. Streams and records are available in the
 inspection resource browser.
 
 ## Compatibility and remaining gaps

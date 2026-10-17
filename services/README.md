@@ -1,6 +1,6 @@
-# Optional Lua service bundle
+# Optional Luau service bundle
 
-Lua service scripts are external files; none are embedded in the server binary.
+Luau service scripts are external files; none are embedded in the server binary.
 Without a configured bundle the server registers only its Rust services. Activate
 the bundle explicitly using a directory or a ZIP file:
 
@@ -44,7 +44,7 @@ repairing the file. An open ZIP keeps its index for the server lifetime: replace
 archives only while the server is stopped, then restart.
 
 The loader limits each manifest/script to 1 MiB and rejects unsafe
-ZIP entry names. These are trusted executable Lua modules with normal libraries.
+ZIP entry names. These are trusted executable Luau modules with normal libraries.
 
 ## Packaging and GitHub releases
 
@@ -53,7 +53,7 @@ python3 scripts/package-lua-services.py --output dist/roto-lua-services.zip
 roto-server --ephemeral --lua-services dist/roto-lua-services.zip
 ```
 
-The packaging script includes the root manifest, its referenced Lua files and
+The packaging script includes the root manifest, its referenced Luau files and
 license/documentation files. It produces a reproducible ZIP with `manifest.json`
 as the first local entry and first central-directory entry, followed by the
 common helper and service scripts. No parent directory wraps the bundle. The
@@ -61,23 +61,23 @@ loader finds the manifest by name, so compatible ZIPs from other tools also work
 
 The tagged release workflow attaches `roto-lua-services-<tag>.zip` to the matching
 GitHub release. This asset is separate from the Python wheels/server binary and
-is downloaded only when Lua services are wanted.
+is downloaded only when Luau services are wanted.
 
 ## Lazy dispatch
 
 At startup the server reads manifests and registers lightweight handler descriptors. Signed
 requests select it using the SigV4 service name `organizations`. Unsigned requests
 select it using the `AWSOrganizationsV20161128.` prefix of `X-Amz-Target`.
-Neither lookup opens a database nor executes Lua. The first valid request loads
+Neither lookup opens a database nor executes Luau. The first valid request loads
 the module, opens the service database (for example, `organizations.db`), and applies the generic document migration.
 Initialization is serialized and subsequent calls reuse that service's VM.
 Resetting an unused service does not initialize it. Existing persisted databases
-are cleared on reset without loading their Lua modules.
+are cleared on reset without loading their Luau modules.
 
 Each loaded service owns a VM and mutex. Each operation runs within one SQLite
-transaction, committed on success and rolled back on AWS errors, Lua failures, or
-timeouts. Runtime Lua code has a five-second instruction-hook deadline. These are
-trusted modules with normal Lua libraries; the deadline does not interrupt
+transaction, committed on success and rolled back on AWS errors, Luau failures, or
+timeouts. Runtime Luau code has a five-second instruction-hook deadline. These are
+trusted modules with normal Luau libraries; the deadline does not interrupt
 blocking native calls. The scripts should keep durable state in SQLite and avoid
 mutable module globals, which SQLite rollback cannot undo.
 
@@ -108,7 +108,7 @@ SDK service models; callers can use HTTP or supply their own model.
 
 A module returns a table mapping operation names to functions:
 
-```lua
+```luau
 return {
     DescribeThing = function(ctx, input, db)
         local thing = db.get(ctx.account_id .. "/things", input.Id)
@@ -138,7 +138,7 @@ inspection UI does not yet expose it.
 `status` defaults to 400. `roto.id(prefix)` generates a short identifier and
 `roto.uuid()` generates a UUID. `roto.sha256(text)` returns a hexadecimal digest;
 `roto.decode_base64(text)` decodes a base64 UTF-8 blob.
-`roto.json_decode(text, error_code)` parses JSON policy documents into Lua values
+`roto.json_decode(text, error_code)` parses JSON policy documents into Luau values
 and raises the specified AWS error code on malformed JSON. `roto.array()` constructs an explicitly
 marked JSON array, including empty arrays. Plain empty tables encode as objects;
 JSON null values use mlua's serde null representation. Successful operations
@@ -245,7 +245,7 @@ The version 1 manifest also accepts `protocol` and `model` in place of
 `service` is the signing identity: managed OpenSearch SDK clients sign as `es`.
 OpenSearch Serverless is a separate, currently unsupported service. Models are
 read at discovery to identify method/path/URI/query/header bindings and operations;
-Lua code and SQLite remain lazy. Model files are packaged in directory and ZIP
+Luau code and SQLite remain lazy. Model files are packaged in directory and ZIP
 bundles. Unknown modeled operations return `NotImplemented` (501). Model-derived
 operation names are recorded in request traces, including REST requests.
 
@@ -261,8 +261,8 @@ Use signed SDK requests for unambiguous service/region/account selection.
 Regenerate the stripped wire descriptors with
 `python3 scripts/generate-lua-service-models.py` using the CI-pinned botocore/boto3
 installation. Descriptors include unsupported operations for routing and tracing;
-the Lua exports define the implemented subset. No runtime botocore dependency is
-required. Configuration-only behavior is implemented directly in Lua; the local
+the Luau exports define the implemented subset. No runtime botocore dependency is
+required. Configuration-only behavior is implemented directly in Luau; the local
 MiniStack modules/tests informed the selection of operations.
 
 ### OpenSearch slice

@@ -6,7 +6,7 @@ Create an empty directory and save the three files shown below there:
 
 ## Invoke a Lambda container image
 
-This demo builds a small Python Lambda image. Roto receives only the image name in Lua,
+This demo builds a small Python Lambda image. Roto receives only the image name in Luau,
 starts the image with Podman or Docker, discovers the host port mapped to container port
 8080, sends the event to RIE, and removes the container after the invocation.
 Set `warm = true` in the executor binding to reuse idle containers; see the
@@ -29,9 +29,9 @@ that identity alongside the original event:
 --8<-- "demos/lambda-container/app.py"
 ```
 
-The Lua setup creates function metadata and binds the local image name:
+The Luau setup creates function metadata and binds the local image name:
 
-```lua title="setup.luau"
+```luau title="setup.luau"
 --8<-- "demos/lambda-container/setup.luau"
 ```
 

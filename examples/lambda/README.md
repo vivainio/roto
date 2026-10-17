@@ -1,6 +1,6 @@
 # Local Lambda executors
 
-Bind local executors through the Lua setup script:
+Bind local executors through the Luau setup script:
 
 ```sh
 cargo run -p roto-server -- --ephemeral --setup examples/lambda/setup.luau
@@ -25,7 +25,7 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
 ## Command executor
 
 `command` is an argv array. Shell syntax requires an explicit `["sh", "-c", "..."]`.
-`cwd` is resolved relative to the setup Lua file; it defaults to that file's directory.
+`cwd` is resolved relative to the setup Luau file; it defaults to that file's directory.
 Use an absolute executable path when selecting a particular interpreter or local binary.
 The example uses `python3` from PATH and has no Python dependencies.
 
@@ -65,7 +65,7 @@ to its Runtime Interface Emulator (RIE). AWS Lambda runtime base images, such as
 Custom images must supply RIE and an entrypoint that starts it on port 8080;
 Roto does not install it. Bind a compatible image by name:
 
-```lua
+```luau
 roto.lambda.bind("image-worker", {container = "my-worker:latest", warm = true})
 ```
 
@@ -79,7 +79,7 @@ container startup time, so set a longer timeout for image-based functions. Conta
 stderr are returned as invocation logs.
 
 See the [container invocation demo](../../demos/lambda-container/README.md) for a sample
-`Containerfile` and Lua setup. If a handler calls AWS APIs against roto, start roto on a host
+`Containerfile` and Luau setup. If a handler calls AWS APIs against roto, start roto on a host
 interface reachable from the container (for example `--host 0.0.0.0`); `AWS_ENDPOINT_URL` is
 rewritten to the host alias for the selected container engine.
 
@@ -116,8 +116,8 @@ Code packages are stored as metadata, not unpacked or executed. Only `$LATEST` i
 versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch logging, and automatic
 Kinesis event-source polling is not implemented. Policies are stored but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
-Use `--setup setup.luau` for Lua resource setup and executor bindings; see
-[Lua setup and SQS delivery](../lua/README.md) for supported options and retry behavior.
+Use `--setup setup.luau` for Luau resource setup and executor bindings; see
+[Luau setup and SQS delivery](../lua/README.md) for supported options and retry behavior.
 
 ## Full SDK smoke test
 

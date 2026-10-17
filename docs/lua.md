@@ -1,17 +1,17 @@
-# Lua setup
+# Luau setup
 
-Lua declares resources and wires queues to Lambda functions. Functions can execute a local
+Luau declares resources and wires queues to Lambda functions. Functions can execute a local
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image
-through RIE, or run an inline Lua placeholder handler.
-See [runtime Lua handlers and interception](runtime-hooks.md) for inline functions and request hooks.
-This page is a tutorial; the [Lua API reference](lua-api.md) is the single source for every
+through RIE, or run an inline Luau placeholder handler.
+See [runtime Luau handlers and interception](runtime-hooks.md) for inline functions and request hooks.
+This page is a tutorial; the [Luau API reference](lua-api.md) is the single source for every
 symbol, option and return value (start with its symbol index).
-The binary embeds [Luau](https://luau.org) through `mlua`; no Lua installation is needed.
+The binary embeds [Luau](https://luau.org) through `mlua`; no Luau installation is needed.
 Start a script with `--!strict` to get types: see [Luau types](lua-types.md).
 
 Save this as `setup.luau`:
 
-```lua
+```luau
 local queue = roto.sqs.queue("jobs", {visibility_timeout = 30})
 local handler = roto.lambda.fn("echo-job", {
   executor = {command = {"sh", "-c", "cat"}}, timeout = 5
@@ -43,7 +43,7 @@ contract, HTTP and container executors, timeouts, and output limits.
 
 This expands the first example with queue settings and function options:
 
-```lua
+```luau
 local dead = roto.sqs.queue("dead")
 local queue = roto.sqs.queue("jobs", {
   visibility_timeout = 30,
@@ -70,7 +70,7 @@ local mapping = roto.lambda.event_source(queue, handler, {
 
 For a quick placeholder, supply `handler` instead of `executor`:
 
-```lua
+```luau
 roto.lambda.fn("greet", {
   handler = function(event, context)
     return {message = "Hello " .. event.name}
@@ -79,12 +79,12 @@ roto.lambda.fn("greet", {
 ```
 
 The handler receives decoded JSON and returns a JSON-compatible value. Closures
-survive startup; Lua errors fail the invocation. Runtime callbacks cannot use
+survive startup; Luau errors fail the invocation. Runtime callbacks cannot use
 resource setup APIs or `roto.call`/`roto.wire`. See [runtime hooks](runtime-hooks.md)
 for context fields, timeout limits, and interception examples.
 
 `queue` returns `{name, url, arn}`; `fn` returns `{name, arn}`; `event_source` returns
-the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Lua keyword). Unknown helper options cause a setup error.
+the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Luau keyword). Unknown helper options cause a setup error.
 
 The helpers create missing resources and update existing ones. Repeating setup preserves
 queue messages and mapping UUIDs. Queue attributes/tags supplied by the script are merged;
@@ -100,7 +100,7 @@ The script runs once on each startup after service initialization, before the HT
 and delivery workers start. It starts in the `--account-id` account and `us-east-1`; the script owns its scope from
 there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
 `--set REGION=...` and `roto.vars` to take them from the command line).
-`roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
+`roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Luau.
 `require("./module")` loads `module.luau` or `module.luau` beside the script. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
@@ -112,7 +112,7 @@ configuration and cannot be submitted through AWS APIs.
 
 `roto.s3.link(bucket, key, file)` and `roto.s3.link_dir(bucket, prefix, dir)` register
 existing host files as objects without copying or uploading them, which suits large fixtures
-that every start would otherwise re-upload. See the [Lua API reference](lua-api.md#s3)
+that every start would otherwise re-upload. See the [Luau API reference](lua-api.md#s3)
 and [Storage](storage.md).
 
 ## Other services
@@ -125,7 +125,7 @@ See [Service access](lua-api.md#service-access) for supported services and
 [the same S3 upload with wire, call, and boto3](lua-api.md#the-same-upload-with-wire-call-and-boto3)
 for a comparison including object metadata.
 
-```lua
+```luau
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
@@ -174,7 +174,7 @@ it: a wrong option, a missing field or a misspelled AWS member shows up as a typ
 ## Running scripts against a live server
 
 With `--enable-lua-api`, `POST /roto-api/lua` runs a script with these same helpers; see the
-[Lua API reference](lua-api.md#running-scripts-on-a-live-server).
+[Luau API reference](lua-api.md#running-scripts-on-a-live-server).
 
 ## Quick test data
 

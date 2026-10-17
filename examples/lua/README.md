@@ -1,8 +1,8 @@
-# Lua setup and SQS → Lambda
+# Luau setup and SQS → Lambda
 
-Lua declares resources and wires queues to Lambda functions. Functions execute a local
-process or POST their event to an HTTP endpoint. Inline Lua placeholder handlers and request interception are also supported; see [runtime hooks](../../docs/runtime-hooks.md).
-The binary embeds Luau through `mlua`; no Lua installation is needed.
+Luau declares resources and wires queues to Lambda functions. Functions execute a local
+process or POST their event to an HTTP endpoint. Inline Luau placeholder handlers and request interception are also supported; see [runtime hooks](../../docs/runtime-hooks.md).
+The binary embeds Luau through `mlua`; no Luau installation is needed.
 
 ```sh
 cargo run -p roto-server -- --ephemeral --setup examples/lua/setup.luau
@@ -19,7 +19,7 @@ timeouts and output limits are in [the Lambda executor reference](../lambda/READ
 
 ## Setup helpers
 
-```lua
+```luau
 local dead = roto.sqs.queue("dead")
 local queue = roto.sqs.queue("jobs", {
   visibility_timeout = 30,
@@ -44,7 +44,7 @@ local mapping = roto.lambda.event_source(queue, handler, {
 ```
 
 `queue` returns `{name, url, arn}`; `fn` returns `{name, arn}`; `event_source` returns
-the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Lua keyword). Unknown helper options cause a setup error.
+the AWS mapping configuration, including `UUID`. `fn` is short for function (`function` is a Luau keyword). Unknown helper options cause a setup error.
 
 The helpers create missing resources and update existing ones. Repeating setup preserves
 queue messages and mapping UUIDs. Queue attributes/tags supplied by the script are merged;
@@ -56,7 +56,7 @@ The script runs once on each startup after service initialization, before the HT
 and delivery workers start. It starts in the `--account-id` account and `us-east-1`; the script owns its scope from
 there: `roto.set_region(name)` and `roto.set_account(id)` re-scope later calls (`set_account` also forces that account for every request) (use
 `--set REGION=...` and `roto.vars` to take them from the command line).
-`roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Lua.
+`roto.account_id`, `roto.region`, and `roto.endpoint` expose the current scope to Luau.
 `require("./module")` loads `module.luau` or `module.luau` beside the script. Command `cwd` defaults to that
 directory; relative `cwd` is resolved against it. Executables use the normal process PATH.
 
@@ -69,7 +69,7 @@ configuration and cannot be submitted through AWS APIs.
 `roto.call(service, operation, input)` accepts AWS-shaped input and returns decoded JSON.
 It supports Lambda, SQS, DynamoDB, SSM, Secrets Manager, and EventBridge (`events` or `eventbridge`):
 
-```lua
+```luau
 roto.call("ssm", "PutParameter", {
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
@@ -79,10 +79,10 @@ Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON
 
 `roto.wire(service, method, path, options)` calls any installed service through its normal
 wire handler, without waiting for the listener. Options are `headers`, `query` (raw query
-string), and `body` (a string or a Lua table encoded as JSON). It returns
-`{status, headers, body}` with a raw string body. HTTP errors raise a Lua error.
+string), and `body` (a string or a Luau table encoded as JSON). It returns
+`{status, headers, body}` with a raw string body. HTTP errors raise a Luau error.
 
-```lua
+```luau
 roto.wire("s3", "PUT", "/fixtures")
 roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
 roto.wire("sns", "POST", "/", {

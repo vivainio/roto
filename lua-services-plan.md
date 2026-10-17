@@ -1,4 +1,4 @@
-# Lua services implementation plan
+# Luau services implementation plan
 
 Working backlog, started 2026-10-10. This is the authoritative plan for growing
 `roto-lua-services`. Check items off as implemented and verified; keep unfinished
@@ -10,7 +10,7 @@ claim of AWS compatibility or a commitment to implement every operation.
 1. Take the next ready slice in the queue below. Record it under **Current work**.
 2. Inspect MiniStack code/tests where available and the installed botocore model.
    Choose an exact operation set, persistence model, scope and error contract.
-3. Implement the Lua module and required routing entry. Add focused contract
+3. Implement the Luau module and required routing entry. Add focused contract
    checks, documentation and per-service CI in the same change.
 4. Run the checks in **Definition of done**. Record evidence and remaining gaps,
    then check off the slice and select the next ready item.
@@ -39,13 +39,13 @@ that actually occurred or an explicitly documented simulation contract.
 ## Starting point and evidence
 
 The bundle registers ACM, Budgets, Config, CUR, Organizations, Cloud Map,
-managed OpenSearch (`es`), RDS, ECR, ECS and Glue. Lua handlers receive account/region/request context, run in a SQLite
+managed OpenSearch (`es`), RDS, ECR, ECS and Glue. Luau handlers receive account/region/request context, run in a SQLite
 transaction, and have document CRUD plus ID/UUID/hash helpers. AWS JSON 1.0/1.1
 requests require `X-Amz-Target`. Each service owns its VM, mutex and database.
 
 Model-backed REST/JSON scalar bindings and Query/XML codecs now support the
 OpenSearch/RDS configuration slices. Binary responses, cross-service calls,
-resource enumeration and durable background work remain unsupported. Normal Lua
+resource enumeration and durable background work remain unsupported. Normal Luau
 libraries are available, but blocking native calls escape the instruction-hook
 deadline and external effects cannot be rolled back with SQLite. Do not use
 request-local subprocess/HTTP tricks as the architecture for delivery engines.
@@ -132,7 +132,7 @@ register them as independent modules unchanged.
 
 ### R04 — Calls between services
 
-- [ ] Expose supported Rust/Lua service calls with explicit caller account/region.
+- [ ] Expose supported Rust/Luau service calls with explicit caller account/region.
 - [ ] Define lock ordering, recursion limits and errors for reentrant calls.
 - [ ] Define transaction boundaries; do not imply cross-service atomic rollback.
 - [ ] Preserve traces and prevent credentials leaking into persisted job payloads.
@@ -152,7 +152,7 @@ Needed by Scheduler, Pipes, builds, workflows, migrations and job services.
 
 ### R06 — Resource and tag registry
 
-- [ ] Enumerate actual Rust/Lua resources through scoped adapters.
+- [ ] Enumerate actual Rust/Luau resources through scoped adapters.
 - [ ] Route tag writes to the owning service; report partial errors per ARN.
 - [ ] Define deleted/previously tagged resource visibility and pagination.
 - [ ] Verify that direct service tagging and aggregate reads stay consistent.
@@ -167,7 +167,7 @@ Needed by Resource Groups Tagging API and query-based Resource Groups.
 - [ ] Verify rollback produces no committed change records and audit scope is correct.
 
 Gateway audit and DynamoDB change feeds are separate subprojects; both need
-producer-side work rather than a Lua API that invents events on reads.
+producer-side work rather than a Luau API that invents events on reads.
 
 ### R08 — Auth, token and identity endpoints
 
@@ -445,7 +445,7 @@ MiniStack: `dynamodb_streams.py`, `test_dynamodb_streams.py`; JSON, requires R03
 - [ ] Stream enable/disable lifecycle, retention and account/region isolation.
 - [ ] R04/R05 consumers: Pipes and Lambda; verify checkpoints and retries.
 
-This is JSON-compatible but cannot be implemented correctly as independent Lua
+This is JSON-compatible but cannot be implemented correctly as independent Luau
 CRUD. Keep it here with integrations rather than in the immediately ready queue.
 
 ### S30 — Backup (`backup`) · MiniStack: `backup.py`, `test_backup.py`
@@ -657,7 +657,7 @@ installed models, not all historical SDK versions.
 
 ## Batch E — Broader protocol and infrastructure families
 
-These are large families, not immediate Lua ports. Split by resource family and
+These are large families, not immediate Luau ports. Split by resource family and
 choose metadata or real runtime scope explicitly before starting.
 
 | Done | ID | Candidate / MiniStack reference | Work and dependencies |
@@ -677,7 +677,7 @@ choose metadata or real runtime scope explicitly before starting.
 | [ ] | S91 | Bedrock Agent Runtime / AgentCore runtime — `bedrock_agent_runtime.py`, `bedrock_agentcore.py` | R01/R02/R04/R05/R08/R09 streaming, session lifecycle, tools and inference backend. Keep control-plane configuration S45 separate from usable runtime calls. |
 | [ ] | S92 | WAF classic/regional — `waf_v1.py` | JSON-compatible but lower priority than S03; change tokens, sets/rules/ACLs and associations. Select only when an existing application needs these older API surfaces. |
 
-## Existing Lua service upgrades
+## Existing Luau service upgrades
 
 ### E01 — Organizations
 
@@ -724,8 +724,8 @@ MiniStack: `organizations.py`, `test_organizations.py`.
 ## Separate integration backlog
 
 - [ ] I01: CloudFormation adapters for selected new resource types; registering a
-      Lua service alone does not add stack provisioning support.
-- [ ] I02: inspection UI support for Lua document namespaces and resource summaries.
+      Luau service alone does not add stack provisioning support.
+- [ ] I02: inspection UI support for Luau document namespaces and resource summaries.
 - [ ] I03: expand the disposable demo seed with selected new service fixtures and
       validate its contract with `tests/smoke-demo.py`.
 - [ ] I04: run selected MiniStack HTTP tests against Roto; adapt direct-Python-state
@@ -759,5 +759,5 @@ MiniStack: `organizations.py`, `test_organizations.py`.
 | Date | Slice | Outcome | Validation / remaining work |
 | --- | --- | --- | --- |
 | 2026-10-10 | Planning | Broad backlog created from local MiniStack source/tests and botocore models | Initial backlog snapshot; S39/S82 subsequently selected below. |
-| 2026-10-10 | S39 → S82 configuration | Added 10 OpenSearch and 21 RDS Lua operations, model-backed REST/JSON and Query/XML, signing-aware routing, trace operation names, packaging and per-service CI | HTTP/boto3 contracts for directory/ZIP, persistence/reset/isolation/rollback; 36 server/core tests and 2 packaging tests passed. Real search/SQL backends remain unsupported; R01/R09 are partial prerequisites. |
+| 2026-10-10 | S39 → S82 configuration | Added 10 OpenSearch and 21 RDS Luau operations, model-backed REST/JSON and Query/XML, signing-aware routing, trace operation names, packaging and per-service CI | HTTP/boto3 contracts for directory/ZIP, persistence/reset/isolation/rollback; 36 server/core tests and 2 packaging tests passed. Real search/SQL backends remain unsupported; R01/R09 are partial prerequisites. |
 | 2026-10-10 | S01 → S09 → S02 | Added 14 ECR repository, 19 ECS configuration and 26 Glue catalog operations; shared JSON-policy decoder, directory/ZIP packaging and per-service CI | HTTP/boto3 checks cover every export, numeric revisions, table concurrency/archive semantics, partition filters/batches/cascades, rollback, scope, persistence/reset. 32 selected MiniStack HTTP tests passed (10 ECR, 9 ECS, 13 Glue), with separate request traces. Image registry, container execution and Glue jobs remain unsupported. |

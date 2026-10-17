@@ -166,7 +166,7 @@ manually and provide the original release run ID in `artifact-run-id`. This
 skips rebuilding and publishes that run's artifacts. Verify the chosen run
 belongs to the release you intend to publish.
 
-## Lua service contracts in CI
+## Luau service contracts in CI
 
 The `lua-services` job has separate matrix entries for CUR, ACM, Budgets, Config,
 Cloud Map, OpenSearch, RDS, ECR, ECS and Glue. Each entry builds the server, installs pinned boto3, and runs:
