@@ -70,11 +70,16 @@ impl Hub {
             _ => return Err(invalid("retain must be true or false")),
         }
 
-        let payload = match std::str::from_utf8(&request.body) {
+        self.publish(&topic, qos, &request.body)
+    }
+
+    /// Fan a message out to every matching subscriber (HTTP IoT and MQTT client publishes).
+    pub fn publish(&self, topic: &str, qos: u8, body: &[u8]) -> Result<(), AwsError> {
+        let payload = match std::str::from_utf8(body) {
             Ok(text) => json!({"encoding":"utf-8", "data":text}),
             Err(_) => json!({
                 "encoding":"base64",
-                "data":roto_protocol::base64::encode(&request.body),
+                "data":roto_protocol::base64::encode(body),
             }),
         };
         let event = json!({
@@ -85,14 +90,14 @@ impl Hub {
         })
         .to_string();
 
-        let mqtt_packet = roto_mqtt::publish(&topic, &request.body)
+        let mqtt_packet = roto_mqtt::publish(topic, body)
             .map_err(|_| invalid("Publish exceeds the local MQTT packet size limit"))?;
         let mut state = self.0.lock().unwrap();
         state.clients.retain(|_, client| {
             let matches = client
                 .subscriptions
                 .iter()
-                .any(|filter| topic_matches(filter, &topic));
+                .any(|filter| topic_matches(filter, topic));
             if matches {
                 !matches!(
                     client.outbound.try_send(if client.mqtt {

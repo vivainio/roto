@@ -14,9 +14,10 @@ pub enum Packet {
         id: u16,
         filters: Vec<String>,
     },
-    /// Client payloads are deliberately discarded by the listener.
     Publish {
         id: Option<u16>,
+        topic: String,
+        payload: Vec<u8>,
     },
     Ping,
     Disconnect,
@@ -157,12 +158,16 @@ pub fn decode(input: &[u8]) -> Result<Option<(Packet, usize)>, Error> {
             if qos > 1 {
                 return Err(Error::Unsupported);
             }
-            let topic = reader.text()?;
+            let topic = reader.text()?.to_owned();
             if topic.is_empty() || topic.contains(['+', '#']) {
                 return Err(Error::Malformed);
             }
             let id = if qos == 1 { Some(reader.id()?) } else { None };
-            Packet::Publish { id }
+            Packet::Publish {
+                id,
+                topic,
+                payload: reader.0.to_vec(),
+            }
         }
         _ => return Err(Error::Unsupported),
     };
@@ -340,7 +345,14 @@ mod tests {
         let encoded = publish("demo/state", &payload).unwrap();
         assert_eq!(
             decode(&encoded),
-            Ok(Some((Packet::Publish { id: None }, encoded.len())))
+            Ok(Some((
+                Packet::Publish {
+                    id: None,
+                    topic: "demo/state".into(),
+                    payload: payload.clone()
+                },
+                encoded.len()
+            )))
         );
         assert!(encoded.ends_with(&payload));
         assert_eq!(puback(258), [0x40, 2, 1, 2]);

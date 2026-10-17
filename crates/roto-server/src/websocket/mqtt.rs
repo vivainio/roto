@@ -107,6 +107,11 @@ async fn hook(app: &Arc<App>, operation: &str, mut request: Value) -> Result<Val
         .map_err(|error| error.to_string())?
 }
 
+/// Reserved `$` topics (e.g. `$aws/...`) are not writable by clients.
+fn hub_publish_allowed(topic: &str) -> bool {
+    !topic.starts_with('$')
+}
+
 async fn command(
     packet: Packet,
     app: &Arc<App>,
@@ -146,7 +151,16 @@ async fn command(
     let response = match packet {
         Packet::Connect(_) | Packet::Disconnect => return Err(()),
         Packet::Ping => Some(roto_mqtt::PINGRESP.to_vec()),
-        Packet::Publish { id } => id.map(roto_mqtt::puback),
+        Packet::Publish {
+            id,
+            topic,
+            payload,
+        } => {
+            if !hub_publish_allowed(&topic) || hub.publish(&topic, 0, &payload).is_err() {
+                return Err(());
+            }
+            id.map(roto_mqtt::puback)
+        }
         Packet::Subscribe {
             id: packet_id,
             filters,

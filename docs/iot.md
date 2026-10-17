@@ -37,8 +37,10 @@ Subscriptions support exact topics and `+`/`#` filters through the same registry
 as the JSON endpoint. HTTP IoT publishes arrive as MQTT PUBLISH packets with
 unchanged payload bytes, always at QoS 0. SUBACK grants requested QoS 0/1;
 QoS 2 and invalid filters receive a failure code. UNSUBSCRIBE, PINGREQ, and
-DISCONNECT are supported. Client PUBLISH payloads are dropped; QoS 1 receives
-PUBACK so the client does not stall.
+DISCONNECT are supported. A client PUBLISH is fanned out to all matching subscribers, including the
+sender if it subscribes to the topic, at QoS 0; QoS 1 publishes also receive a
+PUBACK. The retain flag is ignored, and publishing to `$`-prefixed topics or
+with an invalid topic closes the connection.
 
 Client IDs, credentials, clean session, keepalive settings, and wills do not
 create persistent state or authentication. Optional [Luau hooks](runtime-hooks.md#mqtt-connection-and-subscription-hooks)
