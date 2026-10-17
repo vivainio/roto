@@ -11,10 +11,36 @@ type TableinputInput = { TableInput: any }
 type TaggedInput = { ResourceArn: any }
 type TagResourceInput = { ResourceArn: any, TagsToAdd: any }
 type UntagResourceInput = { ResourceArn: any, TagsToRemove: any }
-local function catalog(ctx: Ctx, input: any)
+type CatalogRef = { CatalogId: any, TransactionId: any, QueryAsOfTime: any, AuditContext: any, OpenTableFormatInput: any, UpdateOpenTableFormatInput: any, ViewDefinition: any, PartitionIndexes: any, Segment: any }
+type DatabaseRef = CatalogRef & { DatabaseName: any, Name: any }
+type TableRef = DatabaseRef & { TableName: any }
+type CreateDatabaseInput = CatalogRef & { DatabaseInput: any, Tags: any }
+type GetDatabaseInput = DatabaseRef
+type GetDatabasesInput = CatalogRef & { AttributesToGet: any, ResourceShareType: any }
+type UpdateDatabaseInput = DatabaseRef & { DatabaseInput: any }
+type DeleteDatabaseInput = DatabaseRef
+type CreateTableInput = DatabaseRef & { TableInput: any }
+type GetTableInput = TableRef
+type GetTablesInput = DatabaseRef & { AttributesToGet: any, Expression: any }
+type UpdateTableInput = TableRef & { SkipArchive: any, TableInput: any, VersionId: any }
+type DeleteTableInput = TableRef
+type BatchDeleteTableInput = DatabaseRef & { TablesToDelete: any }
+type GetTableVersionInput = TableRef & { VersionId: any }
+type GetTableVersionsInput = TableRef
+type DeleteTableVersionInput = TableRef & { VersionId: any }
+type BatchDeleteTableVersionInput = TableRef & { VersionIds: any }
+type CreatePartitionInput = TableRef & { PartitionInput: any }
+type GetPartitionInput = TableRef & { PartitionValues: any }
+type DeletePartitionInput = TableRef & { PartitionValues: any }
+type UpdatePartitionInput = TableRef & { PartitionInput: any, PartitionValueList: any }
+type BatchCreatePartitionInput = TableRef & { PartitionInputList: any }
+type BatchGetPartitionInput = TableRef & { PartitionsToGet: any }
+type BatchDeletePartitionInput = TableRef & { PartitionsToDelete: any }
+type GetPartitionsInput = TableRef & { ExcludeColumnSchema: any, Expression: any }
+local function catalog(ctx: Ctx, input: CatalogRef)
     if input.CatalogId and input.CatalogId~=ctx.account_id then roto.error(code,'CatalogId must match caller account') end
     for _,key in ipairs({'TransactionId','QueryAsOfTime','AuditContext','OpenTableFormatInput','UpdateOpenTableFormatInput','ViewDefinition','PartitionIndexes','Segment'}) do
-        if input[key]~=nil then roto.error('NotImplemented','Unsupported catalog feature: '..key,501) end
+        if (input :: any)[key]~=nil then roto.error('NotImplemented','Unsupported catalog feature: '..key,501) end
     end
 end
 local function ns(ctx: Ctx, kind: any) return roto.scope(ctx,kind) end
@@ -22,12 +48,12 @@ local function name(value: any, label: any)
     if type(value)~='string' or #value<1 or #value>255 or not string.match(value, '^[%w_.%-]+$') then roto.error(code,'Invalid '..label) end
     return value:lower()
 end
-local function database(ctx: Ctx, input: any, db: Db, key: any)
+local function database(ctx: Ctx, input: DatabaseRef, db: Db, key: string?): any
     catalog(ctx,input);local id=name(input[key or 'DatabaseName'],key or 'DatabaseName')
     local d=db.get(ns(ctx,'databases'),id)
     if not d then roto.error('EntityNotFoundException','Database not found: '..id) end;return d
 end
-local function tabledoc(ctx: Ctx, input: any, db: Db, key: any)
+local function tabledoc(ctx: Ctx, input: TableRef, db: Db, key: string?): any
     local d=database(ctx,input,db);local id=name(input[key or 'TableName'],key or 'TableName')
     local t=db.get(ns(ctx,'tables/'..d.Name),id)
     if not t then roto.error('EntityNotFoundException','Table not found: '..id) end;return t
@@ -52,15 +78,15 @@ local function tableinput(input: TableinputInput)
     for _,key in ipairs({'TargetTable','ViewDefinition'}) do if t[key] then roto.error('NotImplemented','Federated/resource-link and structured views are unsupported',501) end end
     return t
 end
-function ops.CreateDatabase(ctx: Ctx, input: any, db: Db)
+function ops.CreateDatabase(ctx: Ctx, input: CreateDatabaseInput, db: Db)
     catalog(ctx,input);local value=roto.object(input.DatabaseInput,code,'DatabaseInput');local id=name(value.Name,'DatabaseInput.Name')
     if value.TargetDatabase or value.FederatedDatabase then roto.error('NotImplemented','Federated and resource-link databases are unsupported',501) end
     if db.get(ns(ctx,'databases'),id) then roto.error('AlreadyExistsException','Database exists') end
     local d={Name=id,CatalogId=ctx.account_id,CreateTime=os.time(),Parameters={},CreateTableDefaultPermissions=roto.array(),_Tags=tagmap(input.Tags or {})}
     roto.copy_fields(value,d,dbfields);db.put(ns(ctx,'databases'),id,d);return {}
 end
-function ops.GetDatabase(ctx: Ctx, input: any, db: Db) return {Database=public(database(ctx,input,db,'Name'))} end
-function ops.GetDatabases(ctx: Ctx, input: any, db: Db)
+function ops.GetDatabase(ctx: Ctx, input: GetDatabaseInput, db: Db) return {Database=public(database(ctx,input,db,'Name'))} end
+function ops.GetDatabases(ctx: Ctx, input: GetDatabasesInput, db: Db)
     catalog(ctx,input)
     if input.ResourceShareType and input.ResourceShareType~='FOREIGN' and input.ResourceShareType~='ALL' then
         if input.ResourceShareType~='FEDERATED' then roto.error(code,'Invalid ResourceShareType') end
@@ -70,7 +96,7 @@ function ops.GetDatabases(ctx: Ctx, input: any, db: Db)
     local out=roto.array();for _,d in ipairs(db.list(ns(ctx,'databases'))) do table.insert(out,public(d)) end
     return roto.page(input,out,'DatabaseList',100,100,code)
 end
-function ops.UpdateDatabase(ctx: Ctx, input: any, db: Db)
+function ops.UpdateDatabase(ctx: Ctx, input: UpdateDatabaseInput, db: Db)
     local d=database(ctx,input,db,'Name');local value=roto.object(input.DatabaseInput,code,'DatabaseInput')
     if name(value.Name,'DatabaseInput.Name')~=d.Name then roto.error('NotImplemented','Database renaming is unsupported',501) end
     if value.TargetDatabase or value.FederatedDatabase then roto.error('NotImplemented','Federated databases are unsupported',501) end
@@ -82,12 +108,12 @@ local function delete_table(ctx: Ctx, t: any, db: Db)
     clear(db,ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name))
     db.delete(ns(ctx,'tables/'..t.DatabaseName),t.Name)
 end
-function ops.DeleteDatabase(ctx: Ctx, input: any, db: Db)
+function ops.DeleteDatabase(ctx: Ctx, input: DeleteDatabaseInput, db: Db)
     local d=database(ctx,input,db,'Name')
     for _,t in ipairs(db.list(ns(ctx,'tables/'..d.Name))) do delete_table(ctx,t,db) end
     db.delete(ns(ctx,'databases'),d.Name);return {}
 end
-function ops.CreateTable(ctx: Ctx, input: any, db: Db)
+function ops.CreateTable(ctx: Ctx, input: CreateTableInput, db: Db)
     local d=database(ctx,input,db);local value=tableinput(input);local id=name(value.Name,'TableInput.Name')
     if input.Name and name(input.Name,'Name')~=id then roto.error(code,'Name must match TableInput.Name') end
     if db.get(ns(ctx,'tables/'..d.Name),id) then roto.error('AlreadyExistsException','Table exists') end
@@ -95,14 +121,14 @@ function ops.CreateTable(ctx: Ctx, input: any, db: Db)
     roto.copy_fields(value,t,tablefields)
     db.put(ns(ctx,'tables/'..d.Name),id,t);db.put(ns(ctx,'versions/'..d.Name..'/'..id),'1',{VersionId='1',Table=t});return {}
 end
-function ops.GetTable(ctx: Ctx, input: any, db: Db) return {Table=public(tabledoc(ctx,input,db,'Name'))} end
-function ops.GetTables(ctx: Ctx, input: any, db: Db)
+function ops.GetTable(ctx: Ctx, input: GetTableInput, db: Db) return {Table=public(tabledoc(ctx,input,db,'Name'))} end
+function ops.GetTables(ctx: Ctx, input: GetTablesInput, db: Db)
     local d=database(ctx,input,db)
     if input.Expression or input.AttributesToGet then roto.error('NotImplemented','Table regex filtering and attribute projection are unsupported',501) end
     local out=roto.array();for _,t in ipairs(db.list(ns(ctx,'tables/'..d.Name))) do table.insert(out,public(t)) end
     return roto.page(input,out,'TableList',100,100,code)
 end
-function ops.UpdateTable(ctx: Ctx, input: any, db: Db)
+function ops.UpdateTable(ctx: Ctx, input: UpdateTableInput, db: Db)
     catalog(ctx,input);local value=tableinput(input);local t=tabledoc(ctx,{CatalogId=input.CatalogId,DatabaseName=input.DatabaseName,TableName=input.Name or value.Name},db)
     if name(value.Name,'TableInput.Name')~=t.Name then roto.error('NotImplemented','Table renaming is unsupported',501) end
     if input.VersionId and input.VersionId~=t.VersionId then roto.error('ConcurrentModificationException','Stale table version') end
@@ -115,9 +141,9 @@ function ops.UpdateTable(ctx: Ctx, input: any, db: Db)
     if input.SkipArchive then db.delete(ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name),old) end
     db.put(ns(ctx,'tables/'..t.DatabaseName),t.Name,t);db.put(ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name),t.VersionId,{VersionId=t.VersionId,Table=t});return {}
 end
-function ops.DeleteTable(ctx: Ctx, input: any, db: Db) delete_table(ctx,tabledoc(ctx,input,db,'Name'),db);return {} end
+function ops.DeleteTable(ctx: Ctx, input: DeleteTableInput, db: Db) delete_table(ctx,tabledoc(ctx,input,db,'Name'),db);return {} end
 local function detail(code_: any, message: any) return {ErrorCode=code_,ErrorMessage=message} end
-function ops.BatchDeleteTable(ctx: Ctx, input: any, db: Db)
+function ops.BatchDeleteTable(ctx: Ctx, input: BatchDeleteTableInput, db: Db)
     local d=database(ctx,input,db);local out={Errors=roto.array()}
     for _,value in ipairs(roto.list(input.TablesToDelete,code,'TablesToDelete')) do
         local id=name(value,'TableName');local t=db.get(ns(ctx,'tables/'..d.Name),id)
@@ -130,18 +156,18 @@ local function version(ctx: Ctx, t: any, db: Db, value: any)
     local v=db.get(ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name),key)
     if not v then roto.error('EntityNotFoundException','Table version not found') end;return v
 end
-function ops.GetTableVersion(ctx: Ctx, input: any, db: Db) local t=tabledoc(ctx,input,db);return {TableVersion=version(ctx,t,db,input.VersionId)} end
-function ops.GetTableVersions(ctx: Ctx, input: any, db: Db)
+function ops.GetTableVersion(ctx: Ctx, input: GetTableVersionInput, db: Db) local t=tabledoc(ctx,input,db);return {TableVersion=version(ctx,t,db,input.VersionId)} end
+function ops.GetTableVersions(ctx: Ctx, input: GetTableVersionsInput, db: Db)
     local t=tabledoc(ctx,input,db);local values=db.list(ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name))
     table.sort(values,function(a: any, b: any) return (tonumber(a.VersionId) :: number)<(tonumber(b.VersionId) :: number) end)
     return roto.page(input,values,'TableVersions',100,100,code)
 end
-function ops.DeleteTableVersion(ctx: Ctx, input: any, db: Db)
+function ops.DeleteTableVersion(ctx: Ctx, input: DeleteTableVersionInput, db: Db)
     local t=tabledoc(ctx,input,db);local v=version(ctx,t,db,roto.required(input,'VersionId',code))
     if v.VersionId==t.VersionId then roto.error(code,'Cannot delete the current table version') end
     db.delete(ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name),v.VersionId);return {}
 end
-function ops.BatchDeleteTableVersion(ctx: Ctx, input: any, db: Db)
+function ops.BatchDeleteTableVersion(ctx: Ctx, input: BatchDeleteTableVersionInput, db: Db)
     local t=tabledoc(ctx,input,db);local space=ns(ctx,'versions/'..t.DatabaseName..'/'..t.Name);local out={Errors=roto.array()}
     for _,key in ipairs(roto.list(input.VersionIds,code,'VersionIds')) do
         local err
@@ -169,33 +195,33 @@ local function partcreate(ctx: Ctx, t: any, db: Db, value: any): (string?, strin
     roto.copy_fields(value,p,partfields);db.put(partspace(ctx,t),key :: string,p)
     return nil, nil
 end
-function ops.CreatePartition(ctx: Ctx, input: any, db: Db)
+function ops.CreatePartition(ctx: Ctx, input: CreatePartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local err,msg=partcreate(ctx,t,db,input.PartitionInput);if err then roto.error(err :: string,msg :: string) end;return {}
 end
-function ops.GetPartition(ctx: Ctx, input: any, db: Db) local t=tabledoc(ctx,input,db);return {Partition=public(partget(ctx,t,db,input.PartitionValues))} end
-function ops.DeletePartition(ctx: Ctx, input: any, db: Db)
+function ops.GetPartition(ctx: Ctx, input: GetPartitionInput, db: Db) local t=tabledoc(ctx,input,db);return {Partition=public(partget(ctx,t,db,input.PartitionValues))} end
+function ops.DeletePartition(ctx: Ctx, input: DeletePartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local p=partget(ctx,t,db,input.PartitionValues);db.delete(partspace(ctx,t),p._Id);return {}
 end
-function ops.UpdatePartition(ctx: Ctx, input: any, db: Db)
+function ops.UpdatePartition(ctx: Ctx, input: UpdatePartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local p=partget(ctx,t,db,input.PartitionValueList);local value=roto.object(input.PartitionInput,code,'PartitionInput')
     local key,err=values(t,value.Values);if err then roto.error(code,err) end
     if key~=p._Id and db.get(partspace(ctx,t),key :: string) then roto.error('AlreadyExistsException','Partition exists') end
     db.delete(partspace(ctx,t),p._Id);p._Id=key :: string;p.Values=value.Values;roto.copy_fields(value,p,partfields);db.put(partspace(ctx,t),key :: string,p);return {}
 end
-function ops.BatchCreatePartition(ctx: Ctx, input: any, db: Db)
+function ops.BatchCreatePartition(ctx: Ctx, input: BatchCreatePartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local out={Errors=roto.array()}
     for _,value in ipairs(roto.list(input.PartitionInputList,code,'PartitionInputList')) do
         local err,msg=partcreate(ctx,t,db,value);if err then table.insert(out.Errors,{PartitionValues=value.Values,ErrorDetail=detail(err,msg)}) end
     end;return out
 end
-function ops.BatchGetPartition(ctx: Ctx, input: any, db: Db)
+function ops.BatchGetPartition(ctx: Ctx, input: BatchGetPartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local out={Partitions=roto.array(),UnprocessedKeys=roto.array()}
     for _,item in ipairs(roto.list(input.PartitionsToGet,code,'PartitionsToGet')) do
         local key,err=values(t,item.Values);if err then roto.error(code,err) end
         local p=db.get(partspace(ctx,t),key :: string);if p then table.insert(out.Partitions,public(p)) else table.insert(out.UnprocessedKeys,{Values=item.Values}) end
     end;return out
 end
-function ops.BatchDeletePartition(ctx: Ctx, input: any, db: Db)
+function ops.BatchDeletePartition(ctx: Ctx, input: BatchDeletePartitionInput, db: Db)
     local t=tabledoc(ctx,input,db);local out={Errors=roto.array()}
     for _,item in ipairs(roto.list(input.PartitionsToDelete,code,'PartitionsToDelete')) do
         local key,err=values(t,item.Values);local p=key and db.get(partspace(ctx,t),key)
@@ -246,7 +272,7 @@ local function matches(p: any, rules: any)
         if not valid then return false end
     end;return true
 end
-function ops.GetPartitions(ctx: Ctx, input: any, db: Db)
+function ops.GetPartitions(ctx: Ctx, input: GetPartitionsInput, db: Db)
     local t=tabledoc(ctx,input,db);local rules=predicates(t,input.Expression);local out=roto.array()
     for _,p in ipairs(db.list(partspace(ctx,t))) do
         if matches(p,rules) then

@@ -3,6 +3,17 @@
 -- Request fields are untrusted JSON, so each is `any` and validated where it is used.
 type PageInput = { MaxResults: any, NextToken: any }
 type CreateOrganizationInput = { FeatureSet: any }
+type CreateOrganizationalUnitInput = { Name: any, ParentId: any, Tags: any }
+type DescribeOrganizationalUnitInput = { OrganizationalUnitId: any }
+type UpdateOrganizationalUnitInput = { Name: any, OrganizationalUnitId: any }
+type DeleteOrganizationalUnitInput = { OrganizationalUnitId: any }
+type ListOrganizationalUnitsForParentInput = { MaxResults: any, NextToken: any, ParentId: any }
+type DescribeAccountInput = { AccountId: any }
+type ListAccountsForParentInput = { MaxResults: any, NextToken: any, ParentId: any }
+type ListParentsInput = { ChildId: any, MaxResults: any, NextToken: any }
+type TagResourceInput = { ResourceId: any, Tags: any }
+type UntagResourceInput = { ResourceId: any, TagKeys: any }
+type ListTagsForResourceInput = { MaxResults: any, NextToken: any, ResourceId: any }
 local ops = {}
 local function required(input: any, key: any)
     local value = input[key]
@@ -125,7 +136,7 @@ function ops.DeleteOrganization(ctx: Ctx, _: any, db: Db)
     db.delete("organizations", org.Id)
     return {}
 end
-function ops.CreateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
+function ops.CreateOrganizationalUnit(ctx: Ctx, input: CreateOrganizationalUnitInput, db: Db)
     local org = management(ctx,db)
     local name, parent_id = required(input,"Name"), required(input,"ParentId")
     parent(org,db,parent_id)
@@ -141,10 +152,10 @@ function ops.CreateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     if input.Tags then set_tags(org,db,id,input.Tags) end
     return {OrganizationalUnit=public_ou(value)}
 end
-function ops.DescribeOrganizationalUnit(ctx: Ctx, input: any, db: Db)
+function ops.DescribeOrganizationalUnit(ctx: Ctx, input: DescribeOrganizationalUnitInput, db: Db)
     return {OrganizationalUnit=public_ou(ou(management(ctx,db),db,required(input,"OrganizationalUnitId")))}
 end
-function ops.UpdateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
+function ops.UpdateOrganizationalUnit(ctx: Ctx, input: UpdateOrganizationalUnitInput, db: Db)
     local org = management(ctx,db)
     local value = ou(org,db,required(input,"OrganizationalUnitId"))
     local name = required(input,"Name")
@@ -157,7 +168,7 @@ function ops.UpdateOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     db.put(namespace(org,"ous"), value.Id, value)
     return {OrganizationalUnit=public_ou(value)}
 end
-function ops.DeleteOrganizationalUnit(ctx: Ctx, input: any, db: Db)
+function ops.DeleteOrganizationalUnit(ctx: Ctx, input: DeleteOrganizationalUnitInput, db: Db)
     local org = management(ctx,db)
     local value = ou(org,db,required(input,"OrganizationalUnitId"))
     for _, collection in ipairs({"ous","accounts"}) do
@@ -169,7 +180,7 @@ function ops.DeleteOrganizationalUnit(ctx: Ctx, input: any, db: Db)
     db.delete(namespace(org,"ous"), value.Id)
     return {}
 end
-function ops.ListOrganizationalUnitsForParent(ctx: Ctx, input: any, db: Db)
+function ops.ListOrganizationalUnitsForParent(ctx: Ctx, input: ListOrganizationalUnitsForParentInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ParentId")
     parent(org,db,id)
@@ -190,13 +201,13 @@ function ops.ListAccounts(ctx: Ctx, input: PageInput, db: Db)
     for _, value in ipairs(db.list(namespace(org,"accounts"))) do table.insert(values,public_account(value)) end
     return page(input,values,"Accounts")
 end
-function ops.DescribeAccount(ctx: Ctx, input: any, db: Db)
+function ops.DescribeAccount(ctx: Ctx, input: DescribeAccountInput, db: Db)
     local org = management(ctx,db)
     local value = db.get(namespace(org,"accounts"),required(input,"AccountId"))
     if not value then roto.error("AccountNotFoundException", "Unknown account") end
     return {Account=public_account(value)}
 end
-function ops.ListAccountsForParent(ctx: Ctx, input: any, db: Db)
+function ops.ListAccountsForParent(ctx: Ctx, input: ListAccountsForParentInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ParentId")
     parent(org,db,id)
@@ -206,7 +217,7 @@ function ops.ListAccountsForParent(ctx: Ctx, input: any, db: Db)
     end
     return page(input,values,"Accounts")
 end
-function ops.ListParents(ctx: Ctx, input: any, db: Db)
+function ops.ListParents(ctx: Ctx, input: ListParentsInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ChildId")
     local value = db.get(namespace(org,"ous"),id) or db.get(namespace(org,"accounts"),id)
@@ -215,7 +226,7 @@ function ops.ListParents(ctx: Ctx, input: any, db: Db)
     table.insert(values, {Id=value.ParentId, Type=value.ParentId:sub(1,2)=="r-" and "ROOT" or "ORGANIZATIONAL_UNIT"})
     return page(input,values,"Parents")
 end
-function ops.TagResource(ctx: Ctx, input: any, db: Db)
+function ops.TagResource(ctx: Ctx, input: TagResourceInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
@@ -223,7 +234,7 @@ function ops.TagResource(ctx: Ctx, input: any, db: Db)
     set_tags(org,db,id,input.Tags)
     return {}
 end
-function ops.UntagResource(ctx: Ctx, input: any, db: Db)
+function ops.UntagResource(ctx: Ctx, input: UntagResourceInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
@@ -236,7 +247,7 @@ function ops.UntagResource(ctx: Ctx, input: any, db: Db)
     db.put(namespace(org,"tags"),id,tags)
     return {}
 end
-function ops.ListTagsForResource(ctx: Ctx, input: any, db: Db)
+function ops.ListTagsForResource(ctx: Ctx, input: ListTagsForResourceInput, db: Db)
     local org = management(ctx,db)
     local id = required(input,"ResourceId")
     resource(org,db,id)
