@@ -144,6 +144,22 @@ marked JSON array, including empty arrays. Plain empty tables encode as objects;
 JSON null values use mlua's serde null representation. Successful operations
 return JSON objects.
 
+### Type-checking modules
+
+Service modules see a different `roto` from setup scripts, so they have their own
+definitions (`Ctx`, `Db` and the `roto.*` helpers, including those in `common.luau`):
+
+```sh
+roto-server --check-services services/common.luau services/acm/service.luau
+roto-server --lua-stubs types    # also writes types/roto-service.d.luau for editors
+```
+
+Start a module with `--!strict` and annotate handlers as
+`function ops.Name(ctx: Ctx, input: NameInput, db: Db)`. `ACM` and `common.luau` are
+annotated; the other modules are not yet, and `scripts/check-luau-types.sh` checks only files
+that carry `--!strict`. `roto.error` is declared `never`, but the checker does not narrow on
+it, so a `Db.get` result needs a `:: Type` cast after the not-found check.
+
 ## Organizations scope
 
 Implemented operations:

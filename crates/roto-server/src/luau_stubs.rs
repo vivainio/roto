@@ -14,6 +14,13 @@ const TYPED: &str = include_str!("../typed-operations.json");
 
 const TEMPLATE: &str = include_str!("luau_stubs.d.luau");
 
+/// Definitions for service-module bundles (`--lua-services`), which see a different `roto`.
+const SERVICE_TEMPLATE: &str = include_str!("luau_service_stubs.d.luau");
+
+pub(crate) fn render_service() -> String {
+    SERVICE_TEMPLATE.to_owned()
+}
+
 /// `(roto.aws name, model)` for every service with a model; `eventbridge` shares `events`.
 pub(crate) const MODELS: &[(&str, &str)] = &[
     (
@@ -318,10 +325,19 @@ or set ROTO_LUAU_LSP to its full path. Steps per platform are in docs/lua-types.
 /// `roto-server --check`: type-checks setup scripts against the definitions of this build by
 /// running `luau-lsp analyze`. Returns the process exit code.
 pub(crate) fn check(files: &[PathBuf]) -> i32 {
+    analyze(files, &render(), "setup scripts")
+}
+
+/// `roto-server --check-services`: the same for service modules and their `common.luau`.
+pub(crate) fn check_services(files: &[PathBuf]) -> i32 {
+    analyze(files, &render_service(), "service modules")
+}
+
+fn analyze(files: &[PathBuf], definitions: &str, what: &str) -> i32 {
     let program = std::env::var("ROTO_LUAU_LSP").unwrap_or_else(|_| "luau-lsp".into());
     let dir = std::env::temp_dir().join(format!("roto-luau-{}", std::process::id()));
     if let Err(e) = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(dir.join("roto.d.luau"), render()))
+        .and_then(|()| std::fs::write(dir.join("roto.d.luau"), definitions))
     {
         eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());
         return 1;
@@ -351,7 +367,7 @@ pub(crate) fn check(files: &[PathBuf]) -> i32 {
             127
         }
         Err(e) => {
-            eprintln!("error: cannot run {program}: {e}");
+            eprintln!("error: cannot run {program} to check {what}: {e}");
             1
         }
     }

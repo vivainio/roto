@@ -48,6 +48,9 @@ struct Args {
     /// Type-check the given Luau setup scripts (needs luau-lsp on PATH) and exit.
     #[arg(long, value_name = "FILE", num_args = 1.., conflicts_with = "lua_stubs")]
     check: Vec<PathBuf>,
+    /// Type-check Luau service modules (and their common.luau) and exit.
+    #[arg(long, value_name = "FILE", num_args = 1.., conflicts_with_all = ["lua_stubs", "check"])]
+    check_services: Vec<PathBuf>,
     /// Port for the local AWS simulator.
     #[arg(long, default_value_t = 5070)]
     port: u16,
@@ -121,9 +124,15 @@ async fn main() {
     if !args.check.is_empty() {
         std::process::exit(luau_stubs::check(&args.check));
     }
+    if !args.check_services.is_empty() {
+        std::process::exit(luau_stubs::check_services(&args.check_services));
+    }
     if let Some(dir) = &args.lua_stubs {
         std::fs::create_dir_all(dir)
             .and_then(|()| std::fs::write(dir.join("roto.d.luau"), luau_stubs::render()))
+            .and_then(|()| {
+                std::fs::write(dir.join("roto-service.d.luau"), luau_stubs::render_service())
+            })
             .unwrap_or_else(|e| {
                 eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());
                 std::process::exit(1);
