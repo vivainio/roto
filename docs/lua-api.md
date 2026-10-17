@@ -366,7 +366,7 @@ configuration, including `UUID`. Repeated setup preserves the mapping UUID.
 --!strict
 local queue = roto.sqs.queue("tasks", {visibility_timeout = 30})
 local worker = roto.lambda.fn("task-worker", {
-  handler = function(event, context)
+  handler = function(event: SqsEvent, context)
     local failures = roto.array({})
     for _, record in ipairs(event.Records) do
       if record.body == "retry" then
@@ -588,7 +588,7 @@ limited to 6 MiB. `print` writes to the server console, not Lambda invocation lo
 --!strict
 local invocations = 0
 roto.lambda.fn("greet", {
-  handler = function(event, context)
+  handler = function(event: {name: string}, context)
     invocations = invocations + 1
     return {message = "Hello " .. event.name, count = invocations,
             region = context.region}

@@ -11,7 +11,7 @@ interceptors. Roto retains their Luau closures after startup. See
 --!strict
 roto.lambda.fn("greet", {
   timeout = 3,
-  handler = function(event, context)
+  handler = function(event: {name: string}, context)
     return {message = "Hello " .. event.name}
   end,
 })

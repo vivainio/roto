@@ -110,6 +110,58 @@ type Executor = {
 	warm: boolean?,
 }
 
+-- Events delivered to inline `handler` functions. They are `declare extern type`s so a script can
+-- name them in annotations (`function(event: SqsEvent, context)`); a plain `type` alias in a
+-- definitions file cannot be named from a script. Only the fields Roto sends are listed.
+declare extern type SqsMessageAttribute with
+	dataType: string
+	stringValue: string?
+	stringListValues: { string }
+	binaryListValues: { string }
+end
+declare extern type SqsRecord with
+	messageId: string
+	receiptHandle: string
+	body: string
+	attributes: { [string]: string }
+	messageAttributes: { [string]: SqsMessageAttribute }
+	md5OfBody: string
+	eventSource: string
+	eventSourceARN: string
+	awsRegion: string
+end
+declare extern type SqsEvent with
+	Records: { SqsRecord }
+end
+declare extern type S3Object with
+	key: string
+	sequencer: string
+	size: number?
+	eTag: string?
+	versionId: string?
+end
+declare extern type S3Bucket with
+	name: string
+	arn: string
+end
+declare extern type S3Detail with
+	s3SchemaVersion: string
+	configurationId: string
+	bucket: S3Bucket
+	object: S3Object
+end
+declare extern type S3Record with
+	eventVersion: string
+	eventSource: string
+	awsRegion: string
+	eventTime: string
+	eventName: string
+	s3: S3Detail
+end
+declare extern type S3Event with
+	Records: { S3Record }
+end
+
 type HookContext = { account_id: string, region: string, request_id: string }
 type LambdaContext = HookContext
 

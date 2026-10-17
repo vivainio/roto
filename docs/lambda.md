@@ -42,7 +42,7 @@ custom JSON payload directly:
 --!strict
 roto.lambda.fn("greet", {
   timeout = 3,
-  handler = function(event, context)
+  handler = function(event: {name: string?}, context)
     return {
       message = "Hello " .. (event.name or "world"),
       received = event,
@@ -51,6 +51,12 @@ roto.lambda.fn("greet", {
   end,
 })
 ```
+
+The `event` annotation documents the payload this function expects and lets `--check` catch
+a misspelled field. Without it `event` is `any`, because its shape depends on what invokes
+the function. `context` is typed by Roto. For events Roto delivers itself, name the type
+instead of spelling out its shape: `SqsEvent` for an SQS event source and `S3Event` for an
+S3 bucket notification.
 
 Save this as `setup.luau`, start the server, and invoke it:
 
@@ -383,7 +389,7 @@ Create a queue and function together, then enable partial batch failure reportin
 local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
 local worker = roto.lambda.fn("process-orders", {
   timeout = 10,
-  handler = function(event, context)
+  handler = function(event: SqsEvent, context)
     local failures = {}
     for _, record in ipairs(event.Records) do
       if record.body == "retry" then

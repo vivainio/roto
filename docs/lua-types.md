@@ -156,9 +156,11 @@ service, set it to `"implemented"`.
   A missing required field and a wrong value type are.
 - AWS enum members are typed as `string`, not as a union of the allowed values. (Literal
   unions are rejected inside nested tables by the old Luau solver.)
-- The definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own
+- Most definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own
   annotations: Luau definition files do not export type aliases. Annotate with
-  `typeof(...)` or let inference carry the types.
+  `typeof(...)` or let inference carry the types. The exceptions are the Lambda event
+  types, which are declared as external types so you can write `event: SqsEvent` or
+  `event: S3Event` on an inline handler (see [Lambda](lambda.md#inline-luau-placeholder-functions)).
 - Setup-only helpers are not distinguished from runtime-callback code; calling one inside a
   callback is still a runtime error.
 - The old solver reports a false error for some deeply nested DynamoDB items. Use the new
