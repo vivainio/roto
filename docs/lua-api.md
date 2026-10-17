@@ -366,7 +366,7 @@ configuration, including `UUID`. Repeated setup preserves the mapping UUID.
 --!strict
 local queue = roto.sqs.queue("tasks", {visibility_timeout = 30})
 local worker = roto.lambda.fn("task-worker", {
-  handler = function(event: SqsEvent, context)
+  handler = function(event: SqsEvent, context: LambdaContext)
     local failures = roto.array({})
     for _, record in ipairs(event.Records) do
       if record.body == "retry" then
@@ -588,7 +588,7 @@ limited to 6 MiB. `print` writes to the server console, not Lambda invocation lo
 --!strict
 local invocations = 0
 roto.lambda.fn("greet", {
-  handler = function(event: {name: string}, context)
+  handler = function(event: {name: string}, context: LambdaContext)
     invocations = invocations + 1
     return {message = "Hello " .. event.name, count = invocations,
             region = context.region}
@@ -609,7 +609,7 @@ omitted from headers. `context` contains `account_id`, `region`, and `request_id
 
 ```luau
 --!strict
-roto.hooks.request("sqs", "SendMessage", function(request, context)
+roto.hooks.request("sqs", "SendMessage", function(request: HookRequest, context: HookContext)
   if request.input and request.input.MessageBody == "fail" then
     return {status = 503,
       headers = {["content-type"] = "application/x-amz-json-1.0"},
@@ -633,7 +633,7 @@ A later registration replaces the earlier one. Connections use plain TCP (no TLS
 
 ```luau
 --!strict
-roto.hooks.rds_data_connection(function(request, context)
+roto.hooks.rds_data_connection(function(request: RdsDataConnectionRequest, context: HookContext)
   return "postgres://postgres:pw@localhost:5432/app"
 end)
 ```
@@ -654,11 +654,11 @@ entry per filter: 0 or 1 grants up to the requested QoS; 128 rejects.
 
 ```luau
 --!strict
-roto.hooks.mqtt_connect(function(request, context)
+roto.hooks.mqtt_connect(function(request: MqttRequest, context: HookContext)
   if request.connect.client_id == "blocked" then return {return_code = 5} end
   return nil
 end)
-roto.hooks.mqtt_subscribe(function(request, context)
+roto.hooks.mqtt_subscribe(function(request: MqttRequest, context: HookContext)
   local codes: {number} = {}
   for i, filter in ipairs(request.filters or {}) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos

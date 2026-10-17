@@ -42,7 +42,7 @@ custom JSON payload directly:
 --!strict
 roto.lambda.fn("greet", {
   timeout = 3,
-  handler = function(event: {name: string?}, context)
+  handler = function(event: {name: string?}, context: LambdaContext)
     return {
       message = "Hello " .. (event.name or "world"),
       received = event,
@@ -82,7 +82,7 @@ For a stateful Luau placeholder, capture a counter outside the callback:
 --!strict
 local invocations = 0
 roto.lambda.fn("lua-counter", {
-  handler = function(event, context)
+  handler = function(event: {[string]: any}, context: LambdaContext)
     invocations = invocations + 1
     return {count = invocations, requestId = context.request_id}
   end,
@@ -107,7 +107,7 @@ Setup scripts can also inspect incoming AWS requests and supply custom responses
 
 ```luau
 --!strict
-roto.hooks.request("lambda", "Invoke", function(request, context)
+roto.hooks.request("lambda", "Invoke", function(request: HookRequest, context: HookContext)
   if request.input and request.input.preview then
     return {
       status = 200,
@@ -390,7 +390,7 @@ Create a queue and function together, then enable partial batch failure reportin
 local queue = roto.sqs.queue("orders", {visibility_timeout = 30})
 local worker = roto.lambda.fn("process-orders", {
   timeout = 10,
-  handler = function(event: SqsEvent, context)
+  handler = function(event: SqsEvent, context: LambdaContext)
     local failures = {}
     for _, record in ipairs(event.Records) do
       if record.body == "retry" then
@@ -432,7 +432,7 @@ Save this function as `setup.luau`:
 ```luau
 --!strict
 roto.lambda.fn("process-order", {
-  handler = function(event: HttpApiEvent, context)
+  handler = function(event: HttpApiEvent, context: LambdaContext)
     return {
       statusCode = 201,
       headers = {["content-type"] = "application/json"},

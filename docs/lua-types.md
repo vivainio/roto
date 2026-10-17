@@ -160,9 +160,12 @@ service, set it to `"implemented"`.
   unions are rejected inside nested tables by the old Luau solver.)
 - Most definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own
   annotations: Luau definition files do not export type aliases. Annotate with
-  `typeof(...)` or let inference carry the types. The exceptions are the Lambda event
-  types, which are declared as external types so you can write `event: SqsEvent`,
-  `S3Event`, `EventBridgeEvent` or `HttpApiEvent` on an inline handler (see [Lambda](lambda.md#inline-luau-placeholder-functions)).
+  `typeof(...)` or let inference carry the types. The exceptions are the types of
+  values Roto hands to your callbacks, which are declared as external types you can name:
+  `SqsEvent`, `S3Event`, `EventBridgeEvent` and `HttpApiEvent` for an inline handler's
+  `event` (see [Lambda](lambda.md#inline-luau-placeholder-functions)), `LambdaContext` and
+  `HookContext` for `context`, and `HookRequest`, `MqttRequest` and `RdsDataConnectionRequest`
+  for hook requests.
 - Setup-only helpers are not distinguished from runtime-callback code; calling one inside a
   callback is still a runtime error.
 - The old solver reports a false error for some deeply nested DynamoDB items. Use the new

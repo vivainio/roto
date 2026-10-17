@@ -109,7 +109,7 @@ For a quick placeholder, supply `handler` instead of `executor`:
 ```luau
 --!strict
 roto.lambda.fn("greet", {
-  handler = function(event: {name: string}, context)
+  handler = function(event: {name: string}, context: LambdaContext)
     return {message = "Hello " .. event.name}
   end,
 })

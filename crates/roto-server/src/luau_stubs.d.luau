@@ -208,8 +208,17 @@ declare extern type HttpApiEvent with
 	cookies: { string }?
 end
 
-type HookContext = { account_id: string, region: string, request_id: string }
-type LambdaContext = HookContext
+-- Passed to hooks and inline handlers. External types, so scripts can name them in annotations.
+declare extern type HookContext with
+	account_id: string
+	region: string
+	request_id: string
+end
+declare extern type LambdaContext with
+	account_id: string
+	region: string
+	request_id: string
+end
 
 -- Supply exactly one of `executor` or `handler`.
 type FunctionOptions = {
@@ -243,52 +252,61 @@ type WireOptions = {
 }
 type WireResponse = { status: number, headers: { [string]: string }, body: string }
 
-type HookRequest = {
-	service: string,
-	operation: string,
-	method: string,
-	path: string,
-	query: string,
-	headers: { [string]: string },
-	body: string,
+declare extern type HookRequest with
+	service: string
+	operation: string
+	method: string
+	path: string
+	query: string
+	headers: { [string]: string }
+	body: string
 	-- Present when the body parses as JSON.
-	input: any?,
-}
+	input: any?
+end
 type HookResponse = {
 	-- 100 to 599.
 	status: number,
 	headers: { [string]: string }?,
 	body: string,
 }
-type MqttWill = { topic: string, qos: number, retain: boolean, payload_base64: string }
-type MqttConnect = {
-	protocol_version: number,
-	client_id: string,
-	clean_session: boolean,
-	keep_alive: number,
-	username: string?,
+declare extern type MqttWill with
+	topic: string
+	qos: number
+	retain: boolean
+	payload_base64: string
+end
+declare extern type MqttConnect with
+	protocol_version: number
+	client_id: string
+	clean_session: boolean
+	keep_alive: number
+	username: string?
 	-- Only when the password is valid UTF-8.
-	password: string?,
+	password: string?
 	-- Always set when a password was sent; preserves binary passwords.
-	password_base64: string?,
-	will: MqttWill?,
-}
-type MqttRequest = {
-	transport: string,
-	operation: string,
-	path: string,
-	query: string,
-	headers: { [string]: string },
-	source_ip: string,
-	source_port: number,
-	connection_id: string,
-	connect: MqttConnect,
+	password_base64: string?
+	will: MqttWill?
+end
+declare extern type MqttRequest with
+	transport: string
+	operation: string
+	path: string
+	query: string
+	headers: { [string]: string }
+	source_ip: string
+	source_port: number
+	connection_id: string
+	connect: MqttConnect
 	-- Subscribe only.
-	packet_id: number?,
+	packet_id: number?
 	-- Subscribe only.
-	filters: { { topic: string, qos: number } }?,
-}
-type RdsDataConnectionRequest = { resource_arn: string, secret_arn: string?, database: string? }
+	filters: { { topic: string, qos: number } }?
+end
+declare extern type RdsDataConnectionRequest with
+	resource_arn: string
+	secret_arn: string?
+	database: string?
+end
 
 declare roto: {
 	-- Server version (informational).

@@ -11,7 +11,7 @@ interceptors. Roto retains their Luau closures after startup. See
 --!strict
 roto.lambda.fn("greet", {
   timeout = 3,
-  handler = function(event: {name: string}, context)
+  handler = function(event: {name: string}, context: LambdaContext)
     return {message = "Hello " .. event.name}
   end,
 })
@@ -33,7 +33,7 @@ an AWS Luau runtime. `print` writes to the server console, not invocation logs.
 
 ```luau
 --!strict
-roto.hooks.request("sqs", "SendMessage", function(request, context)
+roto.hooks.request("sqs", "SendMessage", function(request: HookRequest, context: HookContext)
   if request.input and request.input.MessageBody == "fail" then
     return {
       status = 503,
@@ -78,14 +78,14 @@ For example:
 
 ```luau
 --!strict
-roto.hooks.mqtt_connect(function(request, context)
+roto.hooks.mqtt_connect(function(request: MqttRequest, context: HookContext)
   if request.connect.client_id == "blocked" then
     return {return_code = 5} -- Not authorized.
   end
   return nil
 end)
 
-roto.hooks.mqtt_subscribe(function(request, context)
+roto.hooks.mqtt_subscribe(function(request: MqttRequest, context: HookContext)
   local codes: {number} = {}
   for i, filter in ipairs(request.filters or {}) do
     codes[i] = filter.topic == "private/#" and 128 or filter.qos
