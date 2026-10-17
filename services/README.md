@@ -207,6 +207,7 @@ MiniStack code/tests and local botocore model inspection, not real AWS validatio
 | ECR (`ecr`) | 14 | Repository CRUD, settings, policies, lifecycle-policy storage, tags and pagination; account + region scoped | No images/layers, authorization, registry V2, policy enforcement, scanning or lifecycle execution; AES256 configuration only |
 | ECS (`ecs`) | 19 | Clusters, task-definition revisions/deregistration, service configuration, tags, filtering and pagination; account + region scoped | No tasks/container instances, deployment reconciliation or networking; running/pending counts remain zero |
 | Glue (`glue`) | 26 | Database/table CRUD, table versions/concurrency, partition CRUD/batches/filtering, database tags and pagination; account/catalog + region scoped | No crawlers/jobs/workflows, Lake Formation, federated/resource links, transaction snapshots or Iceberg commits |
+| WAFv2 (`wafv2`) | 22 | Web ACL, IP set and rule-group CRUD/list with lock tokens, tags, regional web ACL associations; account + region scoped, `CLOUDFRONT` is a global (us-east-1) namespace | Rules are stored, not evaluated; no capacity accounting, managed rule groups, logging, permission policies, API keys, regex sets or resource-existence checks |
 | OpenSearch (`es` signing scope) | 10 | Domain configuration CRUD, multi-describe, engine-filtered listing and tags; account + region scoped | Configuration simulation; no search backend, data endpoint, VPC provisioning, advanced security, packages or upgrades |
 | RDS (`rds`) | 21 | Instances/clusters, subnet groups, parameter groups and values, tags, cluster membership, deletion protection and pagination; account + region scoped | Synchronous configuration simulation; no SQL server, endpoint, credential management, snapshots, restore, DocumentDB or Data API |
 | Cloud Map (`servicediscovery`) | 26 | HTTP namespaces, service/instance CRUD, discovery, health, revisions, service attributes, operations and tags, account + region scoped | No DNS namespaces/Route 53, asynchronous workers, cross-account discovery or idempotency-token replay; mutations complete synchronously |
@@ -235,6 +236,7 @@ python3 tests/smoke-lua-services.py --service rds
 python3 tests/smoke-lua-services.py --service ecr
 python3 tests/smoke-lua-services.py --service ecs
 python3 tests/smoke-lua-services.py --service glue
+python3 tests/smoke-lua-services.py --service wafv2
 ```
 
 Omit `--service` to run all ten. These checks need only Python's standard
@@ -413,3 +415,31 @@ version pages allow 1–100 results; partition pages allow 1–1000, using offse
 `NextToken` tokens. Federated/resource links, structured views, partition indexes,
 transactions, historical query contexts, Lake Formation, crawlers/jobs/workflows,
 and Iceberg table commits are unsupported.
+
+### WAFv2 configuration slice
+
+Exports: `CreateWebACL`, `GetWebACL`, `UpdateWebACL`, `DeleteWebACL`, `ListWebACLs`,
+`CreateIPSet`, `GetIPSet`, `UpdateIPSet`, `DeleteIPSet`, `ListIPSets`,
+`CreateRuleGroup`, `GetRuleGroup`, `UpdateRuleGroup`, `DeleteRuleGroup`,
+`ListRuleGroups`, `AssociateWebACL`, `DisassociateWebACL`, `GetWebACLForResource`,
+`ListResourcesForWebACL`, `TagResource`, `UntagResource`, `ListTagsForResource`.
+
+`REGIONAL` entities are stored per account and region; `CLOUDFRONT` entities form
+one global namespace per account and are only reachable through the `us-east-1`
+endpoint. Names are unique per scope and type. Items are addressed by name, scope and
+ID (web ACLs and rule groups also by ARN on read). Every read returns a `LockToken`;
+updates and deletes require the current one (`WAFOptimisticLockException`) and rotate it.
+Updates replace the whole definition, so omitted optional fields are removed; immutable
+fields (`IPAddressVersion`, `Capacity`) are kept.
+
+Rule documents keep their JSON. Validated: a `DefaultAction` with exactly one of
+`Allow`/`Block`, `VisibilityConfig` shape, unique rule names and priorities, `Action`
+versus `OverrideAction`, IP set CIDRs per address version (at most 10000), and
+`IPSetReferenceStatement`/`RuleGroupReferenceStatement` ARNs, which must name an existing
+item of the same scope. Referenced IP sets and rule groups, and web ACLs with
+associations, cannot be deleted (`WAFAssociatedItemException`). Associations are regional
+only; the resource ARN must be a supported type in the caller account and region, but the
+resource itself is not looked up. `ListResourcesForWebACL` without `ResourceType` lists
+every type. Nothing inspects requests: managed rule-group statements are stored as given.
+Listing uses `Limit` (1–100) and offset `NextMarker` tokens in name order.
+

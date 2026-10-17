@@ -564,7 +564,7 @@ mod tests {
         assert!(discover(store.clone(), None).unwrap().is_empty());
         let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services");
         let services = discover(store.clone(), Some(bundle)).unwrap();
-        assert_eq!(services.len(), 11);
+        assert_eq!(services.len(), 12);
         for service in &services {
             assert!(store.existing_db(service.service()).is_none());
             service.reset().unwrap();

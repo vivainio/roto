@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ECR/ECS/Glue configuration contracts, plus optional real boto3 round trips."""
+"""ECR/ECS/Glue/WAFv2 configuration contracts, plus optional real boto3 round trips."""
 import importlib.util
 import json
 import re
@@ -191,9 +191,111 @@ def glue(s):
     return arn
 
 
+def wafv2(s):
+    def call(op,data=None,**kw):return s.call('wafv2',op,data or {},**kw)
+    vis={'SampledRequestsEnabled':True,'CloudWatchMetricsEnabled':True,'MetricName':'demo'}
+    invalid,nonexistent,lock='WAFInvalidParameterException','WAFNonexistentItemException','WAFOptimisticLockException'
+    def ident(kind,name,scope='REGIONAL'):
+        found=[i for i in call('List'+kind+'s',{'Scope':scope})[kind+'s'] if i['Name']==name]
+        return {'Name':name,'Scope':scope,'Id':found[0]['Id']} if found else None
+    # IP sets: validation, scope rules, lock tokens and whole-definition updates.
+    call('CreateIPSet',{'Name':'office','Scope':'REGIONAL','IPAddressVersion':'IPV4','Addresses':['192.0.2.0/24'],'Description':'office','Tags':[{'Key':'env','Value':'test'}]})
+    call('CreateIPSet',{'Name':'office','Scope':'REGIONAL','IPAddressVersion':'IPV4','Addresses':[]},status=400,error='WAFDuplicateItemException')
+    call('CreateIPSet',{'Name':'bad','Scope':'REGIONAL','IPAddressVersion':'IPV4','Addresses':['192.0.2.0']},status=400,error=invalid)
+    call('CreateIPSet',{'Name':'bad','Scope':'REGIONAL','IPAddressVersion':'IPV4','Addresses':['2001:db8::/32']},status=400,error=invalid)
+    call('CreateIPSet',{'Name':'bad','Scope':'GLOBAL','IPAddressVersion':'IPV4','Addresses':[]},status=400,error=invalid)
+    call('CreateIPSet',{'Name':'edge','Scope':'CLOUDFRONT','IPAddressVersion':'IPV4','Addresses':[]},region='eu-west-1',status=400,error=invalid)
+    call('CreateIPSet',{'Name':'six','Scope':'REGIONAL','IPAddressVersion':'IPV6','Addresses':['2001:db8::/32']})
+    ipid=ident('IPSet','office');got=call('GetIPSet',ipid)
+    ipset,token=got['IPSet'],got['LockToken']
+    assert ipset['Addresses']==['192.0.2.0/24'] and ipset['Description']=='office' and ipset['ARN'].startswith('arn:aws:wafv2:us-east-1:'+ACCOUNT+':regional/ipset/office/')
+    call('GetIPSet',dict(ipid,Id='00000000-0000-0000-0000-000000000000'),status=400,error=nonexistent)
+    call('UpdateIPSet',dict(ipid,Addresses=['198.51.100.0/24'],LockToken='stale'),status=400,error=lock)
+    nxt=call('UpdateIPSet',dict(ipid,Addresses=['198.51.100.0/24'],LockToken=token))['NextLockToken']
+    assert nxt!=token
+    again=call('GetIPSet',ipid);assert again['LockToken']==nxt and again['IPSet']['Addresses']==['198.51.100.0/24'] and 'Description' not in again['IPSet']
+    call('UpdateIPSet',dict(ipid,Addresses=['198.51.100.0/24'],LockToken=token),status=400,error=lock)
+    call('UpdateIPSet',dict(ipid,Addresses=[],LockToken=nxt))
+    call('UpdateIPSet',dict(ipid,Addresses=['203.0.113.0/24'],Description='office',LockToken=call('GetIPSet',ipid)['LockToken']))
+    # Rule groups and web ACLs, including statement references.
+    rule=lambda name,priority,statement,**kw:dict({'Name':name,'Priority':priority,'Statement':statement,'VisibilityConfig':vis},**kw)
+    match={'ByteMatchStatement':{'SearchString':'YWRtaW4=','FieldToMatch':{'UriPath':{}},'TextTransformations':[{'Priority':0,'Type':'NONE'}],'PositionalConstraint':'CONTAINS'}}
+    call('CreateRuleGroup',{'Name':'rg','Scope':'REGIONAL','Capacity':10,'VisibilityConfig':vis,'Rules':[rule('admin',0,match,Action={'Block':{}})]})
+    call('CreateRuleGroup',{'Name':'rg2','Scope':'REGIONAL','Capacity':0,'VisibilityConfig':vis},status=400,error=invalid)
+    call('CreateRuleGroup',{'Name':'rg2','Scope':'REGIONAL','Capacity':10,'VisibilityConfig':vis,'Rules':[rule('admin',0,match)]},status=400,error=invalid)
+    rgid=ident('RuleGroup','rg');rg=call('GetRuleGroup',rgid)['RuleGroup'];assert rg['Capacity']==10 and rg['LabelNamespace']=='awswaf:'+ACCOUNT+':rulegroup:rg:'
+    assert call('GetRuleGroup',{'ARN':rg['ARN']})['RuleGroup']['Id']==rg['Id']
+    ipset_arn=call('GetIPSet',ipid)['IPSet']['ARN']
+    refs=[rule('block-office',0,{'IPSetReferenceStatement':{'ARN':ipset_arn}},Action={'Block':{}}),rule('shared',1,{'RuleGroupReferenceStatement':{'ARN':rg['ARN']}},OverrideAction={'None':{}})]
+    acl={'Name':'main','Scope':'REGIONAL','DefaultAction':{'Allow':{}},'VisibilityConfig':vis,'Rules':refs,'Tags':[{'Key':'tier','Value':'edge'}]}
+    call('CreateWebACL',dict(acl,DefaultAction={}),status=400,error=invalid)
+    call('CreateWebACL',dict(acl,DefaultAction={'Allow':{},'Block':{}}),status=400,error=invalid)
+    call('CreateWebACL',dict(acl,Rules=[refs[0],dict(refs[1],Priority=0)]),status=400,error=invalid)
+    call('CreateWebACL',dict(acl,Rules=[refs[0],dict(refs[1],Name='block-office')]),status=400,error=invalid)
+    call('CreateWebACL',dict(acl,Rules=[rule('r',0,{'IPSetReferenceStatement':{'ARN':ipset_arn.replace('office','gone')}},Action={'Allow':{}})]),status=400,error=nonexistent)
+    call('CreateWebACL',dict(acl,Rules=[rule('r',0,{'IPSetReferenceStatement':{'ARN':ipset_arn.replace(ACCOUNT,'999999999999')}},Action={'Allow':{}})]),status=400,error=invalid)
+    summary=call('CreateWebACL',acl)['Summary'];assert summary['Name']=='main' and summary['LockToken']
+    call('CreateWebACL',acl,status=400,error='WAFDuplicateItemException')
+    aclid=ident('WebACL','main');got=call('GetWebACL',aclid)
+    assert [r['Name'] for r in got['WebACL']['Rules']]==['block-office','shared'] and got['WebACL']['DefaultAction']=={'Allow':{}}
+    assert call('GetWebACL',{'ARN':summary['ARN']})['WebACL']['Id']==summary['Id']
+    call('DeleteIPSet',dict(ipid,LockToken=call('GetIPSet',ipid)['LockToken']),status=400,error='WAFAssociatedItemException')
+    call('DeleteRuleGroup',dict(rgid,LockToken=call('GetRuleGroup',rgid)['LockToken']),status=400,error='WAFAssociatedItemException')
+    # CLOUDFRONT is a separate global namespace that reuses names.
+    call('CreateWebACL',dict(acl,Scope='CLOUDFRONT',Rules=[]))
+    assert call('ListWebACLs',{'Scope':'CLOUDFRONT'})['WebACLs'][0]['ARN'].startswith('arn:aws:wafv2:us-east-1:'+ACCOUNT+':global/webacl/main/')
+    edge=ident('WebACL','main','CLOUDFRONT');call('DeleteWebACL',dict(edge,LockToken=call('GetWebACL',edge)['LockToken']))
+    call('GetWebACL',edge,status=400,error=nonexistent)
+    # Associations.
+    alb='arn:aws:elasticloadbalancing:us-east-1:'+ACCOUNT+':loadbalancer/app/web/50dc6c495c0c9188'
+    api='arn:aws:apigateway:us-east-1::/restapis/abc123/stages/prod'
+    call('AssociateWebACL',{'WebACLArn':summary['ARN'],'ResourceArn':'arn:aws:s3:::bucket'},status=400,error=invalid)
+    call('AssociateWebACL',{'WebACLArn':summary['ARN'],'ResourceArn':alb.replace('us-east-1','eu-west-1')},status=400,error=invalid)
+    call('AssociateWebACL',{'WebACLArn':summary['ARN'].replace('main','gone'),'ResourceArn':alb},status=400,error=nonexistent)
+    call('AssociateWebACL',{'WebACLArn':summary['ARN'],'ResourceArn':alb});call('AssociateWebACL',{'WebACLArn':summary['ARN'],'ResourceArn':api})
+    assert call('GetWebACLForResource',{'ResourceArn':alb})['WebACL']['Name']=='main'
+    assert call('ListResourcesForWebACL',{'WebACLArn':summary['ARN']})=={'ResourceArns':sorted([alb,api])}
+    assert call('ListResourcesForWebACL',{'WebACLArn':summary['ARN'],'ResourceType':'API_GATEWAY'})=={'ResourceArns':[api]}
+    call('ListResourcesForWebACL',{'WebACLArn':summary['ARN'],'ResourceType':'BOGUS'},status=400,error=invalid)
+    call('DeleteWebACL',dict(aclid,LockToken=call('GetWebACL',aclid)['LockToken']),status=400,error='WAFAssociatedItemException')
+    call('DisassociateWebACL',{'ResourceArn':api});call('DisassociateWebACL',{'ResourceArn':api})
+    assert call('GetWebACLForResource',{'ResourceArn':api})=={}
+    # Updating an ACL replaces its definition; stale tokens are rejected.
+    token=call('GetWebACL',aclid)['LockToken']
+    update=dict(aclid,DefaultAction={'Block':{}},VisibilityConfig=vis,Rules=refs,LockToken=token)
+    call('UpdateWebACL',dict(update,LockToken='stale'),status=400,error=lock)
+    call('UpdateWebACL',dict(update,DefaultAction={}),status=400,error=invalid)
+    call('UpdateWebACL',update)
+    assert call('GetWebACL',aclid)['WebACL']['DefaultAction']=={'Block':{}}
+    # Tags are shared across entity types and scoped to caller region/account.
+    arn=summary['ARN']
+    call('TagResource',{'ResourceARN':arn,'Tags':[{'Key':'tier','Value':'core'},{'Key':'drop','Value':'x'}]})
+    call('UntagResource',{'ResourceARN':arn,'TagKeys':['drop']})
+    assert call('ListTagsForResource',{'ResourceARN':arn})=={'TagInfoForResource':{'ResourceARN':arn,'TagList':[{'Key':'tier','Value':'core'}]}}
+    assert call('ListTagsForResource',{'ResourceARN':ipset_arn})['TagInfoForResource']['TagList']==[{'Key':'env','Value':'test'}]
+    call('ListTagsForResource',{'ResourceARN':arn.replace('us-east-1','eu-west-1')},status=400,error=invalid)
+    call('ListTagsForResource',{'ResourceARN':arn.replace('main','gone')},status=400,error=nonexistent)
+    call('TagResource',{'ResourceARN':'arn:aws:s3:::bucket','Tags':[{'Key':'a','Value':'b'}]},status=400,error=invalid)
+    # Sorted, paginated listing.
+    first=call('ListIPSets',{'Scope':'REGIONAL','Limit':1});assert [i['Name'] for i in first['IPSets']]==['office'] and first['NextMarker']
+    second=call('ListIPSets',{'Scope':'REGIONAL','Limit':1,'NextMarker':first['NextMarker']});assert [i['Name'] for i in second['IPSets']]==['six'] and 'NextMarker' not in second
+    call('ListIPSets',{'Scope':'REGIONAL','Limit':0},status=400,error=invalid)
+    call('ListIPSets',{'Scope':'REGIONAL','NextMarker':'bad'},status=400,error=invalid)
+    call('DeleteIPSet',dict(ident('IPSet','six'),LockToken=call('GetIPSet',ident('IPSet','six'))['LockToken']))
+    call('CreateRuleGroup',{'Name':'tmp','Scope':'REGIONAL','Capacity':5,'VisibilityConfig':vis,'Description':'temporary'})
+    tmp=ident('RuleGroup','tmp');token=call('GetRuleGroup',tmp)['LockToken']
+    call('UpdateRuleGroup',dict(tmp,VisibilityConfig=vis,Rules=[rule('admin',0,match,Action={'Count':{}})],LockToken='stale'),status=400,error=lock)
+    call('UpdateRuleGroup',dict(tmp,VisibilityConfig=vis,Rules=[rule('admin',0,match,Action={'Count':{}})],LockToken=token))
+    changed=call('GetRuleGroup',tmp);assert changed['RuleGroup']['Capacity']==5 and 'Description' not in changed['RuleGroup'] and len(changed['RuleGroup']['Rules'])==1
+    call('DeleteRuleGroup',dict(tmp,LockToken=token),status=400,error=lock)
+    call('DeleteRuleGroup',dict(tmp,LockToken=changed['LockToken']))
+    call('GetRuleGroup',tmp,status=400,error=nonexistent)
+    return arn
+
+
 def empty(s,name,**kw):
-    op,key={'ecr':('DescribeRepositories','repositories'),'ecs':('ListClusters','clusterArns'),'glue':('GetDatabases','DatabaseList')}[name]
-    assert s.call(name,op,{},**kw)=={key:[]}
+    op,key={'ecr':('DescribeRepositories','repositories'),'ecs':('ListClusters','clusterArns'),'glue':('GetDatabases','DatabaseList'),'wafv2':('ListWebACLs','WebACLs')}[name]
+    assert s.call(name,op,{'Scope':'REGIONAL'} if name=='wafv2' else {},**kw)=={key:[]}
 
 
 def persisted(s,name,fixture):
@@ -203,6 +305,12 @@ def persisted(s,name,fixture):
     elif name=='ecs':
         assert s.call(name,'DescribeTaskDefinition',{'taskDefinition':'web'})['taskDefinition']['revision']==2
         assert s.call(name,'DescribeServices',{'cluster':'demo','services':['api']})['services'][0]['desiredCount']==3
+    elif name=='wafv2':
+        acl=s.call(name,'ListWebACLs',{'Scope':'REGIONAL'})['WebACLs'][0]
+        got=s.call(name,'GetWebACL',{'Name':'main','Scope':'REGIONAL','Id':acl['Id']})['WebACL']
+        assert got['DefaultAction']=={'Block':{}} and len(got['Rules'])==2
+        alb='arn:aws:elasticloadbalancing:us-east-1:'+ACCOUNT+':loadbalancer/app/web/50dc6c495c0c9188'
+        assert s.call(name,'GetWebACLForResource',{'ResourceArn':alb})['WebACL']['Id']==acl['Id']
     else:
         assert s.call(name,'GetTable',{'DatabaseName':'demo','Name':'events'})['Table']['VersionId']=='13'
         assert s.call(name,'GetPartition',{'DatabaseName':'demo','TableName':'events','PartitionValues':['eu','2026']})['Partition']['Parameters']['batch']=='updated'
@@ -212,6 +320,18 @@ def sdk_check(s,name):
     import boto3
     from botocore.config import Config
     c=boto3.client(name,endpoint_url=s.url,region_name='us-east-1',aws_access_key_id='test',aws_secret_access_key='test',config=Config(retries={'max_attempts':0}))
+    if name=='wafv2':
+        vis={'SampledRequestsEnabled':True,'CloudWatchMetricsEnabled':True,'MetricName':'sdk'}
+        ip=c.create_ip_set(Name='sdk',Scope='REGIONAL',IPAddressVersion='IPV4',Addresses=['192.0.2.0/24'])['Summary']
+        acl=c.create_web_acl(Name='sdk',Scope='REGIONAL',DefaultAction={'Allow':{}},VisibilityConfig=vis,Rules=[{'Name':'r','Priority':0,'Statement':{'IPSetReferenceStatement':{'ARN':ip['ARN']}},'Action':{'Block':{}},'VisibilityConfig':vis}],Tags=[{'Key':'sdk','Value':'yes'}])['Summary']
+        assert c.get_web_acl(Name='sdk',Scope='REGIONAL',Id=acl['Id'])['WebACL']['Rules'][0]['Name']=='r'
+        assert c.list_tags_for_resource(ResourceARN=acl['ARN'])['TagInfoForResource']['TagList'][0]['Value']=='yes'
+        assert [i['Name'] for i in c.list_ip_sets(Scope='REGIONAL')['IPSets']].count('sdk')==1
+        try:c.delete_ip_set(Name='sdk',Scope='REGIONAL',Id=ip['Id'],LockToken=ip['LockToken']);raise AssertionError('referenced IP set was deleted')
+        except c.exceptions.WAFAssociatedItemException:pass
+        c.delete_web_acl(Name='sdk',Scope='REGIONAL',Id=acl['Id'],LockToken=acl['LockToken'])
+        c.delete_ip_set(Name='sdk',Scope='REGIONAL',Id=ip['Id'],LockToken=ip['LockToken'])
+        return
     if name=='ecr':
         repo=c.create_repository(repositoryName='sdk')['repository'];assert repo['createdAt'].year>=2026
         arn=repo['repositoryArn'];c.tag_resource(resourceArn=arn,tags=[{'Key':'sdk','Value':'yes'}]);assert c.list_tags_for_resource(resourceArn=arn)['tags'][0]['Value']=='yes'
@@ -245,7 +365,7 @@ def sdk_check(s,name):
 
 
 def run(name,sdk=False):
-    checks={'ecr':ecr,'ecs':ecs,'glue':glue}
+    checks={'ecr':ecr,'ecs':ecs,'glue':glue,'wafv2':wafv2}
     with tempfile.TemporaryDirectory(prefix='roto-catalog-bundle-') as packaged:
         archive=Path(packaged)/'services.zip'
         subprocess.run([sys.executable,str(ROOT/'scripts/package-lua-services.py'),'--output',str(archive)],check=True)
@@ -274,4 +394,4 @@ def run(name,sdk=False):
 
 if __name__=='__main__':
     import argparse
-    p=argparse.ArgumentParser();p.add_argument('--service',choices=['ecr','ecs','glue'],required=True);p.add_argument('--sdk',action='store_true');a=p.parse_args();run(a.service,a.sdk)
+    p=argparse.ArgumentParser();p.add_argument('--service',choices=['ecr','ecs','glue','wafv2'],required=True);p.add_argument('--sdk',action='store_true');a=p.parse_args();run(a.service,a.sdk)

@@ -27,7 +27,7 @@ TARGETS = {
     'budgets': 'AWSBudgetServiceGateway', 'config': 'StarlingDoveService',
     'servicediscovery': 'Route53AutoNaming_v20170314',
     'ecr': 'AmazonEC2ContainerRegistry_V20150921', 'ecs': 'AmazonEC2ContainerServiceV20141113',
-    'glue': 'AWSGlue',
+    'glue': 'AWSGlue', 'wafv2': 'AWSWAF_20190729',
 }
 ACCOUNT = '123456789012'
 
@@ -451,7 +451,7 @@ def main():
     parser.add_argument('--service', choices=list(TARGETS) + ['opensearch', 'rds'], help='Run one service (default: all)')
     parser.add_argument('--sdk', action='store_true', help='Also validate output models and boto3 round trips (requires boto3)')
     args = parser.parse_args()
-    external = {name: 'catalog' for name in ('ecr', 'ecs', 'glue')}
+    external = {name: 'catalog' for name in ('ecr', 'ecs', 'glue', 'wafv2')}
     external.update({name: 'databases' for name in ('opensearch', 'rds')})
     for name in ([args.service] if args.service in external else external if args.service is None else []):
         load_module(external[name]).run(name, args.sdk)

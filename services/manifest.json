@@ -66,6 +66,12 @@
       "target_prefix": "AWSGlue.",
       "json_version": "1.1",
       "script": "glue/service.luau"
+    },
+    {
+      "service": "wafv2",
+      "target_prefix": "AWSWAF_20190729.",
+      "json_version": "1.1",
+      "script": "wafv2/service.luau"
     }
   ],
   "common": "common.luau"
