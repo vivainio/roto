@@ -24,7 +24,7 @@ that actually occurred or an explicitly documented simulation contract.
 
 ## Current work
 
-- Active implementation: initial ECR/ECS/Glue slices complete; verification and shipping.
+- Active implementation: none; ECR/ECS/Glue initial slices verified and shipped. Next: S03 WAFv2 (write `--!strict` from the start).
 - Selected priority: S39 OpenSearch → S82 RDS → **S01 ECR → S09 ECS → S02 Glue**.
 - Completed initial slices: OpenSearch domain configuration/tags; RDS
   instances/clusters, subnet/parameter groups, parameter overrides and tags;
@@ -761,3 +761,4 @@ MiniStack: `organizations.py`, `test_organizations.py`.
 | 2026-10-10 | Planning | Broad backlog created from local MiniStack source/tests and botocore models | Initial backlog snapshot; S39/S82 subsequently selected below. |
 | 2026-10-10 | S39 → S82 configuration | Added 10 OpenSearch and 21 RDS Luau operations, model-backed REST/JSON and Query/XML, signing-aware routing, trace operation names, packaging and per-service CI | HTTP/boto3 contracts for directory/ZIP, persistence/reset/isolation/rollback; 36 server/core tests and 2 packaging tests passed. Real search/SQL backends remain unsupported; R01/R09 are partial prerequisites. |
 | 2026-10-10 | S01 → S09 → S02 | Added 14 ECR repository, 19 ECS configuration and 26 Glue catalog operations; shared JSON-policy decoder, directory/ZIP packaging and per-service CI | HTTP/boto3 checks cover every export, numeric revisions, table concurrency/archive semantics, partition filters/batches/cascades, rollback, scope, persistence/reset. 32 selected MiniStack HTTP tests passed (10 ECR, 9 ECS, 13 Glue), with separate request traces. Image registry, container execution and Glue jobs remain unsupported. |
+| 2026-10-17 | S01/S09/S02 verification | Closed out ECR/ECS/Glue initial slices against the definition of done | Per-service CI is covered by the all-service `lua-services` job (`smoke-lua-services.py --sdk`); docs in `docs/services.md` and `services/README.md` current. Passed: directory/ZIP HTTP and boto3 smoke for ecr (14), ecs (19), glue (26); packaging test; `smoke-demo.py`; 43 `roto-server` tests; `check-luau-types.sh`. Remaining typing debt: stored-document types for Glue/RDS/ECS, RDS generated operations still take `any`. |
