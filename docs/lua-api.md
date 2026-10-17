@@ -147,7 +147,7 @@ local jobs = roto.sqs.queue("jobs", {
   attributes = {MessageRetentionPeriod = "86400"},
   tags = {owner = "development"},
 })
-roto.call("sqs", "SendMessage", {
+roto.aws.sqs.SendMessage({
   QueueUrl = jobs.url, MessageBody = "hello",
 })
 ```
@@ -166,6 +166,7 @@ configuration. An option you leave out is left unchanged. Returns `{name, arn}`.
 | --- | --- |
 | `cors` | List of rules `{methods, origins, headers?, expose?, max_age?, id?}`. Replaces the CORS configuration; `{}` removes it. |
 | `notify` | List of destinations, see below. Replaces the whole notification configuration, so one call must list every destination; `{}` removes it. |
+| `eventbridge` | `true` sends object events to EventBridge, `false` stops. Without `notify`, existing destinations are kept; with it, the flag is part of the replaced configuration. See [EventBridge](eventbridge.md). |
 | `skip_validation` | `true` skips the check that queue destinations exist (it sends `x-amz-skip-destination-validation`). |
 
 A `notify` entry is `{queue | topic | lambda, events, prefix?, suffix?, id?}`. The

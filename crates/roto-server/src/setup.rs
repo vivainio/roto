@@ -1055,7 +1055,7 @@ pub fn run_source(
                 .ok_or_else(|| mlua::Error::external("roto.s3.bucket options must be a table"))?;
             check_keys(
                 opts,
-                &["cors", "notify", "skip_validation"],
+                &["cors", "notify", "eventbridge", "skip_validation"],
                 "bucket option",
             )?;
             bucket_s3
@@ -1079,10 +1079,36 @@ pub fn run_source(
                     )?;
                 }
             }
-            if let Some(notify) = opts.get("notify") {
-                let mut input =
-                    json!({"Bucket":name,"NotificationConfiguration":notification_config(notify)?});
-                if opts.get("skip_validation").and_then(Value::as_bool) == Some(true) {
+            let eventbridge = match opts.get("eventbridge") {
+                None => None,
+                Some(value) => Some(value.as_bool().ok_or_else(|| {
+                    mlua::Error::external("roto.s3.bucket eventbridge must be a boolean")
+                })?),
+            };
+            if opts.contains_key("notify") || eventbridge.is_some() {
+                // `notify` replaces the configuration; `eventbridge` alone keeps the
+                // existing destinations and only toggles EventBridge delivery.
+                let mut config = match opts.get("notify") {
+                    Some(notify) => notification_config(notify)?,
+                    None => s3_call(
+                        "GetBucketNotificationConfiguration",
+                        json!({"Bucket":name}),
+                    )?,
+                };
+                match eventbridge {
+                    Some(true) => config["EventBridgeConfiguration"] = json!({}),
+                    Some(false) => {
+                        config
+                            .as_object_mut()
+                            .map(|c| c.remove("EventBridgeConfiguration"));
+                    }
+                    None => {}
+                }
+                let mut input = json!({"Bucket":name,"NotificationConfiguration":config});
+                // Kept destinations were accepted earlier, so they are not checked again.
+                if !opts.contains_key("notify")
+                    || opts.get("skip_validation").and_then(Value::as_bool) == Some(true)
+                {
                     input["SkipDestinationValidation"] = json!(true);
                 }
                 s3_call("PutBucketNotificationConfiguration", input)?;
@@ -1901,6 +1927,13 @@ assert(not pcall(roto.s3.bucket, "x2x", { notify = {{ events = {"s3:ObjectCreate
 assert(not pcall(roto.s3.bucket, "x3x", { cors = {{ methods = {"GET"} }} }))
 assert(not pcall(roto.s3.bucket, "x4x", { notify = {{ queue = "arn:aws:sqs:us-east-1:123456789012:nope", events = {"s3:ObjectCreated:*"} }} }))
 roto.s3.bucket("x5x", { skip_validation = true, notify = {{ queue = "arn:aws:sqs:us-east-1:123456789012:nope", events = {"s3:ObjectCreated:*"} }} })
+roto.s3.bucket("eb-bucket", { eventbridge = true })
+assert(roto.call("s3", "GetBucketNotificationConfiguration", {Bucket = "eb-bucket"}).EventBridgeConfiguration)
+roto.s3.bucket("eb-bucket", { notify = {{ queue = "arn:aws:sqs:us-east-1:123456789012:q", events = {"s3:ObjectCreated:*"} }}, eventbridge = true, skip_validation = true })
+roto.s3.bucket("eb-bucket", { eventbridge = false })
+local eb = roto.call("s3", "GetBucketNotificationConfiguration", {Bucket = "eb-bucket"})
+assert(eb.EventBridgeConfiguration == nil and #eb.QueueConfigurations == 1)
+assert(not pcall(roto.s3.bucket, "eb-bucket", { eventbridge = "yes" }))
 roto.s3.bucket("assets", { bogus = true })
 "#,
         );

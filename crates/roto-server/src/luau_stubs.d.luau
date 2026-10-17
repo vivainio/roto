@@ -66,6 +66,9 @@ type BucketOptions = {
 	cors: { CorsRule }?,
 	-- Replaces all notifications; `{}` removes them.
 	notify: { NotifyEntry }?,
+	-- `true` also sends object events to EventBridge, `false` stops. Without `notify` the
+	-- existing destinations are kept.
+	eventbridge: boolean?,
 	-- Do not check that queue destinations exist.
 	skip_validation: boolean?,
 }

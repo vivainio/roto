@@ -164,11 +164,11 @@ for a comparison including object metadata.
 
 ```luau
 --!strict
-roto.call("ssm", "PutParameter", {
+roto.aws.ssm.PutParameter({
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
-roto.call("s3", "CreateBucket", {Bucket = "fixtures"})
-roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
+roto.aws.s3.CreateBucket({Bucket = "fixtures"})
+roto.s3.put("fixtures", "hello.txt", "hello")
 ```
 
 Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON null.

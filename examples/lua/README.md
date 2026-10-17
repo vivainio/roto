@@ -70,7 +70,7 @@ configuration and cannot be submitted through AWS APIs.
 It supports Lambda, SQS, DynamoDB, SSM, Secrets Manager, and EventBridge (`events` or `eventbridge`):
 
 ```luau
-roto.call("ssm", "PutParameter", {
+roto.aws.ssm.PutParameter({
   Name = "/app/mode", Value = "development", Type = "String", Overwrite = true,
 })
 ```
@@ -83,8 +83,8 @@ string), and `body` (a string or a Luau table encoded as JSON). It returns
 `{status, headers, body}` with a raw string body. HTTP errors raise a Luau error.
 
 ```luau
-roto.wire("s3", "PUT", "/fixtures")
-roto.wire("s3", "PUT", "/fixtures/hello.txt", { body = "hello" })
+roto.aws.s3.CreateBucket({ Bucket = "fixtures" })
+roto.s3.put("fixtures", "hello.txt", "hello")
 roto.wire("sns", "POST", "/", {
   headers = { ["content-type"] = "application/x-www-form-urlencoded" },
   body = "Action=CreateTopic&Version=2010-03-31&Name=events",
