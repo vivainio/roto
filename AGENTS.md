@@ -36,6 +36,15 @@ cargo build -p roto-server --locked
 python3 tests/smoke-demo.py      # starts and stops its own disposable server
 ```
 
+# Type-checking Luau setup scripts
+
+```sh
+roto-server --check setup.luau   # needs luau-lsp on PATH; start scripts with --!strict
+```
+
+It uses the definitions built into the server and exits non-zero on type errors. See
+[`docs/lua-types.md`](docs/lua-types.md).
+
 # API coverage from Moto tests
 
 Run the server-mode Moto tests by service and save each run's request trace:

@@ -4,6 +4,8 @@
 //! The hand-written setup API lives in `luau_stubs.d.luau`. The typed `roto.aws.<service>`
 //! clients and the AWS shape aliases are generated here from the botocore models in `models/`.
 use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::process::Command;
 
 use serde_json::Value;
 
@@ -312,5 +314,52 @@ mod tests {
             .collect();
         let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
         assert_eq!(names.len(), unique.len(), "duplicate type aliases");
+    }
+}
+
+const INSTALL_HINT: &str = "\
+error: `luau-lsp` was not found, and `roto-server --check` needs it to type-check scripts.
+Install it from https://github.com/JohnnyMorganz/luau-lsp/releases and put the binary on your PATH,
+or set ROTO_LUAU_LSP to its full path. See docs/lua-types.md.";
+
+/// `roto-server --check`: type-checks setup scripts against the definitions of this build by
+/// running `luau-lsp analyze`. Returns the process exit code.
+pub(crate) fn check(files: &[PathBuf]) -> i32 {
+    let program = std::env::var("ROTO_LUAU_LSP").unwrap_or_else(|_| "luau-lsp".into());
+    let dir = std::env::temp_dir().join(format!("roto-luau-{}", std::process::id()));
+    if let Err(e) = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(dir.join("roto.d.luau"), render()))
+    {
+        eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());
+        return 1;
+    }
+    for file in files {
+        match std::fs::read_to_string(file) {
+            Ok(text) if !text.lines().any(|l| l.trim() == "--!strict") => eprintln!(
+                "warning: {} has no `--!strict` line, so most mistakes will pass unnoticed",
+                file.display()
+            ),
+            _ => {}
+        }
+    }
+    let status = Command::new(&program)
+        .args(["analyze", "--platform=standard", "--flag:LuauSolverV2=true"])
+        .arg(format!(
+            "--definitions={}",
+            dir.join("roto.d.luau").display()
+        ))
+        .args(files)
+        .status();
+    let _ = std::fs::remove_dir_all(&dir);
+    match status {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("{INSTALL_HINT}");
+            127
+        }
+        Err(e) => {
+            eprintln!("error: cannot run {program}: {e}");
+            1
+        }
     }
 }

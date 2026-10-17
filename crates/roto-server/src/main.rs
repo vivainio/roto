@@ -45,6 +45,9 @@ struct Args {
     /// Write the Luau type definitions (`roto.d.luau`) for editors into DIR and exit.
     #[arg(long, value_name = "DIR")]
     lua_stubs: Option<PathBuf>,
+    /// Type-check the given Luau setup scripts (needs luau-lsp on PATH) and exit.
+    #[arg(long, value_name = "FILE", num_args = 1.., conflicts_with = "lua_stubs")]
+    check: Vec<PathBuf>,
     /// Port for the local AWS simulator.
     #[arg(long, default_value_t = 5070)]
     port: u16,
@@ -115,6 +118,9 @@ async fn main() {
         )
         .init();
     let args = Args::parse();
+    if !args.check.is_empty() {
+        std::process::exit(luau_stubs::check(&args.check));
+    }
     if let Some(dir) = &args.lua_stubs {
         std::fs::create_dir_all(dir)
             .and_then(|()| std::fs::write(dir.join("roto.d.luau"), luau_stubs::render()))

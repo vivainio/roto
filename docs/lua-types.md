@@ -11,26 +11,31 @@ Roto provides the part the checker cannot know on its own: a *definitions file*,
 **Download: [roto.d.luau](roto.d.luau)**. The server generates the same file with
 `roto-server --lua-stubs DIR`, so the file always matches the version you run.
 
-## Check a script in three steps
+## Check a script
 
-1. Start the script with `--!strict`. Without it Luau checks loosely, and most mistakes
-   pass.
-2. Write the definitions file next to your project:
+Start the script with `--!strict`. Without it Luau checks loosely, and most mistakes
+pass. Then run:
 
-   ```sh
-   roto-server --lua-stubs types          # writes types/roto.d.luau
-   ```
+```sh
+roto-server --check setup.luau
+```
 
-3. Run the checker, [luau-lsp](https://github.com/JohnnyMorganz/luau-lsp), with the file:
+This writes the definitions that match your server version to a temporary directory and runs
+[luau-lsp](https://github.com/JohnnyMorganz/luau-lsp) over the script. It prints the
+checker's findings and exits non-zero on a type error, so it works in CI. Roto's own CI checks
+every script under `examples/` and `demos/` this way (`scripts/check-luau-types.sh`).
 
-   ```sh
-   luau-lsp analyze --platform=standard --flag:LuauSolverV2=true \
-     --definitions=types/roto.d.luau setup.luau
-   ```
+`luau-lsp` must be installed and on your `PATH` (or set `ROTO_LUAU_LSP` to its path). If it is
+missing, `--check` stops and tells you where to get it. It also warns about a file without
+`--!strict`.
 
-   It exits non-zero when it finds a type error, so it works in CI. Roto's own CI does
-   exactly this for every script under `examples/` and `demos/`
-   (`scripts/check-luau-types.sh`).
+To run the checker yourself, write the definitions file and pass it explicitly:
+
+```sh
+roto-server --lua-stubs types          # writes types/roto.d.luau
+luau-lsp analyze --platform=standard --flag:LuauSolverV2=true \
+  --definitions=types/roto.d.luau setup.luau
+```
 
 For completion, hover and live errors in an editor (VS Code, Neovim, Zed and others),
 install the luau-lsp extension or plugin and point it at the same file:
