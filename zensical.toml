@@ -34,6 +34,7 @@ nav = [
     ] },
   ] },
   { "Lua configuration" = [
+    { "Quick walkthrough" = "walkthrough.md" },
     { "Setup tutorial" = "lua.md" },
     { "Runtime hooks" = "runtime-hooks.md" },
     { "API reference" = "lua-api.md" },
