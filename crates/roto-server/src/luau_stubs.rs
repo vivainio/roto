@@ -63,9 +63,6 @@ pub(crate) fn render() -> String {
         let mut model: Value = serde_json::from_str(text).expect("embedded model");
         crate::prune::prune(&mut model, &typed_operations(service));
         write_service(service, &model, &mut clients, &mut shapes);
-        if *service == "events" {
-            let _ = writeln!(clients, "\t\teventbridge: aws_events_Client,");
-        }
     }
     TEMPLATE
         .replace("--@@AWS_CLIENTS@@\n", &clients)
@@ -463,7 +460,7 @@ mod tests {
                 "{service}"
             );
         }
-        assert!(defs.contains("eventbridge: aws_events_Client,"));
+        assert!(!defs.contains("eventbridge: aws_events_Client,"));
         assert!(defs.contains("PutBucketCors: (input: aws_s3_PutBucketCorsRequestIn) -> ()"));
         assert!(defs.contains("type aws_s3_CORSRule = {"));
     }

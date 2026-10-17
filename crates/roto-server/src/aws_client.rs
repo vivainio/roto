@@ -39,17 +39,7 @@ const JSON_SERVICES: &[&str] = &[
     "events",
 ];
 
-/// Registered handler name for a `roto.call` service name (`eventbridge` is an alias).
-pub(crate) fn canonical(service: &str) -> &str {
-    if service == "eventbridge" {
-        "events"
-    } else {
-        service
-    }
-}
-
 pub(crate) fn supports(service: &str) -> bool {
-    let service = canonical(service);
     JSON_SERVICES.contains(&service) || XML_SERVICES.contains(&service)
 }
 
@@ -158,7 +148,6 @@ pub(crate) fn call(
     operation: &str,
     input: &Value,
 ) -> Result<Value, String> {
-    let service = canonical(service);
     if JSON_SERVICES.contains(&service) {
         return call_json(handler, ctx, operation, input);
     }

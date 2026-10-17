@@ -29,7 +29,7 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
   --payload '{"hello":"world"}' result.json
 ```
 
-The [Luau setup chapter](lua.md) covers resource creation and executor bindings. The
+The [Luau scripting guide](lua.md) covers resource creation and executor bindings. The
 [Demos chapter](demos.md#invoke-a-lambda-container-image) shows the RIE image invocation.
 
 ## Inline Luau placeholder functions
@@ -379,7 +379,7 @@ but not enforced.
 Standard SQS queues can invoke these executors through event-source mappings.
 [EventBridge rules](eventbridge.md) can also enqueue invocations from custom or S3 events.
 Use `--setup setup.luau` for Luau resource setup and executor bindings; see
-[Luau setup and SQS delivery](lua.md) for supported options and retry behavior.
+[Luau scripting guide and SQS delivery](lua.md) for supported options and retry behavior.
 
 ## SQS handler configuration in Luau
 

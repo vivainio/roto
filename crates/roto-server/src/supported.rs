@@ -3,7 +3,7 @@
 //! type only these.
 use roto_core::{ImplementsOperations, supported_operations};
 
-/// Operations implemented by `service` (a `roto.aws` name; `eventbridge` is `events`), or
+/// Operations implemented by `service` (a `roto.aws` name), or
 /// `None` for a service without a model.
 pub(crate) fn operations(service: &str) -> Option<Vec<&'static str>> {
     macro_rules! ops {
@@ -20,7 +20,7 @@ pub(crate) fn operations(service: &str) -> Option<Vec<&'static str>> {
             roto_svc_cloudformation::CloudFormation
         ),
         "dynamodb" => ops!(roto_svc_dynamodb, roto_svc_dynamodb::DynamoDb),
-        "events" | "eventbridge" => ops!(roto_svc_eventbridge, roto_svc_eventbridge::EventBridge),
+        "events" => ops!(roto_svc_eventbridge, roto_svc_eventbridge::EventBridge),
         "iam" => ops!(roto_svc_iam, roto_svc_iam::Iam),
         "kinesis" => ops!(roto_svc_kinesis, roto_svc_kinesis::Kinesis),
         "kms" => ops!(roto_svc_kms, roto_svc_kms::Kms),

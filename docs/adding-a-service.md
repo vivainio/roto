@@ -6,7 +6,7 @@ model uses. For a small worked example, see the CRUD service section in
 [Development](development.md) (`roto-svc-logs`).
 
 Services can also be written in Luau without a Rust crate; see
-[Luau setup](lua.md) and the [services plan](https://github.com/vivainio/roto/blob/main/lua-services-plan.md).
+[Luau scripting guide](lua.md) and the [services plan](https://github.com/vivainio/roto/blob/main/lua-services-plan.md).
 
 ## Checklist
 

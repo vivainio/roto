@@ -33,9 +33,9 @@ nav = [
       { "IoT and MQTT" = "iot.md" },
     ] },
   ] },
-  { "Lua configuration" = [
-    { "Quick walkthrough" = "walkthrough.md" },
-    { "Setup tutorial" = "lua.md" },
+  { "Luau scripting" = [
+    { "Quick tour" = "walkthrough.md" },
+    { "Scripting guide" = "lua.md" },
     { "Runtime hooks" = "runtime-hooks.md" },
     { "API reference" = "lua-api.md" },
     { "Luau types" = "lua-types.md" },

@@ -93,7 +93,7 @@ or read [Architecture](architecture.md) to work on the implementation.
 See [Performance](benchmarks.md) for measured startup, idle RSS, and API latency,
 with a reproducible suite and raw results.
 
-The book also covers [Luau setup](lua.md), the [full Luau API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
+The book also covers [Luau scripting guide](lua.md), the [full Luau API reference](lua-api.md), runnable [demos](demos.md), [integration testing](integration-testing.md),
 [server options and inspection](server.md), and [persistent storage](storage.md).
 Core service guides cover [S3](s3.md), [Lambda](lambda.md),
 [CloudWatch Logs](cloudwatch-logs.md), [EventBridge](eventbridge.md), and

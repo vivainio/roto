@@ -5,7 +5,7 @@ The setup creates an `uploads` bucket, enables EventBridge notifications, and ro
 `aws.s3` / `Object Created` events to an SQS queue and a local shell Lambda.
 Upload an object through your usual SDK pointed at `http://localhost:5070`.
 
-Use the typed `roto.aws.events.<Operation>(input)` client (or `roto.aws.eventbridge`) for EventBridge APIs.
+Use the typed `roto.aws.events.<Operation>(input)` client for EventBridge APIs.
 The default bus always exists; `CreateEventBus` creates custom buses. `PutRule`
 accepts JSON event patterns; `PutTargets` accepts same-account, same-region Lambda
 and SQS ARNs. `PutEvents` returns per-entry IDs or errors. Rules and deliveries

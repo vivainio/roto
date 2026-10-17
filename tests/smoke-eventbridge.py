@@ -38,7 +38,7 @@ def smoke():
             def client(service):
                 return boto3.client(service, endpoint_url=endpoint, region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
             sqs, events, s3 = client("sqs"), client("events"), client("s3")
-            url = sqs.get_queue_url(QueueName="events")["QueueUrl"]
+            url = sqs.get_queue_url(QueueName="upload-events")["QueueUrl"]
             def receive():
                 messages = sqs.receive_message(QueueUrl=url).get("Messages", [])
                 if messages:

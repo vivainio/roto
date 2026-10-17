@@ -1280,7 +1280,7 @@ pub fn run_source(
                     "sqs" => sqs_call(&call_sqs, &call_ctx.get(), &operation, input)?,
                     "lambda" => lambda_call(&call_lambda, &call_ctx.get(), &operation, input)?,
                     other if aws_client::supports(other) => {
-                        let name = aws_client::canonical(other);
+                        let name = other;
                         let handler = call_services.get(name).ok_or_else(|| {
                             mlua::Error::external(format!("Service unavailable: {name}"))
                         })?;

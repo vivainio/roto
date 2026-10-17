@@ -1,4 +1,4 @@
-# Luau setup
+# Luau scripting guide
 
 Luau declares resources and wires queues to Lambda functions. Functions can execute a local
 process, POST their event to an HTTP endpoint, or invoke an existing Lambda container image

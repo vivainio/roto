@@ -292,10 +292,10 @@ or enforce IAM, ACL, bucket-policy, or trust-policy authorization.
 
 ## Luau setup
 
-Create `setup.luau` using the example in [Luau setup](lua.md).
+Create `setup.luau` using the example in [Luau scripting guide](lua.md).
 
 Luau can declare queues, Lambda functions backed by shell scripts or HTTP endpoints, and SQS
-event-source mappings. See [Luau setup](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
+event-source mappings. See [Luau scripting guide](lua.md), [Lambda](lambda.md), and [EventBridge wiring](eventbridge.md).
 
 ```sh
 roto-server --ephemeral --setup setup.luau

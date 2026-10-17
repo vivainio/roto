@@ -103,7 +103,7 @@ topics, S3 buckets, DynamoDB tables, Kinesis streams, IAM roles, and inline IAM
 policies through those same handlers. It also creates and deletes Lambda functions;
 Lambda configuration updates, EventBridge, and SSM resources remain unsupported.
 
-Luau startup setup and execution contracts are covered in [Luau setup](lua.md),
+Luau startup setup and execution contracts are covered in [Luau scripting guide](lua.md),
 [Lambda](lambda.md), and [EventBridge](eventbridge.md).
 
 Luau services require an explicit `--lua-services DIR_OR_ZIP` option (or

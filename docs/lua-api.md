@@ -7,7 +7,7 @@ standard library is available (`string`, `table`, `math`, `bit32`, `utf8`, `buff
 script reaches the machine only through `roto.*` and the executors it configures.
 Scripts are trusted local code. Luau is gradually typed: start a script with `--!strict`
 to check it against the [type definitions](lua-types.md).
-For a guided introduction see [Luau setup](lua.md); for worked callback examples see
+For a guided introduction see [Luau scripting guide](lua.md); for worked callback examples see
 [Runtime hooks](runtime-hooks.md). Editor completion and checks for every symbol here
 are available through the [Luau type definitions](lua-types.md).
 
@@ -389,16 +389,20 @@ timeout must be at least the function timeout. Unknown options fail. See
 
 ## Service access
 
-Three tiers reach a service, from most to least convenient:
+Four tiers reach a service, from most to least convenient:
 
 | Need | Use |
 | --- | --- |
 | Create an SQS queue, Lambda function or mapping, or link S3 files | [Resource helpers](#resource-helpers) |
-| Call an operation of any supported service with a boto3-shaped table | `roto.call` |
+| Call an operation of any supported service with a boto3-shaped table, with types | `roto.aws.<service>.<Operation>(input)` |
+| The same call without types, or for a service with no typed client | `roto.call` |
 | Raw wire access for anything else (custom paths, odd payloads) | `roto.wire` |
 
+`roto.aws.<service>.<Operation>(input)` is exactly `roto.call("<service>", "<Operation>", input)`
+with per-operation input and output types (see [Luau types](lua-types.md#how-it-works)). The rest of this section describes `roto.call`, and everything it says applies to `roto.aws`.
+
 `roto.call` services: `sqs`, `lambda`, `dynamodb`, `ssm`, `secretsmanager`, `kinesis`,
-`kms`, `logs` (CloudWatch Logs) and `events` (alias `eventbridge`), plus the XML-protocol
+`kms`, `logs` (CloudWatch Logs) and `events` (EventBridge), plus the XML-protocol
 services `s3`, `sns`, `iam`, `sts` and `cloudformation`. Feature-detect the XML services
 with `pcall`; other services need `roto.wire`.
 
@@ -499,8 +503,7 @@ if not ok then print(tostring(err)) end
 ### `roto.wire(service, method, path, options?)`
 
 Calls any installed service directly through its wire handler, before the HTTP
-listener starts. Use the registered service name; the `eventbridge` alias belongs
-only to `roto.call`. Returns `{status, headers, body}`, where `body` is a raw
+listener starts. Use the registered service name. Returns `{status, headers, body}`, where `body` is a raw
 string (response bytes are converted to UTF-8 with replacement for invalid bytes).
 Handler errors and HTTP status codes of 400 or higher raise Luau errors.
 
