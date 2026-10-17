@@ -154,6 +154,8 @@ service, set it to `"implemented"`.
 
 - Luau tables are open, so an unknown extra field in an option table is not always flagged.
   A missing required field and a wrong value type are.
+- HTTP methods in `roto.wire` and `cors.methods` are literal unions, so a misspelled method is an
+  error. Luau has no numeric literal types, so MQTT QoS and return codes stay `number`.
 - AWS enum members are typed as `string`, not as a union of the allowed values. (Literal
   unions are rejected inside nested tables by the old Luau solver.)
 - Most definition types (`QueueOptions`, `Queue`, ...) cannot be named in your own

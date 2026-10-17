@@ -38,8 +38,9 @@ type TableOptions = {
 }
 type Table = { name: string, arn: string }
 
+type CorsMethod = "GET" | "PUT" | "POST" | "DELETE" | "HEAD"
 type CorsRule = {
-	methods: { string },
+	methods: { CorsMethod },
 	origins: { string },
 	headers: { string }?,
 	expose: { string }?,
@@ -231,6 +232,9 @@ type EventSourceOptions = {
 	report_batch_item_failures: boolean?,
 }
 
+-- Upper-case HTTP method of the request sent to a service handler.
+type HttpMethod = "GET" | "PUT" | "POST" | "DELETE" | "HEAD" | "PATCH"
+
 type WireOptions = {
 	headers: { [string]: string }?,
 	-- Raw query string without `?`.
@@ -315,7 +319,7 @@ declare roto: {
 	-- Decodes standard base64 to a (binary-safe) string. Raises on invalid base64.
 	decode_base64: (text: string) -> string,
 	-- Sends a raw request to a service's wire handler. Status 400 and above raises. Setup only.
-	wire: (service: string, method: string, path: string, options: WireOptions?) -> WireResponse,
+	wire: (service: string, method: HttpMethod, path: string, options: WireOptions?) -> WireResponse,
 
 	sqs: {
 		-- Creates a missing queue or updates an existing one. Setup only.
