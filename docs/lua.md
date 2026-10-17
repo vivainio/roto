@@ -39,36 +39,39 @@ event as its JSON result. A shell executor reads stdin and writes one JSON resul
 to stdout; logs go to stderr. See [Lambda](lambda.md) for the full
 contract, HTTP and container executors, timeouts, and output limits.
 
-## Why Luau
+## Why Luau instead of Lua
 
-The main reason is **gradual typing**. A setup script is configuration with real logic in it:
-queue names, option tables, handlers wired to event sources. Plain Lua finds a misspelled
-option or a wrong value type only when that line runs, usually as a confusing failure in the
-middle of server startup. Luau lets you opt in per script: start with `--!strict`, run
-`roto-server --check setup.luau`, and the checker reports the mistake before anything starts.
-Roto ships a definitions file for the whole `roto` table, so editors get completion and hover
-too (see [Luau types](lua-types.md)). A script with no annotations still runs; you add types
-where they pay off.
+Roto first embedded plain Lua 5.4 and then moved to Luau. Both are tiny, embed through `mlua`
+and start in well under a millisecond, so the choice came down to a few differences.
 
-Other properties that fit an embedded setup language:
+**Gradual typing.** This is the main reason. A setup script is configuration with real logic
+in it: queue names, option tables, handlers wired to event sources. In plain Lua a misspelled
+option or a wrong value type surfaces only when that line runs, usually as a confusing failure
+in the middle of server startup, and Lua has no standard way to annotate or check scripts.
+Luau lets you opt in per script: start with `--!strict`, run `roto-server --check setup.luau`,
+and the checker reports the mistake before anything starts. Roto ships a definitions file for
+the whole `roto` table, so editors get completion and hover too (see
+[Luau types](lua-types.md)). A script with no annotations still runs, so you add types where
+they pay off. Nothing comparable exists for stock Lua.
 
-- **Small and embeddable.** Luau is a C++ library that `mlua` compiles into the binary, so
-  there is nothing to install. It adds about 1 MB to the executable.
-- **Sandboxed.** Luau is built for running untrusted scripts. Its standard library has no `io`, and
-  `os` is limited to time functions, so a script reaches files and processes only through the
-  `roto` helpers.
-- **Actively maintained.** Luau is developed by Roblox, which ships it in production, and it
-  releases frequently. It forked from Lua 5.1 and has since selectively adopted features from
-  newer Lua versions, such as `utf8`, `coroutine.close` and the `//` operator, alongside its
-  own additions like type annotations, string interpolation and `continue`.
-- **Cheap to launch.** Creating a fresh VM takes about 0.1 ms and a 66-call setup script runs
-  in well under a millisecond of interpreter time. The 9 ms that
-  [Performance](benchmarks.md#startup-with-a-luau-setup-script) reports for a realistic
-  script is dominated by the service calls, not the interpreter.
+**Built for sandboxing.** Luau is designed to run scripts from people you do not fully trust.
+Its standard library has no `io`, and `os` is limited to time functions, so a script reaches
+files and processes only through the `roto` helpers. With stock Lua you start with `io` and
+`os.execute` available and must remove them yourself.
 
-Luau is not chosen for raw speed. In a minimal `mlua` comparison on an Apple M3, plain Lua 5.4
-created a VM in 0.04 ms against 0.12 ms for Luau and ran a compute-heavy loop about 25% faster
-(62 ms against 80 ms). Setup scripts never run such loops, so the difference does not show.
+**Actively maintained.** Luau is developed by Roblox, which ships it in production, and it
+releases frequently. It forked from Lua 5.1 and has since selectively adopted features from
+newer Lua versions, such as `utf8`, `coroutine.close` and the `//` operator, alongside its own
+additions like type annotations, string interpolation and `continue`.
+
+**What plain Lua does better.** Luau is not chosen for speed or fidelity to Lua. In a minimal
+`mlua` comparison on an Apple M3, Lua 5.4 created a VM in 0.04 ms against 0.12 ms for Luau and
+ran a compute-heavy loop about 25% faster (62 ms against 80 ms); the Luau library adds about
+1 MB to a binary where Lua adds well under 1 MB. Setup scripts never run such loops and the 9 ms
+that [Performance](benchmarks.md#startup-with-a-luau-setup-script) reports for a realistic
+script is dominated by the service calls, so none of this shows in practice. Luau also lacks
+some Lua 5.4 features (integer subtype, `goto`, `<const>` and `<close>`), and it does not run
+LuaRocks libraries, which a setup script has no need for.
 
 ## Setup helpers
 
