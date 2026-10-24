@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
-const OUTPUT_LIMIT: usize = 6 * 1024 * 1024;
+pub(crate) const OUTPUT_LIMIT: usize = 6 * 1024 * 1024;
 
 /// Exactly one executor variant. Commands are argv arrays, never implicitly shell-expanded.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -15,6 +15,15 @@ const OUTPUT_LIMIT: usize = 6 * 1024 * 1024;
 pub enum Executor {
     Command {
         command: Vec<String>,
+        #[serde(default)]
+        cwd: Option<PathBuf>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    },
+    /// A custom-runtime binary (a `provided.al2023` `bootstrap`) that polls the Lambda Runtime
+    /// API, which roto serves to it. The process stays warm between invocations.
+    Runtime {
+        runtime: Vec<String>,
         #[serde(default)]
         cwd: Option<PathBuf>,
         #[serde(default)]
@@ -61,11 +70,13 @@ pub struct Executors {
 impl Executor {
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Command { command, env, .. } => {
-                if command.is_empty()
-                    || command[0].is_empty()
-                    || command.iter().any(|s| s.contains('\0'))
-                {
+            Self::Command {
+                command: argv, env, ..
+            }
+            | Self::Runtime {
+                runtime: argv, env, ..
+            } => {
+                if argv.is_empty() || argv[0].is_empty() || argv.iter().any(|s| s.contains('\0')) {
                     return Err("command must be a nonempty argv array without NULs".into());
                 }
                 if env
@@ -125,7 +136,7 @@ pub(crate) struct Outcome {
 }
 
 impl Outcome {
-    fn error(message: impl Into<String>, logs: String) -> Self {
+    pub(crate) fn error(message: impl Into<String>, logs: String) -> Self {
         Self {
             payload: json!({"errorType": "ExecutorError", "errorMessage": message.into()}),
             logs,
@@ -333,6 +344,33 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
         Executor::Container { container, warm } => {
             execute_rie(job, container, *warm, payload, pool).await
         }
+        Executor::Runtime { runtime, cwd, env } => {
+            let key = serde_json::to_string(&(
+                runtime,
+                cwd,
+                env,
+                &job.revision,
+                &job.region,
+                &job.endpoint,
+                &job.environment,
+                job.timeout,
+                job.memory_size,
+            ))
+            .unwrap();
+            let worker = match pool.take_worker(&job.arn, &key) {
+                Some(worker) => worker,
+                None => match crate::runtime_api::spawn(job, runtime, cwd, env).await {
+                    Ok(worker) => worker,
+                    Err(error) => return Outcome::error(error, String::new()),
+                },
+            };
+            // Dropping this future (timeout, cancel) drops the worker, which kills its process.
+            let (outcome, worker) = crate::runtime_api::invoke(worker, job).await;
+            if let Some(worker) = worker {
+                pool.put_worker(&job.arn, key, worker);
+            }
+            outcome
+        }
     }
 }
 
@@ -343,7 +381,14 @@ pub(crate) struct RiePool(std::sync::Mutex<RiePoolState>);
 #[derive(Default)]
 struct RiePoolState {
     idle: Vec<IdleContainer>,
+    workers: Vec<IdleWorker>,
     closed: bool,
+}
+struct IdleWorker {
+    arn: String,
+    key: String,
+    used: std::time::Instant,
+    worker: crate::runtime_api::Worker,
 }
 struct IdleContainer {
     arn: String,
@@ -363,6 +408,34 @@ impl RiePool {
             .iter()
             .position(|entry| entry.arn == arn && entry.key == key)?;
         Some(idle.remove(index).container)
+    }
+    pub(crate) fn take_worker(&self, arn: &str, key: &str) -> Option<crate::runtime_api::Worker> {
+        let mut state = self.0.lock().unwrap();
+        let idle = &mut state.workers;
+        idle.retain_mut(|entry| {
+            entry.used.elapsed() < Duration::from_secs(300)
+                && (entry.arn != arn || entry.key == key)
+                && entry.worker.alive()
+        });
+        let index = idle
+            .iter()
+            .position(|entry| entry.arn == arn && entry.key == key)?;
+        Some(idle.remove(index).worker)
+    }
+    pub(crate) fn put_worker(&self, arn: &str, key: String, worker: crate::runtime_api::Worker) {
+        let mut state = self.0.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        if state.workers.len() >= 32 {
+            state.workers.remove(0);
+        }
+        state.workers.push(IdleWorker {
+            arn: arn.into(),
+            key,
+            used: std::time::Instant::now(),
+            worker,
+        });
     }
     fn put(&self, arn: &str, key: String, container: ContainerGuard) {
         let mut state = self.0.lock().unwrap();
@@ -384,19 +457,24 @@ impl RiePool {
         let mut state = self.0.lock().unwrap();
         state.closed = true;
         state.idle.clear();
+        state.workers.clear();
     }
     pub(crate) fn expire(&self) {
-        self.0
-            .lock()
-            .unwrap()
+        let mut state = self.0.lock().unwrap();
+        state
             .idle
+            .retain(|entry| entry.used.elapsed() < Duration::from_secs(300));
+        state
+            .workers
             .retain(|entry| entry.used.elapsed() < Duration::from_secs(300));
     }
     pub(crate) fn clear(&self, arn: Option<&str>) {
-        self.0
-            .lock()
-            .unwrap()
+        let mut state = self.0.lock().unwrap();
+        state
             .idle
+            .retain(|entry| arn.is_some_and(|arn| entry.arn != arn));
+        state
+            .workers
             .retain(|entry| arn.is_some_and(|arn| entry.arn != arn));
     }
 }
@@ -789,7 +867,7 @@ async fn execute_rie(
 }
 
 #[cfg(unix)]
-struct ProcessGroup(i32);
+pub(crate) struct ProcessGroup(pub(crate) i32);
 #[cfg(unix)]
 impl Drop for ProcessGroup {
     fn drop(&mut self) {

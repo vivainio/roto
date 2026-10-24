@@ -318,6 +318,7 @@ Choose one executor form:
 | Form | Fields |
 | --- | --- |
 | Command | `command`: nonempty argv array; optional `cwd`: directory; optional `env`: string map |
+| Runtime | `runtime`: nonempty argv array of a custom-runtime binary (a `bootstrap`) that polls the Lambda Runtime API; optional `cwd`; optional `env` |
 | HTTP | `url`: HTTP/HTTPS URL; optional `headers`: string map |
 | Container | `container`: local RIE image name; optional `warm`: boolean, default `false` |
 

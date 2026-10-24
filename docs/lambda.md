@@ -32,6 +32,34 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
 The [Luau scripting guide](lua.md) covers resource creation and executor bindings. The
 [Demos chapter](demos.md#invoke-a-lambda-container-image) shows the RIE image invocation.
 
+## Custom runtime binaries
+
+A `provided.al2023` function is a `bootstrap` that polls the Lambda Runtime API for work (Rust's
+`lambda_runtime`, `aws-lambda-go`, or a shell loop). Bind it with the `runtime` executor and Roto
+serves that API to it:
+
+```luau
+--!strict
+roto.lambda.fn("ingest", {
+  timeout = 30,
+  environment = {RUST_LOG = "info"},
+  executor = {runtime = {"target/debug/bootstrap"}, env = {CONFIG = "ingest.json"}},
+})
+```
+
+Roto starts the binary with `AWS_LAMBDA_RUNTIME_API` pointing at a private loopback listener, plus
+`AWS_REGION`, `AWS_ENDPOINT_URL`, `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`,
+`_HANDLER`, `LAMBDA_TASK_ROOT` and the function's environment. Each invocation carries the
+`Lambda-Runtime-Aws-Request-Id`, `-Deadline-Ms` (from the function timeout),
+`-Invoked-Function-Arn` and `-Client-Context` headers. The worker is **warm**: the process lives
+between invocations, as an execution environment does, and serves one at a time, so overlapping
+invocations get separate processes. A handler error reported through `/error` fails the
+invocation and keeps the process; a crash, a runtime `init/error`, a timeout or a configuration
+change discards it. Idle workers expire after five minutes. stdout and stderr become the
+invocation's logs. If the environment has no AWS credentials, the process gets dummy ones so a
+local SDK client can sign requests. Zip-based managed runtimes, layers, extensions and response
+streaming are not emulated.
+
 ## Inline Luau placeholder functions
 
 For a quick local function, provide `handler` instead of `executor` in a setup
@@ -372,7 +400,7 @@ Unsigned inspection uses the default account/us-east-1; signed requests use call
 Reset clears function metadata, queues and invocation history; local executor bindings remain.
 
 Code packages are stored as metadata, not unpacked or executed. Only `$LATEST` is supported;
-versions, aliases, Runtime API workers, DLQs/destinations, CloudWatch Logs streams and Insights,
+versions, aliases, DLQs/destinations, CloudWatch Logs streams and Insights,
 and automatic Kinesis event-source polling are not implemented. Captured executor output is
 available through the [limited CloudWatch Logs API](cloudwatch-logs.md). Policies are stored
 but not enforced.

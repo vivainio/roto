@@ -1185,7 +1185,7 @@ pub fn run_source(
             setup_only(lua)?;
             let mut executor: roto_svc_lambda::Executor = lua.from_value(value)?;
             executor.validate().map_err(mlua::Error::external)?;
-            if let roto_svc_lambda::Executor::Command { cwd, .. } = &mut executor {
+            if let roto_svc_lambda::Executor::Command { cwd, .. } | roto_svc_lambda::Executor::Runtime { cwd, .. } = &mut executor {
                 *cwd = Some(
                     cwd.take()
                         .map_or_else(|| bind_parent.clone(), |p| bind_parent.join(p)),
@@ -1217,7 +1217,7 @@ pub fn run_source(
             None => lua.from_value(opts.get::<LuaValue>("executor")?)?,
         };
         executor.validate().map_err(mlua::Error::external)?;
-        if let roto_svc_lambda::Executor::Command { cwd,.. } = &mut executor {
+        if let roto_svc_lambda::Executor::Command { cwd, .. } | roto_svc_lambda::Executor::Runtime { cwd, .. } = &mut executor {
             *cwd = Some(cwd.take().map_or_else(|| parent.clone(),|p| parent.join(p)));
         }
         let timeout = opts.get::<Option<u32>>("timeout")?.unwrap_or(3);

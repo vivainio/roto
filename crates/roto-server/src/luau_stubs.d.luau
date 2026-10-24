@@ -100,9 +100,12 @@ type LinkedDir = { bucket: string, prefix: string, count: number }
 type Executor = {
 	-- Command executor: nonempty argv; event JSON on stdin, one JSON value on stdout.
 	command: { string }?,
-	-- Command executor: defaults to the setup script directory.
+	-- Runtime executor: nonempty argv of a custom-runtime binary (a `bootstrap`) that polls the
+	-- Lambda Runtime API, which Roto serves to it. The process stays warm between invocations.
+	runtime: { string }?,
+	-- Command and runtime executors: defaults to the setup script directory.
 	cwd: string?,
-	-- Command executor.
+	-- Command and runtime executors.
 	env: { [string]: string }?,
 	-- HTTP executor.
 	url: string?,

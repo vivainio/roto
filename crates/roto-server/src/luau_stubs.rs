@@ -411,6 +411,7 @@ mod tests {
                 "executor",
                 &[
                     "command",
+                    "runtime",
                     "cwd",
                     "env",
                     "url",
