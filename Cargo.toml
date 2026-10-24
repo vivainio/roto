@@ -9,3 +9,15 @@ version = "0.0.0-dev"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/vivainio/roto"
+
+[profile.dev]
+# Line tables keep backtraces readable; full DWARF is what makes debug builds ~140MB.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
