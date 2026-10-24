@@ -151,11 +151,7 @@ async fn command(
     let response = match packet {
         Packet::Connect(_) | Packet::Disconnect => return Err(()),
         Packet::Ping => Some(roto_mqtt::PINGRESP.to_vec()),
-        Packet::Publish {
-            id,
-            topic,
-            payload,
-        } => {
+        Packet::Publish { id, topic, payload } => {
             if !hub_publish_allowed(&topic) || hub.publish(&topic, 0, &payload).is_err() {
                 return Err(());
             }

@@ -136,7 +136,10 @@ async fn main() {
         std::fs::create_dir_all(dir)
             .and_then(|()| std::fs::write(dir.join("roto.d.luau"), luau_stubs::render()))
             .and_then(|()| {
-                std::fs::write(dir.join("roto-service.d.luau"), luau_stubs::render_service())
+                std::fs::write(
+                    dir.join("roto-service.d.luau"),
+                    luau_stubs::render_service(),
+                )
             })
             .unwrap_or_else(|e| {
                 eprintln!("error: cannot write Lua stubs to {}: {e}", dir.display());

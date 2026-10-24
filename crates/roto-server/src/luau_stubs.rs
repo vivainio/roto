@@ -380,7 +380,10 @@ mod tests {
         assert!(!defs.contains("--@@"), "unreplaced marker");
         let declared = |name: &str| defs.contains(&format!("\t{name}: "));
         let groups: &[(&str, &[&str])] = &[
-            ("bucket", &["cors", "notify", "eventbridge", "skip_validation"]),
+            (
+                "bucket",
+                &["cors", "notify", "eventbridge", "skip_validation"],
+            ),
             (
                 "cors",
                 &["methods", "origins", "headers", "expose", "max_age", "id"],

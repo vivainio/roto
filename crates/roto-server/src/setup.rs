@@ -1090,10 +1090,7 @@ pub fn run_source(
                 // existing destinations and only toggles EventBridge delivery.
                 let mut config = match opts.get("notify") {
                     Some(notify) => notification_config(notify)?,
-                    None => s3_call(
-                        "GetBucketNotificationConfiguration",
-                        json!({"Bucket":name}),
-                    )?,
+                    None => s3_call("GetBucketNotificationConfiguration", json!({"Bucket":name}))?,
                 };
                 match eventbridge {
                     Some(true) => config["EventBridgeConfiguration"] = json!({}),
@@ -1185,7 +1182,9 @@ pub fn run_source(
             setup_only(lua)?;
             let mut executor: roto_svc_lambda::Executor = lua.from_value(value)?;
             executor.validate().map_err(mlua::Error::external)?;
-            if let roto_svc_lambda::Executor::Command { cwd, .. } | roto_svc_lambda::Executor::Runtime { cwd, .. } = &mut executor {
+            if let roto_svc_lambda::Executor::Command { cwd, .. }
+            | roto_svc_lambda::Executor::Runtime { cwd, .. } = &mut executor
+            {
                 *cwd = Some(
                     cwd.take()
                         .map_or_else(|| bind_parent.clone(), |p| bind_parent.join(p)),
