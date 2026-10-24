@@ -22,7 +22,7 @@ fn form_encode(key: &str) -> String {
     for b in key.bytes() {
         match b {
             b' ' => out.push('+'),
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(b as char)
             }
             _ => out.push_str(&format!("%{b:02X}")),
@@ -424,7 +424,7 @@ mod tests {
         };
         let record = &record["Records"][0];
         assert_eq!(record["eventName"], "ObjectCreated:Put");
-        assert_eq!(record["s3"]["object"]["key"], "in%2Fa.txt");
+        assert_eq!(record["s3"]["object"]["key"], "in/a.txt");
         assert_eq!(record["s3"]["configurationId"], "q1");
     }
 
@@ -499,7 +499,7 @@ mod tests {
             assert_eq!(notifications.len(), 1);
             let record = &notifications[0]["Records"][0];
             assert_eq!(record["eventName"], "ObjectCreated:Put");
-            assert_eq!(record["s3"]["object"]["key"], "incoming%2Fa+b%2B.json");
+            assert_eq!(record["s3"]["object"]["key"], "incoming/a+b%2B.json");
             assert_eq!(record["s3"]["object"]["size"], 5);
             assert_eq!(
                 call(

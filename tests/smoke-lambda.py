@@ -122,7 +122,7 @@ def smoke():
                     while True:
                         messages = sqs.receive_message(QueueUrl=queue).get("Messages", [])
                         if messages:
-                            assert json.loads(messages[0]["Body"]) == {"keys": ["incoming%2Fa+b.json"]}
+                            assert json.loads(messages[0]["Body"]) == {"keys": ["incoming/a+b.json"]}
                             break
                         assert time.monotonic() < deadline, "S3 -> command -> SQS delivery timed out"
                         time.sleep(0.05)

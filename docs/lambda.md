@@ -380,7 +380,7 @@ An invocation requiring execution fails explicitly if no executor is bound.
 Use ordinary `PutBucketNotificationConfiguration` with `LambdaFunctionConfigurations` to wire
 an S3 bucket. Supported events: object creation by Put, Copy, and CompleteMultipartUpload;
 object removal by Delete and DeleteObjects, including delete markers. Prefix/suffix filters
-and event wildcards are applied, and keys in the event are URL form-encoded.
+and event wildcards are applied, and keys in the event are URL form-encoded (spaces as `+`; `/` is left as is).
 
 S3 persists the event in its own transaction and hands it to Lambda after commit. Both queues
 survive restarts in persistent mode. Async Lambda jobs get up to three attempts, with short
