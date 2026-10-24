@@ -5,7 +5,7 @@ from pathlib import Path
 import botocore.session
 root=Path(__file__).resolve().parents[1] / 'services'
 s=botocore.session.get_session()
-for name in ['opensearch', 'rds']:
+for name in ['opensearch', 'rds', 'elbv2']:
  model=s.get_service_data(name)
  # Keep all operation routes so unsupported operations still have their real names.
  shapes={}

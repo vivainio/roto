@@ -50,6 +50,12 @@
       "model": "rds/model.json"
     },
     {
+      "service": "elasticloadbalancing",
+      "protocol": "query",
+      "script": "elbv2/service.luau",
+      "model": "elbv2/model.json"
+    },
+    {
       "service": "ecr",
       "target_prefix": "AmazonEC2ContainerRegistry_V20150921.",
       "json_version": "1.1",

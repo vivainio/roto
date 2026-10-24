@@ -1680,6 +1680,7 @@ dependencies = [
  "clap",
  "flate2",
  "mlua",
+ "reqwest",
  "roto-core",
  "roto-mqtt",
  "roto-protocol",

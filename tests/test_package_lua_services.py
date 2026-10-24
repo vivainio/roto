@@ -23,7 +23,7 @@ class PackagingTests(unittest.TestCase):
                 self.assertEqual(archive.namelist()[0], 'manifest.json')
                 self.assertEqual(archive.getinfo('manifest.json').header_offset, 0)
                 manifest = json.loads(archive.read('manifest.json'))
-                self.assertEqual(len(manifest['services']), 12)
+                self.assertEqual(len(manifest['services']), 13)
                 for service in manifest['services']:
                     self.assertTrue(archive.read(service['script']))
                     if 'model' in service:

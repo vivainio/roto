@@ -1,3 +1,4 @@
+mod alb;
 mod apigateway_v2;
 mod aws_client;
 mod gateway;
@@ -82,6 +83,10 @@ struct Args {
     /// Write one JSON object per AWS HTTP request; request bodies and credentials are omitted.
     #[arg(long)]
     trace: Option<PathBuf>,
+    /// Serve application load balancers created through the Luau `elasticloadbalancing` service on
+    /// this port: forwards requests to registered targets and runs their health checks.
+    #[arg(long, value_name = "PORT")]
+    alb_port: Option<u16>,
 }
 
 impl App {
@@ -291,6 +296,7 @@ async fn main() {
         },
         args.port
     );
+    let alb_store = store.clone();
     let lua_api = args.enable_lua_api.then(|| lua_api::LuaApi {
         region: "us-east-1".into(),
         endpoint: endpoint.clone(),
@@ -418,6 +424,18 @@ async fn main() {
             eprintln!("error: cannot bind {addr}: {e}");
             std::process::exit(1);
         });
+    if let Some(port) = args.alb_port {
+        let alb_addr: SocketAddr = format!("{}:{}", args.host, port)
+            .parse()
+            .expect("invalid host/alb-port");
+        match alb::start(alb_store, alb_addr).await {
+            Ok(bound) => tracing::info!("load balancer proxy listening on http://{bound}"),
+            Err(e) => {
+                eprintln!("error: cannot bind load balancer proxy {alb_addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     lambda.start(endpoint);
     events.start();
     s3.start_notifications_with_queues(lambda.0.clone(), events.0.clone(), sqs_for_s3);
