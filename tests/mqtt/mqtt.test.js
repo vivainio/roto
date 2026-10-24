@@ -63,10 +63,13 @@ async function checks() {
     const health = event(first, 'message');
     await publish('$aws/things/ping', 'healthy');
     check((await health)[1].toString() === 'healthy', '$aws/things/ping delivery');
-    const before = count.length;
-    await within(first.publishAsync('demo/state', 'dropped', { qos: 1 }), 'PUBACK');
+    const fanned = event(second, 'message');
+    await within(first.publishAsync('demo/state', 'from client', { qos: 1 }), 'PUBACK');
+    const [fannedTopic, fannedPayload] = await fanned;
     await sleep(100);
-    check(count.length === before, 'Client QoS 1 publish acknowledged and dropped');
+    check(fannedTopic === 'demo/state' && fannedPayload.toString() === 'from client',
+      'Client QoS 1 publish acknowledged and fanned out');
+    const before = count.length;
     await within(first.unsubscribeAsync('demo/state'), 'unsubscribe');
     const remaining = event(second, 'message');
     await publish('demo/state', 'after unsubscribe');
