@@ -24,6 +24,7 @@ nav = [
       { "Lambda" = "lambda.md" },
       { "CloudWatch Logs" = "cloudwatch-logs.md" },
       { "EventBridge" = "eventbridge.md" },
+      { "EventBridge Scheduler" = "scheduler.md" },
       { "Kinesis" = "kinesis.md" },
     ] },
     { "Other services" = [

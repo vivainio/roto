@@ -58,6 +58,9 @@ const RAW_SHAPES: &[(&str, &str)] = &[
 /// `(serviceId, shape, member)`: collections that are always present in JSON responses, even when
 /// empty (DynamoDB lists `Items: []`; most services omit empty lists).
 const ALWAYS_EMIT: &[(&str, &str, &str)] = &[
+    ("Scheduler", "ListSchedulesOutput", "Schedules"),
+    ("Scheduler", "ListScheduleGroupsOutput", "ScheduleGroups"),
+    ("Scheduler", "ListTagsForResourceOutput", "Tags"),
     ("Kinesis", "GetRecordsOutput", "Records"),
     ("Kinesis", "ListStreamsOutput", "StreamNames"),
     ("Kinesis", "ListStreamsOutput", "StreamSummaries"),

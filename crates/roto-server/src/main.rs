@@ -205,6 +205,13 @@ async fn main() {
                 std::process::exit(1);
             }),
     );
+    let scheduler = Arc::new(
+        roto_svc_scheduler::SchedulerHandler::new(&store, lambda.0.clone(), sqs.0.clone())
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }),
+    );
     let s3 = roto_svc_s3::S3Handler::new(&store).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -258,6 +265,7 @@ async fn main() {
         Arc::new(logs),
         lambda.clone(),
         events.clone(),
+        scheduler.clone(),
     ];
     let mut services: HashMap<_, _> = handlers.into_iter().map(|h| (h.service(), h)).collect();
     let lua_services =
@@ -438,6 +446,7 @@ async fn main() {
     }
     lambda.start(endpoint);
     events.start();
+    scheduler.start();
     s3.start_notifications_with_queues(lambda.0.clone(), events.0.clone(), sqs_for_s3);
     tracing::info!(
         "roto listening on http://{addr} ({})",

@@ -27,6 +27,7 @@ pub(crate) fn operations(service: &str) -> Option<Vec<&'static str>> {
         "lambda" => ops!(roto_svc_lambda, roto_svc_lambda::Lambda),
         "logs" => ops!(roto_svc_logs, roto_svc_logs::CloudWatchLogs),
         "s3" => ops!(roto_svc_s3, roto_svc_s3::S3),
+        "scheduler" => ops!(roto_svc_scheduler, roto_svc_scheduler::Scheduler),
         "secretsmanager" => ops!(
             roto_svc_secretsmanager,
             roto_svc_secretsmanager::SecretsManager

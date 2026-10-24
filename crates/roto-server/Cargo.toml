@@ -30,6 +30,7 @@ roxmltree = "0.21.1"
 roto-protocol = { version = "0.0.0-dev", path = "../roto-protocol" }
 
 roto-svc-eventbridge = { version = "0.0.0-dev", path = "../roto-svc-eventbridge" }
+roto-svc-scheduler = { version = "0.0.0-dev", path = "../roto-svc-scheduler" }
 
 roto-svc-kinesis = { version = "0.0.0-dev", path = "../roto-svc-kinesis" }
 

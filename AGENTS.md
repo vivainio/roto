@@ -52,7 +52,7 @@ Run the server-mode Moto tests by service and save each run's request trace:
 ```sh
 mkdir -p api-traces
 for suite in test_awslambda test_dynamodb test_ecr test_events test_iam test_kinesis \
-  test_kms test_s3 test_secretsmanager test_sns test_sqs test_ssm test_sts
+  test_kms test_s3 test_scheduler test_secretsmanager test_sns test_sqs test_ssm test_sts
 do
   ROTO_TRACE_FILE="api-traces/${suite}.jsonl" scripts/run-moto-tests.sh "$suite" \
     || echo "$suite had failures; keeping its trace"

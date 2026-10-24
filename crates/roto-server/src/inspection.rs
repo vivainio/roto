@@ -24,6 +24,7 @@ const COLLECTIONS: &[(&str, &[&str])] = &[
     ("kinesis", &["streams", "records"]),
     ("lambda", &["functions", "event_source_mappings"]),
     ("events", &["buses", "rules", "targets"]),
+    ("scheduler", &["schedule_groups", "schedules"]),
     ("sns", &["topics", "subscriptions", "sms_messages"]),
     ("ssm", &["parameters", "resource_tags"]),
     ("secretsmanager", &["secrets", "secret_versions"]),
