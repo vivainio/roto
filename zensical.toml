@@ -17,6 +17,7 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Introduction" = "index.md" },
   { "Getting started" = "getting-started.md" },
+  { "Comparisons" = "comparisons.md" },
   { "Services" = [
     { "Coverage overview" = "services.md" },
     { "Core services" = [

@@ -6,6 +6,17 @@
 - Non-goals: moto's in-process `@mock_aws` decorator mode; full parity with moto's ~150 services.
 - Reference: Python moto 5.0.11 (installed locally) for differential testing. Moto and botocore models are Apache-2.0.
 
+## Vision: programmable service internals
+
+Extend embedded Luau beyond setup and request interception so tests can inspect
+and tweak internal service data and behavior. Possible uses include arranging
+unusual resource states, adjusting retry or timing metadata, and reproducing
+partial failures that public AWS APIs cannot readily create. The aim is to let
+normal service operations run against deliberately constructed internal state.
+This is a future direction; no general-purpose internal-state scripting API is
+currently promised. Today's bindings provide service API calls and targeted
+request interception, not arbitrary access to Rust service internals.
+
 ## Architecture (Cargo workspace)
 | Crate | Responsibility |
 |---|---|

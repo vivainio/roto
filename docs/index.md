@@ -22,7 +22,8 @@ event-driven code. See
 [core service coverage](services.md#core-services-first-class-experience)
 for the supported behavior and remaining gaps.
 
-The optional **Luau services** are provided for completeness and mostly offer
+Many less central service simulators are implemented entirely in Luau and shipped
+as optional **Luau services**. They are provided for completeness and mostly offer
 simple CRUD, metadata storage, and configuration simulation, mainly for service
 administration rather than everyday application workloads. They have a narrower
 scope and do not carry the same first-class experience goal. Adding them requires
@@ -47,16 +48,19 @@ that makes LocalStack an impractical choice. roto is intended to offer an
 MIT-licensed alternative that runs locally without a vendor account, license
 key, or subscription.
 
-[MiniStack](https://ministack.org/) is another open-source LocalStack alternative,
-with much broader [AWS service coverage](https://ministack.org/docs/services/)
-than roto. MiniStack is also committed to remaining free and open source under
-the MIT license. roto aims to offer solid support for core AWS services in a
+roto aims to offer solid support for core AWS services in a
 dependency-free Rust binary you can drop into a development environment or CI
 without Docker containers or language runtimes. Check roto's
 [service coverage](services.md) to see whether it supports your workload.
 An embedded Luau interpreter lets you [create and wire services](lua.md), define
 inline Lambda handlers, and [intercept AWS requests](runtime-hooks.md), without
 installing a separate Luau runtime.
+See [Comparisons](comparisons.md) for other AWS simulators and their tradeoffs.
+
+The longer-term vision is to expose deeper control over internal service data
+and behavior through Luau, so tests can arrange unusual states and failures
+beyond what public AWS APIs can create. This is a future direction; today's
+setup helpers and request hooks do not provide general access to service internals.
 
 **roto will be free forever.** This project has no revenue goal and no interest
 in monetization. There is no plan for paid tiers, license fees, or a commercial
@@ -88,7 +92,8 @@ service coverage is narrower than LocalStack's; check
 [service coverage](services.md) before migrating a workload.
 
 Start with [Getting started](getting-started.md), check [service coverage](services.md),
-or read [Architecture](architecture.md) to work on the implementation.
+compare [other AWS simulators](comparisons.md), or read
+[Architecture](architecture.md) to work on the implementation.
 
 See [Performance](benchmarks.md) for measured startup, idle RSS, and API latency,
 with a reproducible suite and raw results.
