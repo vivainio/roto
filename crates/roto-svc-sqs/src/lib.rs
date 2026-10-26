@@ -293,6 +293,44 @@ mod tests {
     }
 
     #[test]
+    fn standard_queue_accepts_message_group_id() {
+        let h = handler();
+        let (_, q) = call(&h, "CreateQueue", json!({"QueueName": "fair"}));
+        let url = q["QueueUrl"].clone();
+        let (s, _) = call(
+            &h,
+            "SendMessage",
+            json!({"QueueUrl": url, "MessageBody": "a", "MessageGroupId": "tenant-1"}),
+        );
+        assert_eq!(s, 200);
+        let (_, got) = call(
+            &h,
+            "ReceiveMessage",
+            json!({"QueueUrl": url, "AttributeNames": ["All"]}),
+        );
+        assert_eq!(got["Messages"][0]["Attributes"]["MessageGroupId"], "tenant-1");
+    }
+
+    #[test]
+    fn fifo_content_based_deduplication_still_requires_group() {
+        let h = handler();
+        let (_, q) = call(
+            &h,
+            "CreateQueue",
+            json!({"QueueName": "q.fifo", "Attributes": {
+                "FifoQueue": "true", "ContentBasedDeduplication": "true"
+            }}),
+        );
+        let (s, e) = call(
+            &h,
+            "SendMessage",
+            json!({"QueueUrl": q["QueueUrl"], "MessageBody": "a"}),
+        );
+        assert_eq!(s, 400);
+        assert_eq!(e["__type"], "MissingParameter");
+    }
+
+    #[test]
     fn fifo_requires_group_and_dedupes() {
         let h = handler();
         let (_, q) = call(

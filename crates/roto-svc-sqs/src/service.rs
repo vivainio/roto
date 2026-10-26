@@ -485,7 +485,7 @@ fn validate_new_message(q: &Queue, m: &NewMessage) -> Result<(), AwsError> {
     validate_message_attributes(&m.attrs)?;
     if q.is_fifo() {
         let content_based = q.get("ContentBasedDeduplication") == Some("true");
-        if !content_based && m.group.is_none() {
+        if m.group.is_none() {
             return Err(AwsError::missing_parameter("MessageGroupId"));
         }
         if !content_based && m.dedup.is_none() {
