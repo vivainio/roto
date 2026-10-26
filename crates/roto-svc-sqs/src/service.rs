@@ -506,13 +506,7 @@ fn validate_new_message(q: &Queue, m: &NewMessage) -> Result<(), AwsError> {
             "One or more parameters are invalid. Reason: Message must be shorter than {max} bytes."
         )));
     }
-    match (&m.group, q.is_fifo()) {
-        (None, true) => Err(AwsError::missing_parameter("MessageGroupId")),
-        (Some(g), false) => Err(invalid_value(format!(
-            "Value {g} for parameter MessageGroupId is invalid. Reason: The request include parameter that is not valid for this queue type."
-        ))),
-        _ => Ok(()),
-    }
+    Ok(())
 }
 
 fn put_message(
