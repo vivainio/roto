@@ -1,1 +1,4 @@
 # Known failures for test_sqs (regenerate: UPDATE_EXPECTED=1 scripts/run-moto-tests.sh test_sqs)
+# Upstream predates fair queues and expects MessageGroupId to be rejected on standard queues.
+# AWS now accepts it: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-fair-queues.html
+tests/test_sqs/test_sqs.py::test_send_message_with_message_group_id_standard_queue
