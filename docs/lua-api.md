@@ -384,7 +384,7 @@ local mapping = roto.lambda.event_source(queue, worker, {
 print(mapping.UUID)
 ```
 
-Sources must be standard queues in the same account and region. Queue visibility
+Sources may be standard or FIFO queues in the same account and region. Queue visibility
 timeout must be at least the function timeout. Unknown options fail. See
 [SQS delivery behavior](lua.md#sqs-delivery-behavior) for retry and deletion rules.
 

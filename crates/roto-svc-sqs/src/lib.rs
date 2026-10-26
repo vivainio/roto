@@ -65,6 +65,30 @@ CREATE TABLE receipts (
 CREATE INDEX receipts_seq ON receipts (seq);
 ",
     },
+    Migration {
+        version: 3,
+        sql: "
+CREATE TABLE deduplications (
+    queue_id INTEGER NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL,
+    dedup_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (queue_id, scope, dedup_id)
+);
+CREATE INDEX deduplications_expiry ON deduplications (sent_at);
+-- Preserve the deduplication window for messages already in persistent stores.
+INSERT OR REPLACE INTO deduplications
+SELECT m.queue_id,
+       CASE WHEN json_extract(q.attributes, '$.DeduplicationScope') = 'messageGroup'
+            THEN COALESCE(m.group_id, '') ELSE '' END,
+       m.dedup_id, m.message_id, m.seq, m.sent_at
+FROM messages m JOIN queues q ON q.id = m.queue_id
+WHERE q.name LIKE '%.fifo' AND m.dedup_id IS NOT NULL
+ORDER BY m.seq;
+",
+    },
 ];
 
 /// Operations with real behaviour; the rest answer `NotImplemented`. Feeds the coverage matrix.
@@ -293,6 +317,171 @@ mod tests {
     }
 
     #[test]
+    fn fifo_deduplication_survives_restart_and_expires() {
+        use diesel::RunQueryDsl;
+        use roto_core::store::StoreOptions;
+        let dir = std::env::temp_dir().join(format!("roto-fifo-{}", uuid::Uuid::new_v4()));
+        let message;
+        let original;
+        {
+            let store = Store::open(&dir, StoreOptions::default()).unwrap();
+            let h = SqsHandler::new(&store).unwrap();
+            let (_, q) = call(
+                &h,
+                "CreateQueue",
+                json!({"QueueName":"q.fifo","Attributes":{"FifoQueue":"true"}}),
+            );
+            let url = q["QueueUrl"].clone();
+            message = json!({"QueueUrl":url,"MessageBody":"body","MessageGroupId":"g","MessageDeduplicationId":"id"});
+            original = call(&h, "SendMessage", message.clone()).1;
+            let received = call(&h, "ReceiveMessage", json!({"QueueUrl":url})).1;
+            call(
+                &h,
+                "DeleteMessage",
+                json!({"QueueUrl":url,"ReceiptHandle":received["Messages"][0]["ReceiptHandle"]}),
+            );
+        }
+        {
+            let store = Store::open(&dir, StoreOptions::default()).unwrap();
+            let h = SqsHandler::new(&store).unwrap();
+            assert_eq!(
+                call(&h, "SendMessage", message.clone()).1["MessageId"],
+                original["MessageId"]
+            );
+            store
+                .diesel_db("sqs", MIGRATIONS)
+                .unwrap()
+                .transaction(|tx| {
+                    diesel::sql_query("UPDATE deduplications SET sent_at = sent_at - 300000")
+                        .execute(tx)?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_ne!(
+                call(&h, "SendMessage", message).1["MessageId"],
+                original["MessageId"]
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn fifo_deduplication_migration_backfills_existing_messages() {
+        use diesel::RunQueryDsl;
+        let dir = std::env::temp_dir().join(format!("roto-fifo-upgrade-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&dir, Default::default()).unwrap();
+        store.diesel_db("sqs", &MIGRATIONS[..2]).unwrap().transaction(|tx| {
+            diesel::sql_query("INSERT INTO queues (id,account_id,region,name,attributes,created_at,modified_at) VALUES (1,'123456789012','us-east-1','q.fifo','{\"FifoQueue\":\"true\"}',0,0)").execute(tx)?;
+            diesel::sql_query("INSERT INTO messages (queue_id,message_id,body,md5,sent_at,visible_at,group_id,dedup_id,sender_id) VALUES (1,'original','body','digest',CAST(strftime('%s','now') AS INTEGER)*1000,0,'g','id','123456789012')").execute(tx)?;
+            Ok(())
+        }).unwrap();
+        drop(store);
+        let store = Store::open(&dir, Default::default()).unwrap();
+        let h = SqsHandler::new(&store).unwrap();
+        let (status, sent) = call(
+            &h,
+            "SendMessage",
+            json!({"QueueUrl":"http://localhost:5070/123456789012/q.fifo","MessageBody":"body","MessageGroupId":"g","MessageDeduplicationId":"id"}),
+        );
+        assert_eq!(status, 200);
+        assert_eq!(sent["MessageId"], "original");
+        drop(h);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn group_visibility_blocks_fifo_but_not_standard_queues() {
+        for fifo in [false, true] {
+            let h = handler();
+            let (_, q) = call(
+                &h,
+                "CreateQueue",
+                json!({
+                    "QueueName": if fifo { "q.fifo" } else { "q" },
+                    "Attributes": if fifo { json!({"FifoQueue":"true"}) } else { json!({}) }
+                }),
+            );
+            let url = q["QueueUrl"].clone();
+            for (body, group) in [("first", "a"), ("second", "a"), ("other", "b")] {
+                assert_eq!(
+                    call(
+                        &h,
+                        "SendMessage",
+                        json!({"QueueUrl":url,"MessageBody":body,
+                    "MessageGroupId":group,"MessageDeduplicationId":body})
+                    )
+                    .0,
+                    200
+                );
+            }
+            let (_, first) = call(&h, "ReceiveMessage", json!({"QueueUrl":url}));
+            assert_eq!(first["Messages"][0]["Body"], "first");
+            let (_, next) = call(&h, "ReceiveMessage", json!({"QueueUrl":url}));
+            assert_eq!(
+                next["Messages"][0]["Body"],
+                if fifo { "other" } else { "second" }
+            );
+            if fifo {
+                assert!(
+                    call(&h, "ReceiveMessage", json!({"QueueUrl":url}))
+                        .1
+                        .get("Messages")
+                        .is_none()
+                );
+                call(
+                    &h,
+                    "DeleteMessage",
+                    json!({"QueueUrl":url,"ReceiptHandle":first["Messages"][0]["ReceiptHandle"]}),
+                );
+                assert_eq!(
+                    call(&h, "ReceiveMessage", json!({"QueueUrl":url})).1["Messages"][0]["Body"],
+                    "second"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fifo_deduplication_survives_deletion_and_respects_scope() {
+        for scope in ["queue", "messageGroup"] {
+            let h = handler();
+            let (_, q) = call(
+                &h,
+                "CreateQueue",
+                json!({"QueueName":"q.fifo","Attributes":{
+                "FifoQueue":"true","ContentBasedDeduplication":"true","DeduplicationScope":scope}}),
+            );
+            let url = q["QueueUrl"].clone();
+            let message = json!({"QueueUrl":url,"MessageBody":"same body","MessageGroupId":"a"});
+            let (status, original) = call(&h, "SendMessage", message.clone());
+            assert_eq!(status, 200);
+            let (_, received) = call(&h, "ReceiveMessage", json!({"QueueUrl":url}));
+            call(
+                &h,
+                "DeleteMessage",
+                json!({"QueueUrl":url,"ReceiptHandle":received["Messages"][0]["ReceiptHandle"]}),
+            );
+            let (_, duplicate) = call(&h, "SendMessage", message.clone());
+            assert_eq!(duplicate["MessageId"], original["MessageId"]);
+            assert_eq!(duplicate["SequenceNumber"], original["SequenceNumber"]);
+            assert!(
+                call(&h, "ReceiveMessage", json!({"QueueUrl":url}))
+                    .1
+                    .get("Messages")
+                    .is_none()
+            );
+            let mut other_group = message;
+            other_group["MessageGroupId"] = json!("b");
+            let (_, other) = call(&h, "SendMessage", other_group);
+            assert_eq!(
+                other["MessageId"] == original["MessageId"],
+                scope == "queue"
+            );
+        }
+    }
+
+    #[test]
     fn standard_queue_accepts_message_group_id() {
         let h = handler();
         let (_, q) = call(&h, "CreateQueue", json!({"QueueName": "fair"}));
@@ -308,7 +497,10 @@ mod tests {
             "ReceiveMessage",
             json!({"QueueUrl": url, "AttributeNames": ["All"]}),
         );
-        assert_eq!(got["Messages"][0]["Attributes"]["MessageGroupId"], "tenant-1");
+        assert_eq!(
+            got["Messages"][0]["Attributes"]["MessageGroupId"],
+            "tenant-1"
+        );
     }
 
     #[test]

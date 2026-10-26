@@ -29,7 +29,7 @@ APIs.
 | SSM | Parameter Store, versions, labels, history, hierarchy, tags, SecureString | Documents, commands, maintenance windows, patch baselines, public parameters |
 | Secrets Manager | Secrets, versions, staging labels, deletion/restore, tags, policies, rotation bookkeeping, batch get | Cross-region replication, Lambda rotation execution |
 | SNS | Topics, subscriptions, publishing, SQS fan-out, filter policies, FIFO checks, tags | Platform endpoints, SMS attributes, HTTP/Lambda/email delivery |
-| Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard SQS mappings, Luau startup setup | Packaged runtimes, versions/aliases, FIFO/Kinesis polling |
+| Lambda | Function metadata, local command/HTTP execution, S3 notifications, standard/FIFO SQS mappings, Luau startup setup | Packaged runtimes, versions/aliases, Kinesis polling |
 | CloudWatch Logs | Log group CRUD, retention and tags, basic event filtering, local Lambda output | Log streams API, direct `PutLogEvents`, Insights, subscriptions, advanced filter patterns, retention enforcement |
 | EventBridge | Default/custom buses, pattern rules, Lambda/SQS targets, S3 events, persistent delivery | Rule schedules, input transformers, archives/replays, cross-account targets, permissions |
 | [EventBridge Scheduler](scheduler.md) | Schedule groups and tags, schedules with `rate`, `cron` and `at` expressions, time zones, start/end dates, SQS/Lambda targets, persistent firing without backfill | Flexible-window jitter, other target types, retry policy and dead-letter handling |

@@ -403,6 +403,89 @@ fn sqs_lambda(store: &Store, executor: Executor) -> (Arc<roto_svc_sqs::Sqs>, Lam
 }
 
 #[test]
+fn sqs_fifo_mapping_delivers_ordered_batch_and_acknowledges() {
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["sh", "-c", "cat"]));
+    let url = sqs_api(
+        &sqs,
+        "CreateQueue",
+        json!({"QueueName":"jobs.fifo","Attributes":{
+        "FifoQueue":"true","ContentBasedDeduplication":"true","VisibilityTimeout":"1"}}),
+    )["QueueUrl"]
+        .clone();
+    let id = mapping_for(&handler.0, "jobs.fifo", false);
+    for body in ["first", "second"] {
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":body,"MessageGroupId":"tenant"}),
+        );
+    }
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    let history = handler.0.history(&ctx()).unwrap();
+    let records = &history["invocations"][0]["result"]["Records"];
+    assert_eq!(records[0]["body"], "first");
+    assert_eq!(records[1]["body"], "second");
+    assert_eq!(records[0]["attributes"]["MessageGroupId"], "tenant");
+    assert!(records[0]["attributes"]["SequenceNumber"].is_string());
+    assert_eq!(
+        sqs_api(
+            &sqs,
+            "GetQueueAttributes",
+            json!({"QueueUrl":url,"AttributeNames":["All"]})
+        )["Attributes"]["ApproximateNumberOfMessagesNotVisible"],
+        "0"
+    );
+    assert!(
+        sqs_api(&sqs, "ReceiveMessage", json!({"QueueUrl":url}))
+            .get("Messages")
+            .is_none()
+    );
+}
+
+#[test]
+fn sqs_fifo_partial_failure_keeps_failed_and_unprocessed_messages() {
+    let code = "import json,sys; e=json.load(sys.stdin); print(json.dumps({'batchItemFailures':[{'itemIdentifier':r['messageId']} for r in e['Records'][1:]]}))";
+    let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["python3", "-c", code]));
+    let url = sqs_api(
+        &sqs,
+        "CreateQueue",
+        json!({"QueueName":"jobs.fifo","Attributes":{
+        "FifoQueue":"true","ContentBasedDeduplication":"true","VisibilityTimeout":"1"}}),
+    )["QueueUrl"]
+        .clone();
+    let id = mapping_for(&handler.0, "jobs.fifo", true);
+    for body in ["ok", "fail", "unprocessed"] {
+        sqs_api(
+            &sqs,
+            "SendMessage",
+            json!({"QueueUrl":url,"MessageBody":body,"MessageGroupId":"tenant"}),
+        );
+    }
+    handler
+        .0
+        .process_sqs_batch(&ctx(), &id, &runtime())
+        .unwrap();
+    assert!(
+        sqs_api(&sqs, "ReceiveMessage", json!({"QueueUrl":url}))
+            .get("Messages")
+            .is_none()
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+    let received = sqs_api(
+        &sqs,
+        "ReceiveMessage",
+        json!({"QueueUrl":url,"MaxNumberOfMessages":10}),
+    );
+    let messages = received["Messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["Body"], "fail");
+    assert_eq!(messages[1]["Body"], "unprocessed");
+}
+
+#[test]
 fn sqs_success_event_shape_disabled_mapping_and_scoping() {
     let (sqs, handler) = sqs_lambda(&Store::ephemeral(), command(&["sh", "-c", "cat"]));
     let url = queue(&sqs, "jobs");

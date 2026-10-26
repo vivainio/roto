@@ -528,11 +528,18 @@ fn put_message(
             hex::encode(h.finalize())
         });
         // 5 minute deduplication window.
-        let existing: Option<(String, i64)> = messages::table
-            .filter(messages::queue_id.eq(&(q.id)))
-            .filter(messages::dedup_id.eq(&(id)))
-            .filter(messages::sent_at.gt(&(now - 300_000)))
-            .select((messages::message_id, messages::seq))
+        diesel::delete(deduplications::table.filter(deduplications::sent_at.le(now - 300_000)))
+            .execute(tx)?;
+        let scope = if q.get("DeduplicationScope") == Some("messageGroup") {
+            m.group.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        let existing: Option<(String, i64)> = deduplications::table
+            .filter(deduplications::queue_id.eq(q.id))
+            .filter(deduplications::scope.eq(scope))
+            .filter(deduplications::dedup_id.eq(&id))
+            .select((deduplications::message_id, deduplications::seq))
             .first::<(String, i64)>(tx)
             .optional()?;
         if let Some((message_id, seq)) = existing {
@@ -570,6 +577,23 @@ fn put_message(
         ))
         .returning(messages::seq)
         .get_result(tx)?;
+    if q.is_fifo() {
+        let scope = if q.get("DeduplicationScope") == Some("messageGroup") {
+            m.group.as_deref().unwrap_or_default()
+        } else {
+            ""
+        };
+        diesel::replace_into(deduplications::table)
+            .values((
+                deduplications::queue_id.eq(q.id),
+                deduplications::scope.eq(scope),
+                deduplications::dedup_id.eq(dedup.as_deref().unwrap()),
+                deduplications::message_id.eq(&message_id),
+                deduplications::seq.eq(inserted_sequence),
+                deduplications::sent_at.eq(now),
+            ))
+            .execute(tx)?;
+    }
     let sequence = q.is_fifo().then(|| format!("{:018}", inserted_sequence));
     Ok(Sent {
         message_id,
@@ -618,8 +642,8 @@ fn receive_once(
         .filter(messages::queue_id.eq(q.id))
         .filter(messages::visible_at.le(now))
         .filter(
-            messages::group_id
-                .is_null()
+            diesel::dsl::sql::<diesel::sql_types::Bool>(if q.is_fifo() { "0" } else { "1" })
+                .or(messages::group_id.is_null())
                 .or(diesel::dsl::not(diesel::dsl::exists(blocked))),
         )
         .order(messages::seq)
@@ -1446,7 +1470,7 @@ impl Sqs {
             let group = if q.is_fifo() {
                 group_id.or_else(|| Some("default".into()))
             } else {
-                None
+                group_id
             };
             put_message(
                 tx,
@@ -1477,9 +1501,6 @@ impl Sqs {
         self.db.transaction(|tx| {
             let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
                 .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
-            if q.is_fifo() {
-                return Err(AwsError::not_implemented("lambda", "FIFO event sources"));
-            }
             Ok(q.int("VisibilityTimeout"))
         })
     }
@@ -1510,9 +1531,6 @@ impl Sqs {
             let result = self.db.transaction(|tx| {
                 let q = load_queue(tx, &ctx.account_id, &ctx.region, name)?
                     .ok_or_else(|| err(NO_QUEUE, NO_QUEUE_MSG))?;
-                if q.is_fifo() {
-                    return Err(AwsError::not_implemented("lambda", "FIFO event sources"));
-                }
                 let messages = receive_once(
                     tx,
                     &q,

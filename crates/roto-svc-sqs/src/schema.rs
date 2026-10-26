@@ -41,3 +41,12 @@ extern "SQL" {
     ) -> diesel::sql_types::Text;
     fn length(value: diesel::sql_types::Text) -> diesel::sql_types::Integer;
 }
+
+diesel::table! { deduplications (queue_id, scope, dedup_id) {
+queue_id -> BigInt,
+scope -> Text,
+dedup_id -> Text,
+message_id -> Text,
+seq -> BigInt,
+sent_at -> BigInt,
+}}

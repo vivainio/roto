@@ -176,8 +176,8 @@ Use `roto.array({})` for an explicitly empty JSON array and `roto.null` for JSON
 ## SQS delivery behavior
 
 Mappings are persisted and manageable with the ordinary Lambda event-source mapping APIs.
-Supported sources are standard queues in the same account and region, with batches of 1–10
-messages and no batching window. Unsupported options (including FIFO sources, filters,
+Supported sources are standard and FIFO queues in the same account and region, with batches of 1–10
+messages and no batching window. Unsupported options (including filters,
 scaling settings, tags, and nonzero batching windows) fail explicitly. One polling worker
 processes mappings sequentially; this does not emulate AWS's scaling or polling delays.
 The queue visibility timeout must be at least the function timeout.
@@ -193,6 +193,9 @@ With `report_batch_item_failures`, return:
 ```json
 {"batchItemFailures": [{"itemIdentifier": "failed-message-id"}]}
 ```
+
+For FIFO queues, handlers must stop after the first failure and list all failed and
+unprocessed messages to preserve ordering.
 
 Only listed messages are retried. Invalid failure identifiers or a malformed failure list
 retry the whole batch. An empty or absent failure list means success. Disabling/deleting a
