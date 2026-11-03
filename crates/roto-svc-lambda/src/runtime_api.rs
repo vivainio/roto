@@ -63,9 +63,12 @@ impl Drop for Worker {
 }
 
 impl Worker {
-    /// Whether the process is still running (an idle worker may have crashed or exited).
+    /// Whether the worker can take an invocation: the process is still running (an idle worker may
+    /// have crashed or exited) and its Runtime API server is still serving.
     pub(crate) fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
+            && !self.server.is_finished()
+            && !self.invoke.is_closed()
     }
 
     fn take_logs(&self) -> String {
@@ -110,10 +113,15 @@ pub(crate) async fn spawn(
     let server = tokio::spawn(async move {
         let mut connections = JoinSet::new();
         loop {
-            let Ok((socket, _)) = listener.accept().await else {
-                break;
-            };
-            connections.spawn(connection(socket, api.clone()));
+            match listener.accept().await {
+                Ok((socket, _)) => {
+                    connections.spawn(connection(socket, api.clone()));
+                }
+                // accept() also fails for reasons that say nothing about the listener: a client
+                // that reset before it was accepted, or a momentary shortage of file descriptors.
+                // Giving up here would leave a live process with no API, so keep serving.
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
         }
     });
 
@@ -178,7 +186,13 @@ pub(crate) async fn spawn(
 }
 
 /// Runs one invocation on `worker`. On success the worker is handed back for reuse.
-pub(crate) async fn invoke(mut worker: Worker, job: &Job) -> (Outcome, Option<Worker>) {
+///
+/// `Err` means the invocation never reached the worker (its Runtime API is gone), so the caller
+/// may run it again on a fresh worker without the function having seen it twice.
+pub(crate) async fn invoke(
+    mut worker: Worker,
+    job: &Job,
+) -> Result<(Outcome, Option<Worker>), Outcome> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
@@ -190,10 +204,7 @@ pub(crate) async fn invoke(mut worker: Worker, job: &Job) -> (Outcome, Option<Wo
         client_context: job.client_context.clone(),
     };
     if worker.invoke.send(invocation).await.is_err() {
-        return (
-            Outcome::error("runtime worker is gone", worker.take_logs()),
-            None,
-        );
+        return Err(Outcome::error("runtime worker is gone", worker.take_logs()));
     }
     let reply = loop {
         tokio::select! {
@@ -201,7 +212,7 @@ pub(crate) async fn invoke(mut worker: Worker, job: &Job) -> (Outcome, Option<Wo
                 // A reply for another request belongs to an earlier, abandoned invocation.
                 Some((id, reply)) if id == job.request_id || id.is_empty() => break reply,
                 Some(_) => continue,
-                None => return (Outcome::error("runtime API stopped", worker.take_logs()), None),
+                None => return Ok((Outcome::error("runtime API stopped", worker.take_logs()), None)),
             },
             status = worker.child.wait() => {
                 // Output the process wrote just before exiting may still be in flight.
@@ -210,12 +221,12 @@ pub(crate) async fn invoke(mut worker: Worker, job: &Job) -> (Outcome, Option<Wo
                     Ok(status) => format!("Runtime exited with {status} before replying"),
                     Err(error) => format!("Runtime exited before replying: {error}"),
                 };
-                return (Outcome::error(message, worker.take_logs()), None);
+                return Ok((Outcome::error(message, worker.take_logs()), None));
             }
         }
     };
     let logs = worker.take_logs();
-    match reply {
+    Ok(match reply {
         Reply::Response(body) => match parse_body(&body) {
             Ok(payload) => (
                 Outcome {
@@ -260,7 +271,7 @@ pub(crate) async fn invoke(mut worker: Worker, job: &Job) -> (Outcome, Option<Wo
                 None,
             )
         }
-    }
+    })
 }
 
 fn parse_body(body: &[u8]) -> Result<Value, String> {
@@ -544,6 +555,55 @@ while True:
                 .is_err()
         );
         assert_eq!(execute(&job(json!({})), &pool).await.payload["count"], 1);
+    }
+
+    // A worker whose process is alive but whose Runtime API server has stopped (as when the accept
+    // loop used to give up on a transient error) must not be reused, and an invocation sent to it
+    // must say it was never delivered so it can be retried on a fresh worker.
+    #[tokio::test]
+    async fn worker_with_a_stopped_api_is_not_alive_and_reports_the_invocation_undelivered() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipped: python3 not available");
+            return;
+        }
+        let job = job(json!({}));
+        let Executor::Runtime { runtime, cwd, env } = &job.executor else {
+            unreachable!()
+        };
+        let mut worker = spawn(&job, runtime, cwd, env).await.unwrap();
+        assert!(worker.alive());
+
+        worker.server.abort();
+        let _ = (&mut worker.server).await;
+        // Aborting the server drops the invocation receiver once its tasks are gone.
+        for _ in 0..50 {
+            if !worker.alive() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            matches!(worker.child.try_wait(), Ok(None)),
+            "the process is still running"
+        );
+        assert!(!worker.alive(), "a stopped Runtime API means not alive");
+
+        let Err(outcome) = invoke(worker, &job).await else {
+            panic!("an undeliverable invocation must be reported as such");
+        };
+        assert!(outcome.failed);
+        assert!(
+            outcome.payload["errorMessage"]
+                .as_str()
+                .unwrap()
+                .contains("gone"),
+            "{}",
+            outcome.payload
+        );
     }
 
     #[test]

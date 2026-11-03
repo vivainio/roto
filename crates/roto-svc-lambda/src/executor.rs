@@ -357,19 +357,30 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
                 job.memory_size,
             ))
             .unwrap();
-            let worker = match pool.take_worker(&job.arn, &key) {
-                Some(worker) => worker,
-                None => match crate::runtime_api::spawn(job, runtime, cwd, env).await {
-                    Ok(worker) => worker,
-                    Err(error) => return Outcome::error(error, String::new()),
-                },
-            };
-            // Dropping this future (timeout, cancel) drops the worker, which kills its process.
-            let (outcome, worker) = crate::runtime_api::invoke(worker, job).await;
-            if let Some(worker) = worker {
-                pool.put_worker(&job.arn, key, worker);
+            // A pooled worker can turn out to be unusable between the liveness check and the send;
+            // the invocation was not delivered then, so it is retried once on a fresh worker.
+            let mut pooled = pool.take_worker(&job.arn, &key);
+            let mut can_retry = pooled.is_some();
+            loop {
+                let worker = match pooled.take() {
+                    Some(worker) => worker,
+                    None => match crate::runtime_api::spawn(job, runtime, cwd, env).await {
+                        Ok(worker) => worker,
+                        Err(error) => return Outcome::error(error, String::new()),
+                    },
+                };
+                // Dropping this future (timeout, cancel) drops the worker, which kills its process.
+                match crate::runtime_api::invoke(worker, job).await {
+                    Ok((outcome, worker)) => {
+                        if let Some(worker) = worker {
+                            pool.put_worker(&job.arn, key, worker);
+                        }
+                        return outcome;
+                    }
+                    Err(_) if can_retry => can_retry = false,
+                    Err(outcome) => return outcome,
+                }
             }
-            outcome
         }
     }
 }
