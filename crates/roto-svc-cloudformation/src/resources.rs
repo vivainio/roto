@@ -282,7 +282,12 @@ impl Resources {
     /// Resolve an `AWS::SSM::Parameter::Value<...>` parameter from SSM.
     pub fn ssm_parameter(&self, ctx: &RequestContext, name: &str) -> Result<String, AwsError> {
         let result = self
-            .json(ctx, "ssm", "GetParameter", json!({"Name":name,"WithDecryption":true}))
+            .json(
+                ctx,
+                "ssm",
+                "GetParameter",
+                json!({"Name":name,"WithDecryption":true}),
+            )
             .map_err(|e| {
                 if e.code == "ParameterNotFound" {
                     validation(format!(

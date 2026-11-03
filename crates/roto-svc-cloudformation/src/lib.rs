@@ -822,7 +822,13 @@ impl CloudFormation {
                         "Nested stack name {name} is already in use"
                     )));
                 }
-                let child_parameters = parameters(ctx, &self.resources, &template, inputs, Some(&child.parameters))?;
+                let child_parameters = parameters(
+                    ctx,
+                    &self.resources,
+                    &template,
+                    inputs,
+                    Some(&child.parameters),
+                )?;
                 if child.template != template
                     || child.parameters != child_parameters
                     || child.tags != tags
@@ -1516,7 +1522,13 @@ impl Service for CloudFormation {
             }
         };
         self.check_spec(&template)?;
-        let parameters = parameters(ctx, &self.resources, &template, input.parameters, Some(&stack.parameters))?;
+        let parameters = parameters(
+            ctx,
+            &self.resources,
+            &template,
+            input.parameters,
+            Some(&stack.parameters),
+        )?;
         let tags = if input.tags.is_empty() {
             stack.tags.clone()
         } else {
@@ -1878,7 +1890,11 @@ mod tests {
     }
 
     /// A service with real IAM and SSM backends, returning handlers for assertions.
-    fn cdk_service() -> (CloudFormation, Arc<dyn ServiceHandler>, Arc<dyn ServiceHandler>) {
+    fn cdk_service() -> (
+        CloudFormation,
+        Arc<dyn ServiceHandler>,
+        Arc<dyn ServiceHandler>,
+    ) {
         let store = Store::ephemeral();
         let sqs: Arc<dyn ServiceHandler> = Arc::new(roto_svc_sqs::SqsHandler::new(&store).unwrap());
         let iam: Arc<dyn ServiceHandler> = Arc::new(roto_svc_iam::IamHandler::new(&store).unwrap());
@@ -1963,7 +1979,12 @@ mod tests {
         let resolved: BTreeMap<_, _> = stack
             .parameters
             .iter()
-            .map(|p| (p.parameter_key.clone().unwrap(), p.parameter_value.clone().unwrap()))
+            .map(|p| {
+                (
+                    p.parameter_key.clone().unwrap(),
+                    p.parameter_value.clone().unwrap(),
+                )
+            })
             .collect();
         assert_eq!(resolved["BootstrapVersion"], "30");
         assert_eq!(resolved["Dest"], "prod");
@@ -1978,9 +1999,10 @@ mod tests {
             .unwrap()
             .stack_resource_summaries;
         assert!(
-            summaries
-                .iter()
-                .any(|r| r.physical_resource_id.as_deref().is_some_and(|id| id.ends_with("/q-prod"))),
+            summaries.iter().any(|r| r
+                .physical_resource_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with("/q-prod"))),
             "{summaries:?}"
         );
 

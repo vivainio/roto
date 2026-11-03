@@ -1,7 +1,8 @@
 # Test-runner dependencies; moto itself is used only as a library by the test code.
+# Pin everything: expected_failures/*.txt key on pytest test ids, which can change between versions.
 moto[all,server]==5.0.11
-pytest
-pytest-order
-freezegun
-requests
-pytest-timeout
+pytest==9.1.1
+pytest-order==1.5.0
+freezegun==1.5.5
+requests==2.34.2
+pytest-timeout==2.5.0
