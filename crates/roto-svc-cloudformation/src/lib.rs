@@ -822,7 +822,7 @@ impl CloudFormation {
                         "Nested stack name {name} is already in use"
                     )));
                 }
-                let child_parameters = parameters(&template, inputs, Some(&child.parameters))?;
+                let child_parameters = parameters(ctx, &self.resources, &template, inputs, Some(&child.parameters))?;
                 if child.template != template
                     || child.parameters != child_parameters
                     || child.tags != tags
@@ -843,7 +843,7 @@ impl CloudFormation {
             )));
         }
 
-        let child_parameters = parameters(&template, inputs, None)?;
+        let child_parameters = parameters(ctx, &self.resources, &template, inputs, None)?;
         let mut child = StackState {
             id: new_stack_id(ctx, name),
             name: name.into(),
@@ -1007,20 +1007,34 @@ fn policy(definition: &Value, key: &str) -> String {
 }
 
 fn parameters(
+    ctx: &RequestContext,
+    resources: &Resources,
     template: &Value,
     inputs: Vec<Parameter>,
     previous: Option<&BTreeMap<String, String>>,
 ) -> Result<BTreeMap<String, String>, AwsError> {
+    let is_ssm = |key: &str| {
+        template["Parameters"][key]["Type"]
+            .as_str()
+            .is_some_and(|t| template::is_ssm_parameter_type(Some(t)))
+    };
     let mut result = BTreeMap::new();
     if let Some(definitions) = template.get("Parameters") {
         for (key, definition) in definitions
             .as_object()
             .ok_or_else(|| validation("Parameters must be an object"))?
         {
-            if let Some(v) = previous.and_then(|p| p.get(key)) {
+            // SSM-backed parameters are looked up again on every update.
+            if let Some(v) = previous.and_then(|p| p.get(key)).filter(|_| !is_ssm(key)) {
                 result.insert(key.clone(), v.clone());
             } else if let Some(value) = definition.get("Default") {
-                result.insert(key.clone(), text(value)?);
+                let value = text(value)?;
+                let value = if is_ssm(key) {
+                    resources.ssm_parameter(ctx, &value)?
+                } else {
+                    value
+                };
+                result.insert(key.clone(), value);
             }
         }
     }
@@ -1037,12 +1051,15 @@ fn parameters(
                 .ok_or_else(|| validation(format!("No previous value for {key}")))?;
             result.insert(key, v.clone());
         } else {
-            result.insert(
-                key,
-                input
-                    .parameter_value
-                    .ok_or_else(|| validation("Parameter requires ParameterValue"))?,
-            );
+            let value = input
+                .parameter_value
+                .ok_or_else(|| validation("Parameter requires ParameterValue"))?;
+            let value = if is_ssm(&key) {
+                resources.ssm_parameter(ctx, &value)?
+            } else {
+                value
+            };
+            result.insert(key, value);
         }
     }
     if let Some(definitions) = template.get("Parameters").and_then(Value::as_object) {
@@ -1140,7 +1157,7 @@ impl Service for CloudFormation {
         };
         let previous = (kind == "UPDATE").then_some(&stack.parameters);
         self.check_spec(&template)?;
-        let parameters = parameters(&template, input.parameters, previous)?;
+        let parameters = parameters(ctx, &self.resources, &template, input.parameters, previous)?;
         let tags = if input.tags.is_empty() {
             stack.tags.clone()
         } else {
@@ -1426,7 +1443,7 @@ impl Service for CloudFormation {
                 .ok_or_else(|| validation("TemplateBody is required"))?,
         )?;
         self.check_spec(&template)?;
-        let parameters = parameters(&template, input.parameters, None)?;
+        let parameters = parameters(ctx, &self.resources, &template, input.parameters, None)?;
         let id = new_stack_id(ctx, &input.stack_name);
         let mut stack = StackState {
             id: id.clone(),
@@ -1499,7 +1516,7 @@ impl Service for CloudFormation {
             }
         };
         self.check_spec(&template)?;
-        let parameters = parameters(&template, input.parameters, Some(&stack.parameters))?;
+        let parameters = parameters(ctx, &self.resources, &template, input.parameters, Some(&stack.parameters))?;
         let tags = if input.tags.is_empty() {
             stack.tags.clone()
         } else {
@@ -1858,6 +1875,136 @@ mod tests {
         // Keep unit tests offline: no spec download.
         assert!(svc.spec.set(None).is_ok());
         svc
+    }
+
+    /// A service with real IAM and SSM backends, returning handlers for assertions.
+    fn cdk_service() -> (CloudFormation, Arc<dyn ServiceHandler>, Arc<dyn ServiceHandler>) {
+        let store = Store::ephemeral();
+        let sqs: Arc<dyn ServiceHandler> = Arc::new(roto_svc_sqs::SqsHandler::new(&store).unwrap());
+        let iam: Arc<dyn ServiceHandler> = Arc::new(roto_svc_iam::IamHandler::new(&store).unwrap());
+        let ssm: Arc<dyn ServiceHandler> = Arc::new(roto_svc_ssm::SsmHandler::new(&store).unwrap());
+        let svc = CloudFormation::new(
+            &store,
+            HashMap::from([("sqs", sqs), ("iam", iam.clone()), ("ssm", ssm.clone())]),
+        )
+        .unwrap();
+        assert!(svc.spec.set(None).is_ok());
+        (svc, iam, ssm)
+    }
+
+    fn iam_query(iam: &Arc<dyn ServiceHandler>, body: &str) -> String {
+        let response = iam
+            .handle(
+                &ctx(),
+                &RawRequest {
+                    method: "POST".into(),
+                    path: "/".into(),
+                    body: body.as_bytes().to_vec(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        String::from_utf8(response.body).unwrap()
+    }
+
+    fn put_ssm(ssm: &Arc<dyn ServiceHandler>, name: &str, value: &str) {
+        ssm.handle(
+            &ctx(),
+            &RawRequest {
+                method: "POST".into(),
+                path: "/".into(),
+                headers: vec![("x-amz-target".into(), "PutParameter".into())],
+                body: json!({"Name":name,"Value":value,"Type":"String","Overwrite":true})
+                    .to_string()
+                    .into_bytes(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn cdk_template() -> String {
+        json!({
+            "Rules": {"CheckBootstrapVersion": {"Assertions": [{"Assert": {"Fn::Not": [{"Fn::Contains": [["1"], {"Ref": "BootstrapVersion"}]}]}}]}},
+            "Parameters": {
+                "BootstrapVersion": {"Type": "AWS::SSM::Parameter::Value<String>", "Default": "/cdk-bootstrap/hnb659fds/version", "Description": "version"},
+                "Dest": {"Type": "AWS::SSM::Parameter::Value<String>", "Default": "/dest"}
+            },
+            "Resources": {
+                "Q": {"Type": "AWS::SQS::Queue", "Properties": {"QueueName": {"Fn::Sub": "q-${Dest}"}}},
+                "R": {"Type": "AWS::IAM::Role", "Properties": {
+                    "RoleName": "cdk-role",
+                    "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+                    "Policies": [{"PolicyName": "inline-a", "PolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sqs:SendMessage", "Resource": "*"}]}}]
+                }}
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn cdk_template_rules_ssm_parameters_and_inline_role_policies() {
+        let (svc, iam, ssm) = cdk_service();
+        put_ssm(&ssm, "/cdk-bootstrap/hnb659fds/version", "30");
+        put_ssm(&ssm, "/dest", "prod");
+        create(&svc, "cdk", cdk_template()).unwrap();
+        assert_eq!(status(&svc, "cdk"), "CREATE_COMPLETE");
+        let stack = svc
+            .describe_stacks(
+                &ctx(),
+                DescribeStacksInput {
+                    stack_name: Some("cdk".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .stacks
+            .remove(0);
+        let resolved: BTreeMap<_, _> = stack
+            .parameters
+            .iter()
+            .map(|p| (p.parameter_key.clone().unwrap(), p.parameter_value.clone().unwrap()))
+            .collect();
+        assert_eq!(resolved["BootstrapVersion"], "30");
+        assert_eq!(resolved["Dest"], "prod");
+        let summaries = svc
+            .list_stack_resources(
+                &ctx(),
+                ListStackResourcesInput {
+                    stack_name: "cdk".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .stack_resource_summaries;
+        assert!(
+            summaries
+                .iter()
+                .any(|r| r.physical_resource_id.as_deref().is_some_and(|id| id.ends_with("/q-prod"))),
+            "{summaries:?}"
+        );
+
+        // Replacing the inline policy and deleting the stack both clean up policies.
+        let replaced = cdk_template().replace("inline-a", "inline-b");
+        update(&svc, "cdk", replaced).unwrap();
+        assert_eq!(status(&svc, "cdk"), "UPDATE_COMPLETE");
+        svc.delete_stack(
+            &ctx(),
+            DeleteStackInput {
+                stack_name: "cdk".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(iam_query(&iam, "Action=GetRole&RoleName=cdk-role").contains("NoSuchEntity"));
+    }
+
+    #[test]
+    fn missing_ssm_parameter_fails_stack_creation() {
+        let (svc, _iam, ssm) = cdk_service();
+        put_ssm(&ssm, "/cdk-bootstrap/hnb659fds/version", "30");
+        let err = create(&svc, "cdk", cdk_template()).unwrap_err();
+        assert!(err.message.contains("/dest"), "{}", err.message);
     }
 
     fn queue(name: &str) -> Value {

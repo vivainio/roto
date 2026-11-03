@@ -45,6 +45,15 @@ fn yaml_functions(value: serde_yaml::Value) -> Result<serde_yaml::Value, serde_y
     })
 }
 
+/// Plain strings, plus SSM-backed parameters, whose value is looked up from SSM.
+pub fn is_ssm_parameter_type(ty: Option<&str>) -> bool {
+    ty.is_some_and(|t| t.starts_with("AWS::SSM::Parameter::Value<") && t.ends_with('>'))
+}
+
+fn is_supported_parameter_type(ty: Option<&str>) -> bool {
+    ty == Some("String") || is_ssm_parameter_type(ty)
+}
+
 pub fn parse(body: &str) -> Result<Value, AwsError> {
     let template: Value = serde_json::from_str(body)
         .or_else(|_| {
@@ -63,6 +72,7 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
                 | "Description"
                 | "Metadata"
                 | "Parameters"
+                | "Rules"
                 | "Conditions"
                 | "Resources"
                 | "Outputs"
@@ -86,7 +96,7 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
             let object = definition
                 .as_object()
                 .ok_or_else(|| validation("Parameter definition must be an object"))?;
-            if definition["Type"] != "String" {
+            if !is_supported_parameter_type(definition["Type"].as_str()) {
                 return Err(validation(format!(
                     "Only String parameters are supported: {name}"
                 )));
@@ -161,7 +171,10 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
         }
     }
     validate_conditions(&template["Conditions"])?;
-    validate_functions(&template)?;
+    // `Rules` are accepted but not evaluated, so they may use any function.
+    let mut checked = template.clone();
+    checked.as_object_mut().map(|o| o.remove("Rules"));
+    validate_functions(&checked)?;
     order(&template)?;
     Ok(template)
 }

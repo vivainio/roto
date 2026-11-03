@@ -100,6 +100,7 @@ pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
             "MaxSessionDuration",
             "Tags",
             "ManagedPolicyArns",
+            "Policies",
         ],
         "AWS::IAM::Policy" => &["PolicyName", "PolicyDocument", "Roles"],
         "AWS::Lambda::Function" => &[
@@ -276,6 +277,25 @@ impl Resources {
             },
         )?;
         serde_json::from_slice(&response.body).map_err(|e| AwsError::internal(e.to_string()))
+    }
+
+    /// Resolve an `AWS::SSM::Parameter::Value<...>` parameter from SSM.
+    pub fn ssm_parameter(&self, ctx: &RequestContext, name: &str) -> Result<String, AwsError> {
+        let result = self
+            .json(ctx, "ssm", "GetParameter", json!({"Name":name,"WithDecryption":true}))
+            .map_err(|e| {
+                if e.code == "ParameterNotFound" {
+                    validation(format!(
+                        "Parameter {name} not found when resolving an SSM parameter value"
+                    ))
+                } else {
+                    e
+                }
+            })?;
+        result["Parameter"]["Value"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| AwsError::internal("GetParameter omitted Value"))
     }
 
     fn sns(&self, ctx: &RequestContext, op: &str, input: Value) -> Result<Vec<u8>, AwsError> {
@@ -1050,6 +1070,28 @@ impl Resources {
                         json!({"RoleName":resource.name,"PolicyArn":arn}),
                     )?;
                 }
+                let inline = inline_policies(props)?;
+                let old_inline = if updating {
+                    inline_policies(&resource.properties)?
+                } else {
+                    BTreeMap::new()
+                };
+                for name in old_inline.keys().filter(|n| !inline.contains_key(*n)) {
+                    self.iam(
+                        ctx,
+                        "DeleteRolePolicy",
+                        json!({"RoleName":resource.name,"PolicyName":name}),
+                    )?;
+                }
+                for (name, document) in &inline {
+                    if old_inline.get(name) != Some(document) {
+                        self.iam(
+                            ctx,
+                            "PutRolePolicy",
+                            json!({"RoleName":resource.name,"PolicyName":name,"PolicyDocument":document}),
+                        )?;
+                    }
+                }
                 if updating {
                     if resource.properties.get("AssumeRolePolicyDocument")
                         != props.get("AssumeRolePolicyDocument")
@@ -1148,6 +1190,13 @@ impl Resources {
                         )?;
                     }
                 }
+                for name in inline_policies(&resource.properties)?.keys() {
+                    self.iam(
+                        ctx,
+                        "DeleteRolePolicy",
+                        json!({"RoleName":resource.name,"PolicyName":name}),
+                    )?;
+                }
                 self.iam(ctx, "DeleteRole", json!({"RoleName":resource.name}))
                     .map(|_| ())
             }
@@ -1191,6 +1240,33 @@ impl Resources {
             other => other,
         }
     }
+}
+
+/// Inline `Policies` of an `AWS::IAM::Role`, as policy name to serialized document.
+fn inline_policies(props: &Value) -> Result<BTreeMap<String, String>, AwsError> {
+    let mut result = BTreeMap::new();
+    let Some(policies) = props.get("Policies") else {
+        return Ok(result);
+    };
+    for policy in policies
+        .as_array()
+        .ok_or_else(|| validation("Role Policies must be a list"))?
+    {
+        let name = policy
+            .get("PolicyName")
+            .and_then(Value::as_str)
+            .ok_or_else(|| validation("Role Policies entries require PolicyName"))?;
+        let document = policy
+            .get("PolicyDocument")
+            .filter(|d| d.is_object())
+            .ok_or_else(|| validation("Role Policies entries require a PolicyDocument object"))?;
+        let document =
+            serde_json::to_string(document).map_err(|e| AwsError::internal(e.to_string()))?;
+        if result.insert(name.to_string(), document).is_some() {
+            return Err(validation(format!("Duplicate inline policy name: {name}")));
+        }
+    }
+    Ok(result)
 }
 
 pub fn tag_map(props: &Value) -> Result<BTreeMap<String, String>, AwsError> {

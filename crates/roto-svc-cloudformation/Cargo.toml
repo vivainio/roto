@@ -19,3 +19,5 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 
 [dev-dependencies]
 roto-svc-sqs = { version = "0.0.0-dev", path = "../roto-svc-sqs" }
+roto-svc-iam = { version = "0.0.0-dev", path = "../roto-svc-iam" }
+roto-svc-ssm = { version = "0.0.0-dev", path = "../roto-svc-ssm" }
