@@ -12,7 +12,7 @@ roto-server --port 5070
 Point your AWS SDK or CLI at `http://localhost:5070`. Resources survive restarts;
 use `--ephemeral` for disposable test environments.
 
-**[Get started](getting-started.md)** · **[Check service coverage](services.md)** ·
+**[Agent quickstart](https://raw.githubusercontent.com/vivainio/roto/main/agent-quickstart.md)** · **[Get started](getting-started.md)** · **[Check service coverage](services.md)** ·
 **[Compare AWS simulators](comparisons.md)**
 
 ## What’s included
