@@ -54,7 +54,7 @@ class Server:
             raise AssertionError("server did not start")
         self.sf = boto3.client("stepfunctions", endpoint_url=self.url, aws_access_key_id="test",
                                aws_secret_access_key="x", region_name="us-east-1",
-                               config=Config(retries={"max_attempts": 1}))
+                               config=Config(retries={"max_attempts": 1}, inject_host_prefix=False))
 
     def stop(self):
         self.proc.terminate()
@@ -275,6 +275,52 @@ def check_loops_fail_instead_of_hanging(s):
     assert time.monotonic() - started < 60
 
 
+def check_update_tags_and_test_state(s):
+    old = {"StartAt": "W", "States": {"W": {"Type": "Wait", "Seconds": 600, "Next": "R"},
+                                      "R": {"Type": "Pass", "Result": "old", "End": True}}}
+    machine = s.sf.create_state_machine(name="evolving", roleArn=ROLE, definition=json.dumps(old),
+                                        tags=[{"key": "team", "value": "a"}])["stateMachineArn"]
+    running = s.run(machine)
+    new = {"StartAt": "R", "States": {"R": {"Type": "Pass", "Result": "new", "End": True}}}
+    updated = s.sf.update_state_machine(stateMachineArn=machine, definition=json.dumps(new))
+    assert "updateDate" in updated and updated["revisionId"]
+    assert json.loads(s.sf.describe_state_machine(stateMachineArn=machine)["definition"]) == new
+    assert code(lambda: s.sf.update_state_machine(stateMachineArn=machine)) == "MissingRequiredParameter"
+    assert code(lambda: s.sf.update_state_machine(
+        stateMachineArn=machine, definition=json.dumps({"StartAt": "X", "States": {}}))) == "InvalidDefinition"
+    # A running execution finishes with the definition it started with; new ones use the update.
+    s.advance(601)
+    assert json.loads(s.status(running)["output"]) == "old"
+    assert json.loads(s.status(s.run(machine))["output"]) == "new"
+    described = s.sf.describe_state_machine_for_execution(executionArn=running)
+    assert json.loads(described["definition"]) == new and described["name"] == "evolving"
+
+    tags = lambda: {t["key"]: t["value"] for t in s.sf.list_tags_for_resource(resourceArn=machine)["tags"]}
+    assert tags() == {"team": "a"}
+    s.sf.tag_resource(resourceArn=machine, tags=[{"key": "env", "value": "dev"}, {"key": "team", "value": "b"}])
+    assert tags() == {"team": "b", "env": "dev"}
+    s.sf.untag_resource(resourceArn=machine, tagKeys=["team"])
+    assert tags() == {"env": "dev"}
+    assert "tags" not in s.sf.describe_state_machine(stateMachineArn=machine)
+    assert code(lambda: s.sf.list_tags_for_resource(resourceArn=machine + "x")) == "ResourceNotFound"
+
+    def test_state(state, payload=None):
+        return s.sf.test_state(definition=json.dumps(state), roleArn=ROLE, input=json.dumps(payload or {}))
+
+    done = test_state({"Type": "Pass", "Parameters": {"x.$": "$.a"}, "Next": "After"}, {"a": 5})
+    assert (done["status"], json.loads(done["output"]), done["nextState"]) == ("SUCCEEDED", {"x": 5}, "After")
+    chosen = test_state({"Type": "Choice", "Choices": [{"Variable": "$.n", "NumericEquals": 1, "Next": "One"}],
+                         "Default": "Many"}, {"n": 1})
+    assert (chosen["status"], chosen["nextState"]) == ("SUCCEEDED", "One")
+    waited = test_state({"Type": "Wait", "Seconds": 3600, "End": True}, {"k": 1})
+    assert (waited["status"], json.loads(waited["output"])) == ("SUCCEEDED", {"k": 1}) and "nextState" not in waited
+    failed = test_state({"Type": "Fail", "Error": "Bad", "Cause": "because"})
+    assert (failed["status"], failed["error"], failed["cause"]) == ("FAILED", "Bad", "because")
+    broken = test_state({"Type": "Pass", "InputPath": "$.missing", "End": True})
+    assert (broken["status"], broken["error"]) == ("FAILED", "States.Runtime")
+    assert code(lambda: test_state({"Type": "Task", "Resource": "arn:x", "End": True})) == "ValidationException"
+
+
 def check_rust_services_follow_the_clock(s):
     sqs = boto3.client("sqs", endpoint_url=s.url, aws_access_key_id="test", aws_secret_access_key="x",
                        region_name="us-east-1", config=Config(retries={"max_attempts": 1}))
@@ -299,7 +345,8 @@ def main():
     try:
         for check in (check_pass_and_paths, check_choice_and_fail, check_wait_and_clock,
                       check_tasks_stay_running, check_history_pages_and_validation,
-                      check_loops_fail_instead_of_hanging, check_rust_services_follow_the_clock):
+                      check_loops_fail_instead_of_hanging, check_update_tags_and_test_state,
+                      check_rust_services_follow_the_clock):
             started = time.monotonic()
             check(server)
             print(f"{check.__name__}: ok ({time.monotonic() - started:.1f}s)")

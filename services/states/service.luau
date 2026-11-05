@@ -785,6 +785,30 @@ local function exit_state(history: History, kind: string, name: string, output: 
     emit(history, kind .. "StateExited", "stateExitedEventDetails", { name = name, output = roto.json_encode(output), outputDetails = { truncated = false } })
 end
 
+-- One state's effect on its input, without touching storage.
+local function evaluate_state(name: string, state: Doc, data: any, scope: Scope): Outcome
+    local kind: string = state.Type
+    if kind == "Pass" then
+        return { output = step_pass(state, data, scope), next = state.Next }
+    elseif kind == "Wait" then
+        local output, seconds = step_wait(state, data, scope)
+        return { output = output, next = state.Next, wait = seconds }
+    elseif kind == "Choice" then
+        local output, chosen = step_choice(name, state, data, scope)
+        return { output = output, next = chosen }
+    elseif kind == "Succeed" then
+        return { output = apply_output_path(state, apply_input_path(state, data, scope.context), scope.context) }
+    end
+    local err, cause = step_fail(state, data, scope)
+    return { output = data, error = err or "", cause = cause }
+end
+
+-- The error name and cause of something raised while evaluating a state.
+local function failure_of(failure: any): (string, string)
+    if type(failure) == "table" and failure.asl_error then return failure.asl_error, failure.cause end
+    return "States.Runtime", tostring(failure)
+end
+
 -- Runs the execution from its cursor until it settles, waits, reaches a state that is not
 -- interpreted, or has used its step allowance.
 local function run(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History)
@@ -825,25 +849,9 @@ local function run(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History
         steps += 1
         emit(history, kind .. "StateEntered", "stateEnteredEventDetails", { name = name, input = roto.json_encode(cursor.data), inputDetails = { truncated = false } })
         local scope: Scope = { data = cursor.data, context = context_object(exec, name, cursor.input) }
-        local ok, outcome = pcall(function(): Outcome
-            if kind == "Pass" then
-                return { output = step_pass(state, cursor.data, scope), next = state.Next }
-            elseif kind == "Wait" then
-                local output, seconds = step_wait(state, cursor.data, scope)
-                return { output = output, next = state.Next, wait = seconds }
-            elseif kind == "Choice" then
-                local output, chosen = step_choice(name, state, cursor.data, scope)
-                return { output = output, next = chosen }
-            elseif kind == "Succeed" then
-                return { output = apply_output_path(state, apply_input_path(state, cursor.data, scope.context), scope.context) }
-            end
-            local err, cause = step_fail(state, cursor.data, scope)
-            return { output = cursor.data, error = err or "", cause = cause }
-        end)
+        local ok, outcome = pcall(evaluate_state, name, state, cursor.data, scope)
         if not ok then
-            local failure: any = outcome
-            local code, cause = "States.Runtime", tostring(failure)
-            if type(failure) == "table" and failure.asl_error then code, cause = failure.asl_error, failure.cause end
+            local code, cause = failure_of(outcome)
             settle(ctx, db, exec, history, "FAILED", nil, code, cause)
             save_history(ctx, db, arn, history)
             return
@@ -872,6 +880,25 @@ end
 ---------------------------------------------------------------------------------------------------
 -- API
 
+-- Tags are stored as a name-to-value map; the API uses lower-case `key`/`value` pairs.
+local function tags_from(list: any): { [string]: string }
+    local tags: { [string]: string } = {}
+    if list == nil then return tags end
+    for _, tag in ipairs(roto.list(list, "InvalidTags", "tags")) do
+        if type(tag) ~= "table" or type(tag.key) ~= "string" or type(tag.value) ~= "string" then
+            roto.error("InvalidTags", "Each tag needs a string key and value")
+        end
+        tags[tag.key] = tag.value
+    end
+    return tags
+end
+
+local function tag_list(tags: { [string]: string }?): { any }
+    local out = roto.array()
+    for _, key in ipairs(sorted_keys(tags or {})) do table.insert(out, { key = key, value = (tags :: any)[key] }) end
+    return out
+end
+
 function M.CreateStateMachine(ctx: Ctx, input: any, db: Db)
     local name = roto.required(input, "name", "InvalidName")
     if #name > 80 or string.find(name, "[%s<>{}%[%]%?%*\"#%%\\^|~`$&,;:/]") then
@@ -894,8 +921,54 @@ function M.CreateStateMachine(ctx: Ctx, input: any, db: Db)
         status = "ACTIVE",
         loggingConfiguration = input.loggingConfiguration or { level = "OFF", includeExecutionData = false, destinations = roto.array() },
         tracingConfiguration = input.tracingConfiguration or { enabled = false },
+        revisionId = roto.uuid(),
+        tags = tags_from(input.tags),
     })
     return { stateMachineArn = arn, creationDate = now }
+end
+
+function M.UpdateStateMachine(ctx: Ctx, input: any, db: Db)
+    local doc = machine(ctx, db, input.stateMachineArn)
+    if input.definition == nil and input.roleArn == nil and input.loggingConfiguration == nil and input.tracingConfiguration == nil then
+        roto.error("MissingRequiredParameter", "Either the definition, the role ARN, the LoggingConfiguration, or the TracingConfiguration must be specified")
+    end
+    if input.definition ~= nil then doc.definition = validate_definition(input.definition) end
+    doc.roleArn = input.roleArn or doc.roleArn
+    doc.loggingConfiguration = input.loggingConfiguration or doc.loggingConfiguration
+    doc.tracingConfiguration = input.tracingConfiguration or doc.tracingConfiguration
+    doc.updateDate = os.time()
+    doc.revisionId = roto.uuid()
+    db.put(ns(ctx, "machine"), doc.stateMachineArn, doc)
+    return { updateDate = doc.updateDate, revisionId = doc.revisionId }
+end
+
+local function tagged_machine(ctx: Ctx, db: Db, arn: any): Doc
+    local key = roto.required({ arn = arn }, "arn", "InvalidArn")
+    local doc = db.get(ns(ctx, "machine"), key) :: Doc?
+    if not doc then roto.error("ResourceNotFound", "Resource not found: '" .. key .. "'", 404) end
+    return doc :: Doc
+end
+
+function M.TagResource(ctx: Ctx, input: any, db: Db)
+    local doc = tagged_machine(ctx, db, input.resourceArn)
+    local tags: { [string]: string } = doc.tags or {}
+    for key, value in pairs(tags_from(input.tags)) do tags[key] = value end
+    doc.tags = tags
+    db.put(ns(ctx, "machine"), doc.stateMachineArn, doc)
+    return {}
+end
+
+function M.UntagResource(ctx: Ctx, input: any, db: Db)
+    local doc = tagged_machine(ctx, db, input.resourceArn)
+    local tags: { [string]: string } = doc.tags or {}
+    for _, key in ipairs(roto.list(input.tagKeys, "InvalidTags", "tagKeys")) do tags[key] = nil end
+    doc.tags = tags
+    db.put(ns(ctx, "machine"), doc.stateMachineArn, doc)
+    return {}
+end
+
+function M.ListTagsForResource(ctx: Ctx, input: any, db: Db)
+    return { tags = tag_list(tagged_machine(ctx, db, input.resourceArn).tags) }
 end
 
 function M.DeleteStateMachine(ctx: Ctx, input: any, db: Db)
@@ -906,7 +979,10 @@ end
 
 function M.DescribeStateMachine(ctx: Ctx, input: any, db: Db)
     local doc = machine(ctx, db, input.stateMachineArn)
-    return doc
+    local out: Doc = {}
+    for key, value in pairs(doc) do out[key] = value end
+    out.tags = nil -- not part of DescribeStateMachine; use ListTagsForResource
+    return out
 end
 
 function M.ListStateMachines(ctx: Ctx, input: any, db: Db)
@@ -993,6 +1069,49 @@ function M.DescribeExecution(ctx: Ctx, input: any, db: Db)
     out.roleArn = nil -- kept for the history only; DescribeExecution does not return it
     if doc.status ~= "RUNNING" then out.stopDate = doc.stopDate end
     return out
+end
+
+function M.DescribeStateMachineForExecution(ctx: Ctx, input: any, db: Db)
+    local exec = execution(ctx, db, input.executionArn)
+    local doc = db.get(ns(ctx, "machine"), exec.stateMachineArn) :: Doc?
+    if not doc then roto.error("StateMachineDoesNotExist", "State Machine Does Not Exist: '" .. exec.stateMachineArn .. "'") end
+    local sm = doc :: Doc
+    return {
+        stateMachineArn = sm.stateMachineArn, name = sm.name, definition = sm.definition, roleArn = sm.roleArn,
+        updateDate = sm.updateDate or sm.creationDate, loggingConfiguration = sm.loggingConfiguration,
+        tracingConfiguration = sm.tracingConfiguration, revisionId = sm.revisionId,
+    }
+end
+
+-- Runs one state definition against an input, without creating an execution. Wait does not wait.
+function M.TestState(ctx: Ctx, input: any, db: Db)
+    valid_json(input.definition, "definition")
+    local state = roto.json_decode(input.definition)
+    if not is_object(state) or not STATE_TYPES[state.Type] then
+        roto.error("ValidationException", "Invalid State Machine Definition: the state needs a known Type")
+    end
+    if not INTERPRETED[state.Type] then
+        roto.error("ValidationException", state.Type .. " states cannot be tested here yet")
+    end
+    local payload = input.input or "{}"
+    valid_json(payload, "input")
+    local data = roto.json_decode(payload)
+    local fake: Doc = {
+        executionArn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":execution:TestState:" .. roto.uuid(),
+        stateMachineArn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":stateMachine:TestState",
+        name = "TestState", roleArn = input.roleArn, startDate = os.time(),
+    }
+    local scope: Scope = { data = data, context = context_object(fake, "TestState", data) }
+    local ok, outcome = pcall(evaluate_state, "TestState", state, data, scope)
+    if not ok then
+        local code, cause = failure_of(outcome)
+        return { status = "FAILED", error = code, cause = cause }
+    end
+    local result: Outcome = outcome :: Outcome
+    if state.Type == "Fail" then
+        return { status = "FAILED", error = result.error, cause = result.cause }
+    end
+    return { status = "SUCCEEDED", output = roto.json_encode(result.output), nextState = result.next }
 end
 
 function M.GetExecutionHistory(ctx: Ctx, input: any, db: Db)
