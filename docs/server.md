@@ -18,6 +18,7 @@ roto-server --ephemeral --trace calls.jsonl
 | `--setup` | None | Luau resource setup and local Lambda executor bindings before listening or processing events |
 | `--lua-services <path>` | None | Optional Luau service directory or ZIP; also `ROTO_LUA_SERVICES` |
 | `--enable-lua-api` | Off | Accept Luau scripts at `POST /roto-api/lua` from loopback clients; see [Luau API](lua-api.md#running-scripts-on-a-live-server) |
+| `--region` | `us-east-1` | Default region for unsigned requests, setup scripts and live Lua scripts (`roto.set_region` and `?region=` override it); also `ROTO_REGION` |
 | `--account-id` | `123456789012` | Default account (setup starts here; `roto.set_account` in the script overrides it and forces that account for all requests); also `ROTO_ACCOUNT_ID` |
 | `--trace <path>` | Off | Also write AWS request history to a JSONL file; recent requests are always available in memory |
 
@@ -49,7 +50,7 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
 | `POST` | `/roto-api/lua` | Runs a Luau script with the setup API; needs `--enable-lua-api`, loopback only |
-| `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs |
+| `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs, across all accounts and regions (`?account=` and `?region=` narrow it) |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
 | `GET` | `/roto-api/sns/sms-messages` | Direct-to-phone SNS publishes, grouped by recipient |

@@ -838,3 +838,45 @@ fn sqs_event_batch_respects_payload_limit_and_stale_receipts() {
         "Stale receipt must not acknowledge a newer delivery"
     );
 }
+
+#[test]
+fn inspection_history_lists_all_regions_unless_filtered() {
+    let handler = configured("echo", command(&["cat"]));
+    let mut eu = ctx();
+    eu.region = "eu-west-1".into();
+    let created = handler
+        .handle(
+            &eu,
+            &RawRequest {
+                method: "POST".into(),
+                path: "/2015-03-31/functions".into(),
+                body: json!({"FunctionName":"echo","Role":"arn:aws:iam::123456789012:role/test","Runtime":"provided.al2023","Handler":"external","Code":{"ZipFile":""},"Timeout":3}).to_string().into_bytes(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(created.status, 201);
+    handler.0.enqueue(&eu, "echo", json!({"k": 1})).unwrap();
+    let get = |query: &str| {
+        let response = handler
+            .handle(
+                &ctx(),
+                &RawRequest {
+                    method: "GET".into(),
+                    path: "/roto-api/lambda/invocations".into(),
+                    query: query.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        serde_json::from_slice::<Value>(&response.body).unwrap()["invocations"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(get(""), 1);
+    assert_eq!(get("region=eu-west-1"), 1);
+    assert_eq!(get("region=us-east-1"), 0);
+    assert_eq!(get("account=123456789012&region=eu-west-1"), 1);
+    assert_eq!(get("account=999999999999"), 0);
+}

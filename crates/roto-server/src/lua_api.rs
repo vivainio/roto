@@ -36,7 +36,9 @@ fn reply(status: StatusCode, body: Value) -> Response {
 }
 
 /// Query: `name` labels the chunk in error messages (default `script.luau`); `timeout` is the
-/// Lua instruction time limit in seconds (default 30, at most 600).
+/// Lua instruction time limit in seconds (default 30, at most 600). `region` and `account`
+/// choose the scope the script starts in (default `us-east-1` and the server account); the
+/// script can still re-scope with `roto.set_region` / `roto.set_account`.
 pub async fn run(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -68,6 +70,27 @@ pub async fn run(
         .and_then(|t| t.parse::<u64>().ok())
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
         .clamp(1, MAX_TIMEOUT_SECS);
+    let region = params.get("region").cloned();
+    if let Some(region) = &region
+        && (region.is_empty()
+            || !region
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+    {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({"error": format!("Invalid region: {region}")}),
+        );
+    }
+    let account = params.get("account").cloned();
+    if let Some(account) = &account
+        && (account.len() != 12 || !account.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            json!({"error": format!("Invalid account: {account}")}),
+        );
+    }
     let output = Arc::new(Mutex::new(Vec::<String>::new()));
     let task_output = output.clone();
     let task_app = app.clone();
@@ -80,8 +103,8 @@ pub async fn run(
         let _running = api.running.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::current_dir().map_err(|e| e.to_string())?;
         let ctx = RequestContext {
-            account_id: task_app.account_id(),
-            region: api.region.clone(),
+            account_id: account.unwrap_or_else(|| task_app.account_id()),
+            region: region.unwrap_or_else(|| api.region.clone()),
             access_key: None,
             request_id: ids::request_id(),
             base_url: api.endpoint.clone(),

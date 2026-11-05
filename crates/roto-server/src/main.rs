@@ -65,6 +65,10 @@ struct Args {
     durable: bool,
     #[arg(long, default_value = "123456789012", env = "ROTO_ACCOUNT_ID")]
     account_id: String,
+    /// Region for unsigned requests, setup scripts and live Lua scripts (a script's
+    /// `roto.set_region` and `?region=` override it).
+    #[arg(long, default_value = "us-east-1", env = "ROTO_REGION")]
+    region: String,
     /// Local HTTP API v2 routes, exposed under /roto-http/.
     #[arg(long)]
     http_routes: Option<PathBuf>,
@@ -108,6 +112,8 @@ struct App {
     store: Arc<Store>,
     /// Account for requests whose key names none; a script's `roto.set_account` overrides it.
     default_account: String,
+    /// Region for requests that carry none (unsigned, setup, inspection).
+    default_region: String,
     unsupported: unsupported::Unsupported,
     trace: trace::Trace,
     gateway: gateway::Gateway,
@@ -308,8 +314,17 @@ async fn main() {
         args.port
     );
     let alb_store = store.clone();
+    if args.region.is_empty()
+        || !args
+            .region
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        eprintln!("Invalid --region: {}", args.region);
+        std::process::exit(2);
+    }
     let lua_api = args.enable_lua_api.then(|| lua_api::LuaApi {
-        region: "us-east-1".into(),
+        region: args.region.clone(),
         endpoint: endpoint.clone(),
         vars: args.set.clone(),
         sqs: setup_sqs.clone(),
@@ -321,6 +336,7 @@ async fn main() {
         services,
         store,
         default_account: args.account_id,
+        default_region: args.region.clone(),
         unsupported: Default::default(),
         trace,
         gateway,
@@ -353,7 +369,7 @@ async fn main() {
         let set_vars = args.set;
         let ctx = RequestContext {
             account_id: app.account_id(),
-            region: "us-east-1".into(),
+            region: app.default_region.clone(),
             access_key: None,
             request_id: ids::request_id(),
             base_url: endpoint.clone(),
@@ -594,7 +610,7 @@ async fn s3_browser(
     };
     let ctx = RequestContext {
         account_id: app.account_id(),
-        region: "us-east-1".into(),
+        region: app.default_region.clone(),
         access_key: None,
         request_id: ids::request_id(),
         base_url: String::new(),
@@ -649,7 +665,7 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
             .as_ref()
             .map(|s| s.region.clone())
             .or_else(|| region_from_user_agent(&raw))
-            .unwrap_or_else(|| "us-east-1".into()),
+            .unwrap_or_else(|| app.default_region.clone()),
         access_key,
         request_id: request_id.clone(),
         base_url: raw
@@ -1068,6 +1084,7 @@ mod discovery_tests {
             services: handlers.into_iter().map(|h| (h.service(), h)).collect(),
             store,
             default_account: "123456789012".into(),
+            default_region: "us-east-1".into(),
             unsupported: Default::default(),
             trace: trace::Trace::create(None).unwrap(),
             gateway: Default::default(),

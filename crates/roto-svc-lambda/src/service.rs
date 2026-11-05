@@ -308,9 +308,18 @@ impl Lambda {
         Ok(job.request_id)
     }
     pub fn history(&self, ctx: &RequestContext) -> Result<Value, AwsError> {
+        self.history_in(Some(&ctx.account_id), Some(&ctx.region))
+    }
+    /// Latest invocations; `None` for account or region lists all of them.
+    pub fn history_in(
+        &self,
+        account: Option<&str>,
+        region: Option<&str>,
+    ) -> Result<Value, AwsError> {
         let prefix = format!(
             "arn:aws:lambda:{}:{}:function:%",
-            ctx.region, ctx.account_id
+            region.unwrap_or("%"),
+            account.unwrap_or("%")
         );
         self.db.read(|c| {
             let rows=invocations::table.filter(invocations::arn.like(&prefix)).order((invocations::created.desc(),diesel::dsl::sql::<diesel::sql_types::BigInt>("rowid").desc())).limit(100).select((invocations::id,invocations::arn,invocations::state,invocations::attempts,invocations::result,invocations::logs,invocations::created)).load::<(String,String,String,i32,Option<String>,Option<String>,i64)>(c)?;

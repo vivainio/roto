@@ -56,11 +56,19 @@ impl ServiceHandler for SchedulerHandler {
     }
     fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError> {
         let result = if req.method == "GET" && req.path == "/roto-api/scheduler/deliveries" {
-            self.0.history(ctx).map(|value| RawResponse {
-                status: 200,
-                headers: vec![("content-type".into(), "application/json".into())],
-                body: serde_json::to_vec(&value).unwrap(),
-            })
+            let param = |name: &str| {
+                req.query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+                    .filter(|v| !v.is_empty())
+            };
+            self.0
+                .history_in(param("account"), param("region"))
+                .map(|value| RawResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "application/json".into())],
+                    body: serde_json::to_vec(&value).unwrap(),
+                })
         } else {
             roto_protocol::restjson::decode(ROUTES, req).and_then(|(route, body)| {
                 let response = dispatch(&*self.0, ctx, route.operation, &body)?;

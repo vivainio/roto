@@ -73,12 +73,12 @@ roto-server --ephemeral --port 5071 --setup setup.luau
 
 Setup runs once on startup, after service initialization and before the listener
 and delivery workers start. the script starts in the `--account-id`
-account and `us-east-1`. The script is the authority for its scope: call
+account and the `--region` region (`us-east-1` by default). The script is the authority for its scope: call
 `roto.set_region("eu-west-1")` and `roto.set_account("123456789012")` to re-scope every
 later setup call (`set_account` also forces that account for every request, whatever the
 access key says, which suits single-account apps), and read `roto.region` / `roto.account_id` for the current values. To
 take a value from the command line, pass `--set REGION=eu-west-1` and use
-`roto.set_region(roto.vars.REGION)`. `require("./module")` loads `module.luau`, `module.luau` or
+`roto.set_region(roto.vars.REGION)`. A live script posted to `/roto-api/lua` can instead start in a chosen scope with `?region=eu-west-1` and `?account=123456789012`. `require("./module")` loads `module.luau`, `module.luau` or
 `module/init.luau` beside the setup script (Luau string requires: the path is relative to
 the requiring file and must start with `./` or `../`).
 `--set KEY=VALUE` (repeatable) passes string parameters to the script as `roto.vars.KEY`.

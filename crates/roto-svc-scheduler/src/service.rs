@@ -287,10 +287,23 @@ impl Scheduler {
         })
     }
     pub fn history(&self, ctx: &RequestContext) -> Result<Value, AwsError> {
+        self.history_in(Some(&ctx.account_id), Some(&ctx.region))
+    }
+    /// Latest deliveries; `None` for account or region lists all of them.
+    pub fn history_in(
+        &self,
+        account: Option<&str>,
+        region: Option<&str>,
+    ) -> Result<Value, AwsError> {
         self.db.read(|c| {
-            let rows = deliveries::table
-                .filter(deliveries::account.eq(&ctx.account_id))
-                .filter(deliveries::region.eq(&ctx.region))
+            let mut query = deliveries::table.into_boxed();
+            if let Some(account) = account {
+                query = query.filter(deliveries::account.eq(account.to_owned()));
+            }
+            if let Some(region) = region {
+                query = query.filter(deliveries::region.eq(region.to_owned()));
+            }
+            let rows = query
                 .order(diesel::dsl::sql::<diesel::sql_types::BigInt>("rowid").desc())
                 .limit(100)
                 .select((
