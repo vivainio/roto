@@ -119,7 +119,8 @@ class Server:
                 assert value['__type'].split('#')[-1] == error, (op, value)
             if status == 200:
                 self.seen.add((service, op))
-            if self.sdk and status == 200:
+            # Roto* control operations are not in any SDK model.
+            if self.sdk and status == 200 and not op.startswith('Roto'):
                 shape = self.models.get_service_model(service).operation_model(op).output_shape
                 if shape:
                     validate_output(value, shape)
