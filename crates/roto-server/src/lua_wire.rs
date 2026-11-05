@@ -9,22 +9,65 @@ pub struct Wire {
     pub model: Value,
     pub protocol: String,
 }
+fn ec2_response(ns: &str, op: &str, id: &str, inner: &str) -> RawResponse {
+    let body =
+        format!("<{op}Response xmlns=\"{ns}\"><requestId>{id}</requestId>{inner}</{op}Response>");
+    let mut response = query_response(ns, op, None, id, "");
+    response.body = body.into_bytes();
+    response
+}
+fn ec2_error(e: &AwsError, id: &str) -> RawResponse {
+    let mut w = XmlWriter::new();
+    w.element("Code", &e.code);
+    w.element("Message", &e.message);
+    let body = format!(
+        "<Response><Errors><Error>{}</Error></Errors><RequestID>{id}</RequestID></Response>",
+        w.finish()
+    );
+    let mut response = query_error("", e, id);
+    response.body = body.into_bytes();
+    response
+}
 fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "InvalidParameterValue", message)
 }
 impl Wire {
+    /// Query and EC2 requests are form-encoded `Action` calls; only the naming rules differ.
+    fn form(&self) -> bool {
+        matches!(self.protocol.as_str(), "query" | "ec2")
+    }
+    fn ec2(&self) -> bool {
+        self.protocol == "ec2"
+    }
+    /// Wire name of a request member. EC2 capitalizes `locationName` and prefers `queryName`.
+    fn request_name(&self, member: &Value, key: &str) -> String {
+        if self.ec2() {
+            if let Some(name) = member["queryName"].as_str() {
+                return name.into();
+            }
+            if let Some(name) = member["locationName"].as_str() {
+                let mut chars = name.chars();
+                return chars
+                    .next()
+                    .map(|c| c.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default();
+            }
+            return key.into();
+        }
+        member["locationName"].as_str().unwrap_or(key).into()
+    }
     fn shape<'a>(&'a self, reference: &Value) -> &'a Value {
         &self.model["shapes"][reference["shape"].as_str().unwrap_or("")]
     }
     pub fn operation_name(&self, req: &RawRequest) -> Option<String> {
-        if self.protocol == "query" {
+        if self.form() {
             self.params(req).get("Action").map(str::to_owned)
         } else {
             self.route(req).map(|(name, _)| name)
         }
     }
     pub fn claims(&self, req: &RawRequest) -> bool {
-        if self.protocol == "query" {
+        if self.form() {
             // Version disambiguates RDS from native IAM, STS, SNS, etc.
             let p = self.params(req);
             p.get("Version") == self.model["metadata"]["apiVersion"].as_str()
@@ -82,7 +125,7 @@ impl Wire {
         })
     }
     fn decode_inner(&self, req: &RawRequest) -> Result<(String, Value), AwsError> {
-        if self.protocol == "query" {
+        if self.form() {
             let p = self.params(req);
             let op = p
                 .get("Action")
@@ -169,9 +212,9 @@ impl Wire {
                 let mut out = Map::new();
                 if let Some(members) = shape["members"].as_object() {
                     for (name, member) in members {
-                        let wire = member["locationName"].as_str().unwrap_or(name);
+                        let wire = self.request_name(member, name);
                         let path = if key.is_empty() {
-                            wire.into()
+                            wire
                         } else {
                             format!("{key}.{wire}")
                         };
@@ -184,7 +227,7 @@ impl Wire {
             }
             Some("list") => {
                 let item = shape["member"]["locationName"].as_str().unwrap_or("member");
-                let base = if reference["flattened"].as_bool().unwrap_or(false) {
+                let base = if self.ec2() || reference["flattened"].as_bool().unwrap_or(false) {
                     key.into()
                 } else {
                     format!("{key}.{item}")
@@ -240,6 +283,15 @@ impl Wire {
     }
     fn write(&self, w: &mut XmlWriter, reference: &Value, name: &str, value: &Value) {
         let shape = self.shape(reference);
+        if shape["type"].as_str() == Some("list") && reference["flattened"].as_bool() == Some(true)
+        {
+            // A flattened list repeats the member element instead of wrapping its items.
+            let item = shape["member"]["locationName"].as_str().unwrap_or(name);
+            for v in value.as_array().into_iter().flatten() {
+                self.write(w, &shape["member"], item, v);
+            }
+            return;
+        }
         w.open(name);
         match shape["type"].as_str() {
             Some("structure") => {
@@ -264,7 +316,9 @@ impl Wire {
                         self.write(
                             w,
                             &shape["member"],
-                            shape["member"]["locationName"].as_str().unwrap_or("member"),
+                            shape["member"]["locationName"]
+                                .as_str()
+                                .unwrap_or(if self.ec2() { "item" } else { "member" }),
                             v,
                         );
                     }
@@ -284,8 +338,9 @@ impl Wire {
         let ns = self.model["metadata"]["xmlNamespace"]
             .as_str()
             .unwrap_or("");
-        if self.protocol == "query" {
+        if self.form() {
             return match result {
+                Err(e) if self.ec2() => ec2_error(&e, id),
                 Err(e) => query_error(ns, &e, id),
                 Ok(value) => {
                     let reference = &self.model["operations"][op]["output"];
@@ -308,6 +363,9 @@ impl Wire {
                                 );
                             }
                         }
+                    }
+                    if self.ec2() {
+                        return ec2_response(ns, op, id, &w.finish());
                     }
                     query_response(
                         ns,

@@ -26,6 +26,8 @@ pub struct LuaService {
 }
 struct Definition {
     service: &'static str,
+    /// SigV4 service name when it differs from the service identity (see `Group`).
+    signing: &'static str,
     target: String,
     json_version: String,
     script: String,
@@ -161,7 +163,13 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         if object.keys().any(|k| {
             !matches!(
                 k.as_str(),
-                "service" | "script" | "target_prefix" | "json_version" | "protocol" | "model"
+                "service"
+                    | "signing_name"
+                    | "script"
+                    | "target_prefix"
+                    | "json_version"
+                    | "protocol"
+                    | "model"
             )
         }) {
             return Err(invalid("unknown service entry field"));
@@ -182,6 +190,21 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         if !names.insert(name.to_owned()) {
             return Err(invalid("duplicate service"));
         }
+        let signing = match entry.get("signing_name") {
+            None => name,
+            Some(value) => value
+                .as_str()
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 64
+                        && s.bytes()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                })
+                .ok_or_else(|| invalid("signing_name must be a lowercase service name"))?,
+        };
+        if signing != name && !matches!(entry["protocol"].as_str(), Some("query" | "ec2")) {
+            return Err(invalid("signing_name requires a query or ec2 protocol"));
+        }
         let script = entry["script"]
             .as_str()
             .filter(|p| relative_path(p) && p.ends_with(".luau"))
@@ -189,7 +212,7 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         let protocol = entry["protocol"].as_str().unwrap_or("json");
         let wire = match protocol {
             "json" => None,
-            "rest-json" | "query" => {
+            "rest-json" | "query" | "ec2" => {
                 if entry.get("target_prefix").is_some() || entry.get("json_version").is_some() {
                     return Err(invalid("model protocols cannot specify JSON target fields"));
                 }
@@ -249,12 +272,33 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         };
         definitions.push(Definition {
             service: Box::leak(name.to_owned().into_boxed_str()),
+            signing: Box::leak(signing.to_owned().into_boxed_str()),
             script: script.into(),
             target: target.into(),
             json_version: version.into(),
             common: common.clone(),
             wire,
         });
+    }
+    // Services may share a SigV4 signing name only when the query `Version` tells them apart.
+    for (i, a) in definitions.iter().enumerate() {
+        for b in &definitions[i + 1..] {
+            if a.signing != b.signing {
+                continue;
+            }
+            let version = |d: &Definition| {
+                d.wire
+                    .as_ref()
+                    .and_then(|w| w.model["metadata"]["apiVersion"].as_str())
+                    .map(str::to_owned)
+            };
+            let (va, vb) = (version(a), version(b));
+            if va.is_none() || va == vb {
+                return Err(invalid(
+                    "services sharing a signing_name need distinct query API versions",
+                ));
+            }
+        }
     }
     for definition in definitions {
         services.push(LuaService {
@@ -265,6 +309,66 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         });
     }
     Ok(services)
+}
+
+/// Lua services that share one SigV4 signing name (for example classic and v2 Elastic Load
+/// Balancing). A request goes to the member whose query `Version` and action match; anything
+/// else falls to the first member so errors keep their usual shape.
+struct Group {
+    signing: &'static str,
+    members: Vec<LuaService>,
+}
+
+impl Group {
+    fn pick(&self, req: &RawRequest) -> &LuaService {
+        self.members
+            .iter()
+            .find(|m| m.claims_unsigned(req))
+            .unwrap_or(&self.members[0])
+    }
+}
+
+impl ServiceHandler for Group {
+    fn service(&self) -> &'static str {
+        self.signing
+    }
+    fn operation_name(&self, req: &RawRequest) -> Option<String> {
+        self.pick(req).operation_name(req)
+    }
+    fn claims_unsigned(&self, req: &RawRequest) -> bool {
+        self.members.iter().any(|m| m.claims_unsigned(req))
+    }
+    fn handle(&self, ctx: &RequestContext, req: &RawRequest) -> Result<RawResponse, AwsError> {
+        self.pick(req).handle(ctx, req)
+    }
+    fn reset(&self) -> Result<(), AwsError> {
+        self.members.iter().try_for_each(|m| m.reset())
+    }
+}
+
+/// Registers discovered services by SigV4 signing name, grouping those that share one.
+pub fn into_handlers(services: Vec<LuaService>) -> Vec<Arc<dyn ServiceHandler>> {
+    let mut groups: Vec<Group> = Vec::new();
+    for service in services {
+        let signing = service.definition.signing;
+        match groups.iter_mut().find(|g| g.signing == signing) {
+            Some(group) => group.members.push(service),
+            None => groups.push(Group {
+                signing,
+                members: vec![service],
+            }),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|g| {
+            if g.members.len() == 1 && g.members[0].definition.service == g.signing {
+                Arc::new(g.members.into_iter().next().unwrap()) as Arc<dyn ServiceHandler>
+            } else {
+                Arc::new(g)
+            }
+        })
+        .collect()
 }
 
 fn lua_error(error: mlua::Error) -> AwsError {
@@ -564,7 +668,7 @@ mod tests {
         assert!(discover(store.clone(), None).unwrap().is_empty());
         let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services");
         let services = discover(store.clone(), Some(bundle)).unwrap();
-        assert_eq!(services.len(), 13);
+        assert_eq!(services.len(), 17);
         for service in &services {
             assert!(store.existing_db(service.service()).is_none());
             service.reset().unwrap();
@@ -676,6 +780,123 @@ mod tests {
             json!({"Widgets":[]})
         );
         assert!(store.existing_db("organizations").is_none());
+    }
+
+    fn form_request(body: &str) -> RawRequest {
+        RawRequest {
+            method: "POST".into(),
+            path: "/".into(),
+            headers: vec![(
+                "content-type".into(),
+                "application/x-www-form-urlencoded".into(),
+            )],
+            body: body.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn services_sharing_a_signing_name_dispatch_on_the_query_version() {
+        let store = Arc::new(Store::ephemeral());
+        let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services");
+        let handlers = into_handlers(discover(store, Some(bundle)).unwrap());
+        assert_eq!(
+            handlers
+                .iter()
+                .filter(|h| h.service() == "elasticloadbalancing")
+                .count(),
+            1
+        );
+        let group = handlers
+            .iter()
+            .find(|h| h.service() == "elasticloadbalancing")
+            .unwrap();
+        let ctx = context("123456789012", "us-east-1");
+        let classic = form_request("Action=DescribeLoadBalancers&Version=2012-06-01");
+        let v2 = form_request("Action=DescribeLoadBalancers&Version=2015-12-01");
+        let classic_body = String::from_utf8(group.handle(&ctx, &classic).unwrap().body).unwrap();
+        let v2_body = String::from_utf8(group.handle(&ctx, &v2).unwrap().body).unwrap();
+        assert!(
+            classic_body.contains("<LoadBalancerDescriptions>"),
+            "{classic_body}"
+        );
+        assert!(v2_body.contains("<LoadBalancers>"), "{v2_body}");
+        // Both claim unsigned calls by version; anything else falls to the first member.
+        assert!(group.claims_unsigned(&classic) && group.claims_unsigned(&v2));
+        assert!(!group.claims_unsigned(&form_request("Action=DescribeLoadBalancers&Version=1")));
+    }
+
+    #[test]
+    fn signing_names_must_be_distinguishable_by_version() {
+        let dir = std::env::temp_dir().join(format!("roto-sign-{}", roto_core::ids::request_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = |version: &str| json!({"metadata":{"apiVersion":version,"protocol":"query"},"operations":{},"shapes":{}});
+        std::fs::write(dir.join("a.json"), model("2012-06-01").to_string()).unwrap();
+        std::fs::write(dir.join("b.json"), model("2012-06-01").to_string()).unwrap();
+        std::fs::write(dir.join("c.json"), model("2015-12-01").to_string()).unwrap();
+        let entry = |name: &str, model: &str| json!({"service":name,"signing_name":"shared","protocol":"query","script":"s.luau","model":model});
+        let write = |entries: Vec<Value>| {
+            std::fs::write(
+                dir.join("manifest.json"),
+                json!({"version":1,"services":entries}).to_string(),
+            )
+            .unwrap();
+        };
+        write(vec![entry("one", "a.json"), entry("two", "b.json")]);
+        assert!(discover(Arc::new(Store::ephemeral()), Some(dir.clone())).is_err());
+        write(vec![entry("one", "a.json"), entry("two", "c.json")]);
+        assert_eq!(
+            discover(Arc::new(Store::ephemeral()), Some(dir.clone()))
+                .unwrap()
+                .len(),
+            2
+        );
+        // A JSON service cannot alias another signing name.
+        let mut json_entry = widget_entry();
+        json_entry["signing_name"] = json!("other");
+        write(vec![json_entry]);
+        assert!(discover(Arc::new(Store::ephemeral()), Some(dir.clone())).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ec2_protocol_capitalizes_request_names_and_uses_its_own_envelopes() {
+        let store = Arc::new(Store::ephemeral());
+        let service = test_service(store, "ec2", None);
+        let ctx = context("123456789012", "us-east-1");
+        let call = |body: &str| {
+            let response = service.handle(&ctx, &form_request(body)).unwrap();
+            (response.status, String::from_utf8(response.body).unwrap())
+        };
+        let (status, run) = call(
+            "Action=RunInstances&Version=2016-11-15&ImageId=ami-1&MinCount=1&MaxCount=1\
+             &TagSpecification.1.ResourceType=instance&TagSpecification.1.Tag.1.Key=Name&TagSpecification.1.Tag.1.Value=n",
+        );
+        assert_eq!(status, 200, "{run}");
+        assert!(
+            run.contains("<requestId>") && !run.contains("ResponseMetadata"),
+            "{run}"
+        );
+        assert!(
+            run.contains("<instancesSet><item>") && run.contains("<instanceId>i-"),
+            "{run}"
+        );
+        let (_, described) = call(
+            "Action=DescribeInstances&Version=2016-11-15&Filter.1.Name=tag%3AName&Filter.1.Value.1=n",
+        );
+        assert!(described.contains("<reservationSet><item>"), "{described}");
+        assert!(
+            described.contains("<tagSet><item><key>Name</key><value>n</value></item></tagSet>"),
+            "{described}"
+        );
+        let (status, error) = call(
+            "Action=DescribeInstances&Version=2016-11-15&Filter.1.Name=bogus&Filter.1.Value.1=x",
+        );
+        assert_eq!(status, 400);
+        assert!(
+            error.starts_with("<Response><Errors><Error><Code>InvalidParameterValue</Code>"),
+            "{error}"
+        );
     }
 
     fn manifest(entry: Value) -> Value {

@@ -1,5 +1,9 @@
 --!strict
--- ECS configuration only. No tasks, container instances or deployment worker.
+-- ECS control plane. Tasks are records: RunTask stores a task for a registered task definition and
+-- no container runs. A task reports PROVISIONING (or STOPPING after StopTask) once, then settles to
+-- RUNNING (or STOPPED) on the next request that reads it. RotoSetTaskStatus (a Roto extension) forces
+-- `lastStatus`, container exit codes and the stopped reason, and holds them. There are no container
+-- instances and no deployment worker.
 local ops={}
 local code='InvalidParameterException'
 -- Request fields are untrusted JSON, so each is `any` and validated where it is used.
@@ -236,4 +240,114 @@ function ops.UntagResource(ctx: Ctx, input: UntagResourceInput, db: Db)
     d[field]=out;db.put(space,key,d);return {}
 end
 function ops.ListTagsForResource(ctx: Ctx, input: TaggedInput, db: Db) local d,_,_,field=tagged(ctx,input,db);return {tags=d[field]} end
+-- Tasks ------------------------------------------------------------------------------------------
+local SETTLES: { [string]: string } = { PROVISIONING = 'RUNNING', PENDING = 'RUNNING', STOPPING = 'STOPPED' }
+local function task_space(c: any) return 'tasks/'..c.clusterName end
+local function settle(ctx: Ctx, db: Db, c: any, t: any)
+    local next_status=SETTLES[t.lastStatus]
+    if next_status and not t._Hold and t._Request~=ctx.request_id then
+        t.lastStatus=next_status
+        for _,container in ipairs(t.containers :: { any }) do container.lastStatus=next_status end
+        if next_status=='RUNNING' then t.startedAt=os.time() else t.stoppedAt=os.time(); t.desiredStatus='STOPPED' end
+        db.put(ns(ctx,task_space(c)),t.taskId,t)
+    end
+    return t
+end
+local function find_task(ctx: Ctx, db: Db, c: any, ref: any)
+    if type(ref)~='string' then roto.error(code,'Invalid task identifier') end
+    local key=ref
+    if key:sub(1,4)=='arn:' then key=key:match('/([%w%-]+)$') or key end
+    local t=db.get(ns(ctx,task_space(c)),key)
+    if t then settle(ctx,db,c,t) end
+    return t
+end
+local function all_tasks(ctx: Ctx, db: Db, c: any): { any }
+    local out: { any }={}
+    for _,t in ipairs(db.list(ns(ctx,task_space(c)))) do table.insert(out,settle(ctx,db,c,t)) end
+    table.sort(out,function(a: any,b: any) if a.createdAt~=b.createdAt then return a.createdAt>b.createdAt end return a.taskId<b.taskId end)
+    return out
+end
+local function task_public(t: any, include_tags: any)
+    local out=public(t,include_tags);out.taskId=nil;return out
+end
+function ops.RunTask(ctx: Ctx, input: any, db: Db)
+    local c=cluster(ctx,input.cluster,db)
+    local d=task(ctx,input.taskDefinition,db,false)
+    local count=input.count or 1
+    if type(count)~='number' or count<1 or count>10 then roto.error(code,'count must be between 1 and 10') end
+    local launched=roto.array()
+    for _=1,count do
+        local task_id=string.sub(roto.sha256(roto.uuid()),1,32)
+        local task_arn=arn(ctx,'task',c.clusterName..'/'..task_id)
+        local containers=roto.array()
+        for _,definition in ipairs(d.containerDefinitions) do
+            table.insert(containers,{containerArn=arn(ctx,'container',c.clusterName..'/'..task_id..'/'..string.sub(roto.sha256(roto.uuid()),1,8)),taskArn=task_arn,name=definition.name,image=definition.image,lastStatus='PROVISIONING',networkInterfaces=roto.array()})
+        end
+        local t={
+            taskId=task_id,taskArn=task_arn,clusterArn=c.clusterArn,taskDefinitionArn=d.taskDefinitionArn,containers=containers,
+            lastStatus='PROVISIONING',desiredStatus='RUNNING',launchType=input.launchType or 'EC2',createdAt=os.time(),
+            group=input.group or ('family:'..d.family),startedBy=input.startedBy,overrides=input.overrides or {containerOverrides=roto.array()},
+            cpu=d.cpu,memory=d.memory,version=1,availabilityZone=ctx.region..'a',attachments=roto.array(),
+            tags=input.tags and tags(nil,input.tags) or roto.array(),_Request=ctx.request_id,
+        }
+        db.put(ns(ctx,task_space(c)),task_id,t)
+        table.insert(launched,task_public(t,input.enableECSManagedTags==true or input.tags~=nil))
+    end
+    return {tasks=launched,failures=roto.array()}
+end
+function ops.DescribeTasks(ctx: Ctx, input: any, db: Db)
+    local c=cluster(ctx,input.cluster,db)
+    local found=roto.array();local failures=roto.array()
+    local include_tags=roto.contains(input.include,'TAGS')
+    for _,ref in ipairs(roto.list(input.tasks,code,'tasks')) do
+        local t=find_task(ctx,db,c,ref)
+        if t then table.insert(found,task_public(t,include_tags)) else table.insert(failures,{arn=ref,reason='MISSING'}) end
+    end
+    return {tasks=found,failures=failures}
+end
+function ops.ListTasks(ctx: Ctx, input: any, db: Db)
+    local c=cluster(ctx,input.cluster,db)
+    local desired=input.desiredStatus or 'RUNNING'
+    local arns: { any }={}
+    for _,t in ipairs(all_tasks(ctx,db,c)) do
+        local wanted=t.desiredStatus==desired
+        if input.family and t.group~='family:'..input.family then wanted=false end
+        if input.startedBy and t.startedBy~=input.startedBy then wanted=false end
+        if input.launchType and t.launchType~=input.launchType then wanted=false end
+        if wanted then table.insert(arns,t.taskArn) end
+    end
+    return page(input,arns,'taskArns')
+end
+function ops.StopTask(ctx: Ctx, input: any, db: Db)
+    local c=cluster(ctx,input.cluster,db)
+    local t=find_task(ctx,db,c,input.task)
+    if not t then roto.error('InvalidParameterException','The referenced task was not found.') end
+    if t.lastStatus~='STOPPED' then
+        t.lastStatus='STOPPING';t.desiredStatus='STOPPED';t.stoppingAt=os.time();t.stopCode='UserInitiated'
+        t.stoppedReason=input.reason or 'Task stopped by user';t._Request=ctx.request_id;t._Hold=nil
+        for _,container in ipairs(t.containers :: { any }) do container.lastStatus='STOPPING' end
+        db.put(ns(ctx,task_space(c)),t.taskId,t)
+    end
+    return {task=task_public(t,true)}
+end
+-- Roto extension (not an ECS operation): force a task's status and hold it there.
+function ops.RotoSetTaskStatus(ctx: Ctx, input: any, db: Db)
+    local c=cluster(ctx,input.cluster,db)
+    local t=find_task(ctx,db,c,input.task)
+    if not t then roto.error('InvalidParameterException','The referenced task was not found.') end
+    local status=input.lastStatus
+    if status~='PROVISIONING' and status~='PENDING' and status~='RUNNING' and status~='STOPPING' and status~='STOPPED' then
+        roto.error(code,'lastStatus must be PROVISIONING, PENDING, RUNNING, STOPPING or STOPPED')
+    end
+    t.lastStatus=status;t._Hold=true;t._Request=ctx.request_id
+    if status=='RUNNING' and not t.startedAt then t.startedAt=os.time() end
+    if status=='STOPPED' then t.desiredStatus='STOPPED';t.stoppedAt=os.time();t.stopCode=t.stopCode or 'EssentialContainerExited' end
+    if input.stoppedReason then t.stoppedReason=input.stoppedReason end
+    for _,container in ipairs(t.containers :: { any }) do
+        container.lastStatus=status
+        if input.exitCode~=nil and status=='STOPPED' then container.exitCode=input.exitCode end
+    end
+    db.put(ns(ctx,task_space(c)),t.taskId,t)
+    return {task=task_public(t,true)}
+end
 return ops

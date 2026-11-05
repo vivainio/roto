@@ -34,6 +34,12 @@ reaches the proxy without a `Host` header override.
 Target health is `initial` until the group is used by a listener or rule of a load balancer
 (`unused` otherwise), then follows the group's health check settings.
 
+A fixture can set health without a listener or upstream. The Roto-only operation
+`RotoSetTargetHealth` stores `State` (`healthy`, `unhealthy`, `draining`, `initial`, `unavailable`
+or `unused`) with an optional `Reason` and `Description` for chosen `Targets` (default: all), and
+`DescribeTargetHealth` reports it. Call it with `roto.wire`; see
+[seeding bundle services](https://github.com/vivainio/roto/blob/main/services/README.md#seeding-bundle-services-from-luau).
+
 ## Data plane
 
 One port serves every load balancer. A request is routed as follows.

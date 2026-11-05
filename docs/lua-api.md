@@ -527,6 +527,11 @@ roto.wire("sns", "POST", "/", {
 })
 ```
 
+`roto.call` covers only built-in services; Luau-bundle services (EC2, Auto Scaling, classic
+load balancers, Step Functions and others) are reached with `roto.wire`. See
+[seeding bundle services](https://github.com/vivainio/roto/blob/main/services/README.md#seeding-bundle-services-from-luau)
+for Query, EC2 and JSON examples.
+
 Supply protocol headers, escaping, and payload shape yourself. Table bodies are
 JSON encoded; strings are sent unchanged. Neither call API invokes request
 interceptors. For a larger runnable seed, use

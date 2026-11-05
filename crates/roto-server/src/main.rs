@@ -276,7 +276,7 @@ async fn main() {
             eprintln!("error discovering Lua services: {e}");
             std::process::exit(1);
         });
-    for handler in lua_services {
+    for handler in lua_service::into_handlers(lua_services) {
         if services.contains_key(handler.service())
             || matches!(
                 handler.service(),
@@ -289,7 +289,7 @@ async fn main() {
             );
             std::process::exit(1);
         }
-        services.insert(handler.service(), Arc::new(handler));
+        services.insert(handler.service(), handler);
     }
     let cloudformation =
         roto_svc_cloudformation::CloudFormationHandler::new(&store, services.clone())

@@ -65,6 +65,37 @@ Resources use the existing service handlers and storage. IAM role policy documen
 and managed-policy attachments are stored as configuration; they do not grant or
 deny requests because IAM policy evaluation is not implemented.
 
+## Inert resources
+
+A stack can hold resources of types the engine cannot create, so a fixture can describe
+a stack that real AWS made elsewhere. Opt in per resource or for the whole template:
+
+```json
+{
+  "Metadata": {"Roto::InertResources": true},
+  "Resources": {
+    "Group": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "Properties": {"MinSize": "1", "MaxSize": "3"},
+      "Metadata": {
+        "Roto::PhysicalResourceId": "my-asg-1",
+        "Roto::Attributes": {"Arn": "arn:aws:autoscaling:us-east-1:123456789012:autoScalingGroup:x"}
+      }
+    }
+  },
+  "Outputs": {"Name": {"Value": {"Ref": "Group"}}}
+}
+```
+
+- Resource `Roto::PhysicalResourceId` makes that one resource inert and sets its physical ID.
+- Template `Roto::InertResources: true` makes every resource of an unsupported type inert; supported
+  types are still created normally. Without a physical ID, one is generated.
+- `Roto::Attributes` supplies `Fn::GetAtt` values.
+
+An inert resource's properties are not validated and nothing is created, updated or deleted;
+its logical ID, type, physical ID and status appear in `DescribeStacks`, `DescribeStackResources`,
+outputs and events. Without the opt-in, an unsupported type is still rejected.
+
 ## Stack APIs
 
 `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `ListStacks`,

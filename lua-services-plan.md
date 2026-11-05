@@ -119,10 +119,13 @@ Needed by AppConfigData, registry layers, artifacts and model runtimes.
 
 ### R03 — Service identities, aliases and shared storage
 
-- [ ] Separate SDK endpoint identity, SigV4 signing name and target/path dispatch.
+- [x] Separate SDK endpoint identity, SigV4 signing name and target/path dispatch for
+      `query`/`ec2` services: manifest `signing_name`, grouped by query `Version`
+      (classic ELB and ELBv2 share `elasticloadbalancing`; `tests/smoke-lua-infra.py`).
 - [ ] Define shared storage/VM ownership for cooperating service endpoints.
-- [ ] Resolve target-prefix collisions without weakening conflict validation.
-- [ ] Verify signed and unsigned routing, reset and persistence for aliases.
+- [ ] Resolve target-prefix collisions without weakening conflict validation (JSON services).
+- [ ] Verify signed and unsigned routing, reset and persistence for aliases (signed/unsigned
+      routing and reset covered for the ELB pair; persistence and JSON aliases remain).
 
 Examples: OpenSearch Serverless signs as `aoss`; Cloud Control as
 `cloudcontrolapi`; DynamoDB Streams shares DynamoDB signing scope; AppConfig and

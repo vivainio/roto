@@ -26,10 +26,29 @@ pub struct Resource {
     pub update_replace_policy: String,
     pub status: String,
     pub reason: Option<String>,
+    /// Stored as given with no backing service: see `template::inert`.
+    #[serde(default)]
+    pub inert: bool,
 }
 
 fn default_delete_policy() -> String {
     "Delete".into()
+}
+
+/// Resource types the engine can create. Anything else is rejected unless it is inert.
+pub fn is_supported(ty: &str) -> bool {
+    matches!(
+        ty,
+        "AWS::SQS::Queue"
+            | "AWS::SNS::Topic"
+            | "AWS::Kinesis::Stream"
+            | "AWS::S3::Bucket"
+            | "AWS::DynamoDB::Table"
+            | "AWS::IAM::Role"
+            | "AWS::IAM::Policy"
+            | "AWS::Lambda::Function"
+            | "AWS::CloudFormation::Stack"
+    )
 }
 
 pub fn validate_properties(ty: &str, props: &Value) -> Result<(), AwsError> {
@@ -477,6 +496,7 @@ impl Resources {
                 update_replace_policy: default_delete_policy(),
                 status: "CREATE_IN_PROGRESS".into(),
                 reason: None,
+                inert: false,
             });
         }
         let generated = format!(
@@ -677,7 +697,41 @@ impl Resources {
             update_replace_policy: default_delete_policy(),
             status: "CREATE_IN_PROGRESS".into(),
             reason: None,
+            inert: false,
         })
+    }
+
+    /// A resource of any type with no side effects: only its identity and attributes are kept.
+    pub fn create_inert(
+        &self,
+        stack: &str,
+        id: &str,
+        ty: &str,
+        props: Value,
+        inert: &crate::template::Inert,
+    ) -> Resource {
+        let physical_id = inert.physical_id.clone().unwrap_or_else(|| {
+            format!(
+                "{}-{}-{}",
+                stack.chars().take(30).collect::<String>(),
+                id.chars().take(24).collect::<String>(),
+                &ids::request_id()[..12]
+            )
+        });
+        Resource {
+            logical_id: id.into(),
+            resource_type: ty.into(),
+            name: physical_id.clone(),
+            physical_id,
+            properties: props,
+            attributes: inert.attributes.clone(),
+            subscriptions: Vec::new(),
+            deletion_policy: default_delete_policy(),
+            update_replace_policy: default_delete_policy(),
+            status: "CREATE_IN_PROGRESS".into(),
+            reason: None,
+            inert: true,
+        }
     }
 
     pub fn configure(
@@ -687,6 +741,10 @@ impl Resources {
         props: &Value,
         updating: bool,
     ) -> Result<(), AwsError> {
+        if resource.inert {
+            resource.properties = props.clone();
+            return Ok(());
+        }
         match resource.resource_type.as_str() {
             "AWS::SQS::Queue" => {
                 let mut attrs = sqs_attributes(props)?;
@@ -1152,6 +1210,9 @@ impl Resources {
     }
 
     pub fn delete(&self, ctx: &RequestContext, resource: &Resource) -> Result<(), AwsError> {
+        if resource.inert {
+            return Ok(());
+        }
         let result = match resource.resource_type.as_str() {
             "AWS::SQS::Queue" => self
                 .json(

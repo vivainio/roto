@@ -14,16 +14,28 @@ const VERSION_LIMIT: usize = 100;
 
 pub struct Ssm {
     db: Arc<Db>,
+    commands: crate::commands::Commands,
 }
 
 impl Ssm {
     pub fn new(store: &Store) -> Result<Self, AwsError> {
         Ok(Self {
             db: store.diesel_db("ssm", MIGRATIONS)?,
+            commands: crate::commands::Commands::new(store)?,
         })
     }
 
+    /// Roto-only `RotoCompleteCommandInvocation`: settle Run Command invocations for a fixture.
+    pub fn complete_invocation(
+        &self,
+        ctx: &RequestContext,
+        input: &serde_json::Value,
+    ) -> Result<serde_json::Value, AwsError> {
+        self.commands.complete_invocation(ctx, input)
+    }
+
     pub fn reset(&self) -> Result<(), AwsError> {
+        self.commands.reset()?;
         self.db.transaction(|tx| {
             diesel::delete(parameters::table).execute(tx)?;
             diesel::delete(resource_tags::table).execute(tx)?;
@@ -406,6 +418,46 @@ fn check_resource(
 
 #[roto_core::implements_operations]
 impl Service for Ssm {
+    fn send_command(
+        &self,
+        ctx: &RequestContext,
+        i: SendCommandRequest,
+    ) -> Result<SendCommandResult, AwsError> {
+        self.commands.send_command(ctx, i)
+    }
+
+    fn list_commands(
+        &self,
+        ctx: &RequestContext,
+        i: ListCommandsRequest,
+    ) -> Result<ListCommandsResult, AwsError> {
+        self.commands.list_commands(ctx, i)
+    }
+
+    fn list_command_invocations(
+        &self,
+        ctx: &RequestContext,
+        i: ListCommandInvocationsRequest,
+    ) -> Result<ListCommandInvocationsResult, AwsError> {
+        self.commands.list_command_invocations(ctx, i)
+    }
+
+    fn get_command_invocation(
+        &self,
+        ctx: &RequestContext,
+        i: GetCommandInvocationRequest,
+    ) -> Result<GetCommandInvocationResult, AwsError> {
+        self.commands.get_command_invocation(ctx, i)
+    }
+
+    fn cancel_command(
+        &self,
+        ctx: &RequestContext,
+        i: CancelCommandRequest,
+    ) -> Result<CancelCommandResult, AwsError> {
+        self.commands.cancel_command(ctx, i)
+    }
+
     fn put_parameter(
         &self,
         ctx: &RequestContext,

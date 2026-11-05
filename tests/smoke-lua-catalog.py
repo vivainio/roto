@@ -105,7 +105,15 @@ def ecs(s):
     assert call('DescribeServices',{'cluster':'demo','services':['api']})['services'][0]['status']=='INACTIVE'
     assert call('ListServices',{'cluster':'demo'})['serviceArns']==[]
     call('CreateService',{'cluster':'demo','serviceName':'api','taskDefinition':'web:2','desiredCount':3})
-    call('RunTask',{'cluster':'demo','taskDefinition':'web'},status=501,error='NotImplemented')
+    task=call('RunTask',{'cluster':'demo','taskDefinition':'web'})['tasks'][0]
+    assert task['lastStatus']=='PROVISIONING'
+    assert call('DescribeTasks',{'cluster':'demo','tasks':[task['taskArn'],'missing']})['failures'][0]['reason']=='MISSING'
+    assert call('ListTasks',{'cluster':'demo'})['taskArns']==[task['taskArn']]
+    assert call('StopTask',{'cluster':'demo','task':task['taskArn'],'reason':'done'})['task']['lastStatus']=='STOPPING'
+    call('RotoSetTaskStatus',{'cluster':'demo','task':task['taskArn'],'lastStatus':'STOPPED','exitCode':2})
+    assert call('DescribeTasks',{'cluster':'demo','tasks':[task['taskArn']]})['tasks'][0]['containers'][0]['exitCode']==2
+    assert call('ListTasks',{'cluster':'demo'})['taskArns']==[]
+    call('StartTask',{'cluster':'demo','taskDefinition':'web','containerInstances':['ci']},status=501,error='NotImplemented')
     return arn
 
 

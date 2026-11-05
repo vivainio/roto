@@ -687,13 +687,12 @@ function M.DescribeTargetHealth(ctx: Ctx, input: any, db: Db)
     local in_use = group_in_use(ctx, db, group.TargetGroupArn)
     local out = roto.array()
     for _, target in ipairs(selected) do
-        local health: Doc
-        if not in_use then
-            health = { State = "unused", Reason = "Target.NotInUse", Description = "Target group is not configured to receive traffic from the load balancer" }
-        else
-            health = (db.get(ns(ctx, "health"), target_key(group.TargetGroupArn, target.Id, target.Port)) :: Doc?)
-                or { State = "initial", Reason = "Elb.RegistrationInProgress", Description = "Target registration is in progress" }
-        end
+        -- A stored health document wins: the proxy writes it from real checks and
+        -- RotoSetTargetHealth writes it for fixtures, with or without a listener.
+        local health: Doc = (db.get(ns(ctx, "health"), target_key(group.TargetGroupArn, target.Id, target.Port)) :: Doc?)
+            or (if in_use
+                then { State = "initial", Reason = "Elb.RegistrationInProgress", Description = "Target registration is in progress" }
+                else { State = "unused", Reason = "Target.NotInUse", Description = "Target group is not configured to receive traffic from the load balancer" })
         local reported: Doc = { State = health.State }
         reported.Reason = health.Reason
         reported.Description = health.Description
@@ -704,6 +703,40 @@ function M.DescribeTargetHealth(ctx: Ctx, input: any, db: Db)
         })
     end
     return { TargetHealthDescriptions = out }
+end
+
+local HEALTH_STATES: { [string]: { string } } = {
+    initial = { "Elb.RegistrationInProgress", "Target registration is in progress" },
+    healthy = {},
+    unhealthy = { "Target.FailedHealthChecks", "Health checks failed" },
+    draining = { "Target.DeregistrationInProgress", "Target deregistration is in progress" },
+    unavailable = { "Target.HealthCheckDisabled", "Health checks are not enabled for this target" },
+    unused = { "Target.NotInUse", "Target group is not configured to receive traffic from the load balancer" },
+}
+
+-- Roto extension (not an AWS operation): report a chosen health state for registered targets, so a
+-- fixture does not need a listener and live upstream. Reason and Description default per state.
+function M.RotoSetTargetHealth(ctx: Ctx, input: any, db: Db)
+    local group = get(ctx, db, "tg", roto.required(input, "TargetGroupArn", "ValidationError"), "TargetGroupNotFound", "Target group not found")
+    local defaults = HEALTH_STATES[input.State]
+    if not defaults then
+        roto.error("ValidationError", "State must be one of: " .. table.concat(sorted_keys(HEALTH_STATES), ", "))
+    end
+    local selected: { any } = group._Targets
+    if input.Targets ~= nil then selected = parse_targets(group, input.Targets) end
+    for _, target in ipairs(selected) do
+        local found = false
+        for _, existing in ipairs(group._Targets) do
+            if existing.Id == target.Id and existing.Port == target.Port then found = true end
+        end
+        if not found then roto.error("InvalidTarget", "Target '" .. target.Id .. "' is not registered to target group '" .. group.TargetGroupArn .. "'") end
+        db.put(ns(ctx, "health"), target_key(group.TargetGroupArn, target.Id, target.Port), {
+            State = input.State,
+            Reason = input.Reason or defaults[1],
+            Description = input.Description or defaults[2],
+        })
+    end
+    return {}
 end
 
 -- Listeners --------------------------------------------------------------------------------------

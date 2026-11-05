@@ -59,6 +59,8 @@ jobs:
       - run: python3 -m pip install boto3==1.42.97
       - name: Service HTTP and SDK contracts (directory and ZIP bundle)
         run: python3 tests/smoke-lua-services.py --sdk
+      - name: Infrastructure services SDK contracts (directory and ZIP bundle)
+        run: python3 tests/smoke-lua-infra.py
   moto-tests:
     runs-on: ubuntu-latest
     steps:

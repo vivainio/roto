@@ -163,6 +163,95 @@ Stored documents are typed where their shape is fixed (ACM, CUR, Budgets, OpenSe
 as `any` elsewhere. `roto.error` is declared `never`, but the checker does not narrow on it, so
 a `Db.get` result needs a `:: Type` cast after the not-found check.
 
+## Shared signing names and the `ec2` protocol
+
+A manifest entry may add `"signing_name"` when SigV4 signs for a name other than its
+`service` identity. The identity names the database (`<service>.db`); the signing name
+selects the handler. Entries sharing a signing name must be `query` or `ec2` services
+whose models carry distinct `apiVersion`s, and a request goes to the member whose
+`Version` and `Action` match (anything else reaches the first member). Classic Elastic
+Load Balancing (`2012-06-01`) and ELBv2 (`2015-12-01`) both sign as
+`elasticloadbalancing`:
+
+```json
+{"service": "elb", "signing_name": "elasticloadbalancing", "protocol": "query",
+ "script": "elb/service.luau", "model": "elb/model.json"}
+```
+
+`"protocol": "ec2"` is Query with EC2's rules: request names are the capitalised
+`locationName` (or `queryName`), lists are `Name.N` with no `.member.`, responses are
+`<ActionResponse><requestId>` with `item` list elements, and errors use
+`<Response><Errors><Error>`.
+
+`scripts/generate-lua-service-models.py` rebuilds the wire models from botocore. Bundle
+files are limited to 1 MiB, so the EC2 model keeps only the operations the module serves;
+other EC2 actions answer `InvalidAction`.
+
+## Infrastructure services
+
+These modules store what a caller sets and let a fixture change state. None executes
+anything. Luau services cannot call each other, so an instance that belongs in EC2, an
+Auto Scaling group and a load balancer is registered in each by the same ID.
+
+| Service | Operations | State behavior |
+| --- | --- | --- |
+| `elb` (classic) | `CreateLoadBalancer`, `DeleteLoadBalancer`, `DescribeLoadBalancers`, `Register/DeregisterInstances…`, `DescribeInstanceHealth`, `AddTags`, `RemoveTags`, `DescribeTags` | Registered instances are `InService` until a fixture sets health |
+| `elasticloadbalancing` (v2) | existing set | `DescribeTargetHealth` reports a stored health state even without a listener |
+| `autoscaling` | Create/Delete/Update/DescribeAutoScalingGroups, `DescribeAutoScalingInstances`, `AttachInstances`, `DetachInstances`, `SetInstanceHealth`, `Suspend/ResumeProcesses`, `CreateOrUpdateTags`, `DeleteTags`, `DescribeTags`, `PutScheduledUpdateGroupAction`, `DescribeScheduledActions`, `DeleteScheduledAction`, `BatchDeleteScheduledAction` | Membership is stored as given; no launches or scaling policies. `AttachInstances` raises the desired capacity, as in AWS |
+| `ec2` | `RunInstances`, `DescribeInstances` (filters, tags, pagination), `DescribeInstanceStatus`, `Start/Stop/Reboot/TerminateInstances`, security group create/describe/delete, `CreateTags`, `DeleteTags`, `DescribeTags` | `pending`→`running`, `stopping`→`stopped`, `shutting-down`→`terminated` on the next request that reads the instance; terminated instances stay visible for an hour |
+| `states` | `Create/Delete/DescribeStateMachine`, `ListStateMachines`, `StartExecution`, `StopExecution`, `DescribeExecution`, `ListExecutions` | Definitions are stored, never evaluated; executions stay `RUNNING` until stopped or completed by a fixture |
+| `ecs` (tasks) | `RunTask`, `DescribeTasks`, `ListTasks`, `StopTask` | `PROVISIONING`→`RUNNING`, `STOPPING`→`STOPPED` on the next read; no containers run |
+| `ssm` (Run Command, Rust) | `SendCommand`, `ListCommands`, `ListCommandInvocations`, `GetCommandInvocation`, `CancelCommand` | Invocations stay `Pending` until a fixture completes them; targets are instance IDs only |
+
+### Test-control operations
+
+Real AWS has no call to say "this target is unhealthy" or "this command printed X", so each
+module adds a Roto-only operation with a `Roto` prefix. They are not in any SDK; call them
+with `roto.wire`, from `--setup` or `POST /roto-api/lua`:
+
+| Operation | Service | Sets |
+| --- | --- | --- |
+| `RotoSetTargetHealth` | `elasticloadbalancing` v2 | `State` (`healthy`, `unhealthy`, `draining`, `initial`, `unavailable`, `unused`), `Reason`, `Description` for `Targets` (default: all) |
+| `RotoSetInstanceHealth` | `elasticloadbalancing` classic | `State` (`InService`, `OutOfService`, `Unknown`), `ReasonCode`, `Description` for `Instances` (default: all) |
+| `RotoSetInstanceState` | `ec2` | A state for `InstanceId.N`, held until the next lifecycle call |
+| `RotoCompleteExecution` | `states` | `status`, `output`, `error`, `cause` of an execution |
+| `RotoCompleteCommandInvocation` | `ssm` | `Status`, `StandardOutputContent`, `StandardErrorContent`, `ResponseCode` for one instance (default: all) of a command |
+| `RotoSetTaskStatus` | `ecs` | `lastStatus`, `exitCode`, `stoppedReason`, held |
+
+### Seeding bundle services from Luau
+
+`roto.call` covers only built-in services, so a fixture reaches bundle services with
+`roto.wire` (from `--setup`, or `POST /roto-api/lua` with `--enable-lua-api`). Give the
+service's registered name and speak its wire format. A Query service takes a form body with
+`Action` and `Version`; an EC2 call uses the same shape:
+
+```luau
+roto.wire("elasticloadbalancing", "POST", "/", {
+  headers = {["content-type"] = "application/x-www-form-urlencoded"},
+  body = "Action=RotoSetInstanceHealth&Version=2012-06-01&LoadBalancerName=web"
+    .. "&State=OutOfService&Instances.member.1.InstanceId=i-1",
+})
+roto.wire("ec2", "POST", "/", {
+  headers = {["content-type"] = "application/x-www-form-urlencoded"},
+  body = "Action=RunInstances&Version=2016-11-15&ImageId=ami-1&MinCount=1&MaxCount=1",
+})
+```
+
+A JSON service takes its target header and a JSON body:
+
+```luau
+roto.wire("states", "POST", "/", {
+  headers = {
+    ["x-amz-target"] = "AWSStepFunctions.StartExecution",
+    ["content-type"] = "application/x-amz-json-1.0",
+  },
+  body = {stateMachineArn = arn, name = "fixture"},
+})
+```
+
+Calls made this way run under the setup account and region (`roto.set_account`,
+`roto.set_region`) and appear in `/roto-api/trace` like any other call.
+
 ## Organizations scope
 
 Implemented operations:

@@ -8,6 +8,7 @@
 )]
 
 #[allow(clippy::all)]
+mod commands;
 mod generated;
 mod models;
 mod parameters;
@@ -71,6 +72,11 @@ pub const IMPLEMENTED: &[&str] = &[
     "AddTagsToResource",
     "RemoveTagsFromResource",
     "ListTagsForResource",
+    "SendCommand",
+    "ListCommands",
+    "ListCommandInvocations",
+    "GetCommandInvocation",
+    "CancelCommand",
 ];
 
 pub struct SsmHandler(pub Arc<Ssm>);
@@ -110,6 +116,14 @@ impl ServiceHandler for SsmHandler {
                 }
             }
         };
+        if operation == "RotoCompleteCommandInvocation" {
+            return Ok(match self.0.complete_invocation(ctx, &body) {
+                Ok(value) => {
+                    roto_protocol::json_response(generated::JSON_VERSION, &ctx.request_id, &value)
+                }
+                Err(e) => fail(e),
+            });
+        }
         Ok(dispatch(&*self.0, ctx, operation, &body).unwrap_or_else(fail))
     }
 

@@ -299,6 +299,9 @@ impl CloudFormation {
         for (id, definition) in resources {
             let ty = definition["Type"].as_str().unwrap_or_default();
             let properties = definition.get("Properties").unwrap_or(&no_properties);
+            if template::inert(template, definition).is_some() {
+                continue;
+            }
             spec.check(ty, properties)
                 .map_err(|e| validation(format!("Resource {id}: {e}")))?;
         }
@@ -518,9 +521,15 @@ impl CloudFormation {
                     self.configure(ctx, stack, index, &props, true)?;
                 }
             } else {
-                let mut resource =
-                    self.resources
-                        .create(ctx, &stack.name, id, &ty, props.clone())?;
+                let mut resource = match template::inert(&stack.template, definition) {
+                    Some(inert) => {
+                        self.resources
+                            .create_inert(&stack.name, id, &ty, props.clone(), &inert)
+                    }
+                    None => self
+                        .resources
+                        .create(ctx, &stack.name, id, &ty, props.clone())?,
+                };
                 resource.deletion_policy = policy(definition, "DeletionPolicy");
                 resource.update_replace_policy = policy(definition, "UpdateReplacePolicy");
                 stack.resources.push(resource);

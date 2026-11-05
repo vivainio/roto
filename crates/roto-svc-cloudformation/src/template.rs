@@ -135,7 +135,9 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
         let ty = resource["Type"]
             .as_str()
             .ok_or_else(|| validation(format!("Resource {id} requires Type")))?;
-        validate_properties(ty, resource.get("Properties").unwrap_or(&json!({})))?;
+        if inert(&template, resource).is_none() {
+            validate_properties(ty, resource.get("Properties").unwrap_or(&json!({})))?;
+        }
         let definition = resource
             .as_object()
             .ok_or_else(|| validation("Resource must be an object"))?;
@@ -177,6 +179,38 @@ pub fn parse(body: &str) -> Result<Value, AwsError> {
     validate_functions(&checked)?;
     order(&template)?;
     Ok(template)
+}
+
+/// How an inert resource is recorded.
+pub struct Inert {
+    pub physical_id: Option<String>,
+    pub attributes: BTreeMap<String, Value>,
+}
+
+/// Whether a resource is held without a backing service, so a stack can describe resources
+/// the engine cannot create (such as ones a real deployment made elsewhere). Opt in with:
+/// - resource `Metadata` `Roto::PhysicalResourceId` (a string): that resource only, or
+/// - template `Metadata` `Roto::InertResources: true`: every resource of an unsupported type.
+///
+/// `Metadata` `Roto::Attributes` (an object) supplies `Fn::GetAtt` values. Properties are not
+/// validated and nothing is created, updated or deleted.
+pub fn inert(template: &Value, resource: &Value) -> Option<Inert> {
+    let metadata = &resource["Metadata"];
+    let physical_id = metadata["Roto::PhysicalResourceId"].as_str();
+    let all = template["Metadata"]["Roto::InertResources"] == json!(true);
+    let supported = resource["Type"]
+        .as_str()
+        .is_some_and(crate::resources::is_supported);
+    if physical_id.is_none() && !(all && !supported) {
+        return None;
+    }
+    Some(Inert {
+        physical_id: physical_id.map(str::to_owned),
+        attributes: metadata["Roto::Attributes"]
+            .as_object()
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default(),
+    })
 }
 
 /// Reject condition cycles before the resolver can recursively follow them.
@@ -698,6 +732,32 @@ mod tests {
     fn sub_overrides_do_not_create_false_dependencies() {
         let template = parse(r#"{"Resources":{"Queue":{"Type":"AWS::SQS::Queue","Properties":{"QueueName":{"Fn::Sub":["${Queue}",{"Queue":"literal-name"}]}}}}}"#).unwrap();
         assert_eq!(order(&template).unwrap(), ["Queue"]);
+    }
+
+    #[test]
+    fn inert_resources_are_opt_in_and_skip_property_validation() {
+        let odd = r#""Type":"AWS::AutoScaling::AutoScalingGroup","Properties":{"Anything":1}"#;
+        // Unsupported types are rejected unless the resource or the template opts in.
+        assert!(parse(&format!(r#"{{"Resources":{{"G":{{{odd}}}}}}}"#)).is_err());
+        let single = parse(&format!(
+            r#"{{"Resources":{{"G":{{{odd},"Metadata":{{"Roto::PhysicalResourceId":"asg-1","Roto::Attributes":{{"Arn":"arn:x"}}}}}}}}}}"#
+        ))
+        .unwrap();
+        let spec = inert(&single, &single["Resources"]["G"]).unwrap();
+        assert_eq!(spec.physical_id.as_deref(), Some("asg-1"));
+        assert_eq!(spec.attributes["Arn"], "arn:x");
+        let all = parse(&format!(
+            r#"{{"Metadata":{{"Roto::InertResources":true}},"Resources":{{"G":{{{odd}}},"Q":{{"Type":"AWS::SQS::Queue"}}}}}}"#
+        ))
+        .unwrap();
+        assert!(inert(&all, &all["Resources"]["G"]).is_some());
+        // Supported types keep their real behaviour even in an inert template.
+        assert!(inert(&all, &all["Resources"]["Q"]).is_none());
+        // Opting in does not excuse bad properties on a supported type.
+        assert!(
+            parse(r#"{"Metadata":{"Roto::InertResources":true},"Resources":{"Q":{"Type":"AWS::SQS::Queue","Properties":{"Nope":1}}}}"#)
+                .is_err()
+        );
     }
 
     #[test]
