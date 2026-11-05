@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::schema::*;
 use diesel::prelude::*;
@@ -22,10 +22,8 @@ pub struct Lambda {
 }
 
 pub(crate) fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 pub(crate) fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "InvalidParameterValueException", message)

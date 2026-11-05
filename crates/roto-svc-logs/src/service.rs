@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::generated::*;
 use crate::schema::*;
@@ -401,10 +400,8 @@ impl Service for CloudWatchLogs {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 
 fn err(code: &str, message: impl Into<String>) -> AwsError {

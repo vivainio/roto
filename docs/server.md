@@ -77,9 +77,14 @@ it would really have had. `drained` is `false` if it stopped after 10 000 jobs, 
 a job that reschedules itself with no delay. `POST /roto-api/reset` also puts the clock back to
 real time.
 
-Only code that reads the virtual clock sees it: Luau services (`os.time()`, `os.date()`,
-`roto.now()`) and their timers. The Rust services (SQS visibility, S3, Scheduler, Lambda
-timeouts and so on) and inline Lua Lambdas keep using real time.
+The virtual clock covers the timestamps and timers of the services: Luau services (`os.time()`,
+`os.date()`, `roto.now()` and their timers) and the Rust ones (SQS delay and visibility timeouts,
+SNS, SSM, Secrets Manager, S3, DynamoDB, IAM, STS, KMS, Kinesis, CloudWatch Logs, EventBridge,
+Scheduler and CloudFormation). Only Luau-service timers run before `advance` returns. The Rust
+background workers (Scheduler, EventBridge and S3 deliveries) poll in real time, so what became due
+is delivered within about 100 ms afterwards; poll for it in a test. Not on the virtual clock: real
+process time (Lambda executor timeouts and invocation durations), request traces, WebSocket
+timestamps, the HTTP `Date` header and inline Lua Lambdas.
 
 `GET /roto-api/sqs/messages` follows MiniStack's SQS peek response format:
 `{"messages": {"<account>": {"<region>": {"<queue-url>": [messages]}}}}`.

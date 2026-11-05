@@ -67,10 +67,8 @@ fn context(v: &Value, k: &str) -> Value {
     v.get(k).cloned().unwrap_or_else(|| json!({}))
 }
 fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms() as f64 / 1000.0
 }
 fn save_key(tx: &mut SqliteConnection, ctx: &RequestContext, key: &Value) -> Result<(), AwsError> {
     diesel::update(

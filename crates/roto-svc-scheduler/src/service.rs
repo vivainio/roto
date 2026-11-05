@@ -10,7 +10,7 @@ use roto_protocol::{FromJson, ToJson};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const DEFAULT_GROUP: &str = "default";
 const MAX_ATTEMPTS: i32 = 3;
@@ -24,16 +24,12 @@ pub struct Scheduler {
     started: i64,
 }
 fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_secs()
 }
 fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "ValidationException", message)

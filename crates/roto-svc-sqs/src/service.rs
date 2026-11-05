@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::schema::*;
 use diesel::prelude::*;
@@ -75,10 +75,8 @@ impl Sqs {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 
 fn err(code: &str, message: impl Into<String>) -> AwsError {

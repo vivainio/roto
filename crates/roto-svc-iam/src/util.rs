@@ -1,12 +1,9 @@
 use roto_core::{AwsError, RequestContext};
 use roto_protocol::Timestamp;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_secs()
 }
 
 pub fn ts(secs: i64) -> Timestamp {

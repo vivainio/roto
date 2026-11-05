@@ -67,10 +67,8 @@ pub(crate) fn now_secs() -> i64 {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_secs()
 }
 
 pub(crate) fn md5_hex(data: &[u8]) -> String {

@@ -8,13 +8,11 @@ use roto_core::{AwsError, RawResponse, RequestContext, ids};
 use roto_protocol::{Timestamp, restxml::XmlRead};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 
 fn form_encode(key: &str) -> String {

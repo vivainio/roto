@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""boto3 contracts for the Step Functions interpreter (`services/states`).
+"""boto3 contracts for the Step Functions interpreter (`services/states`) and the virtual clock.
 
 Needs boto3 and a built target/debug/roto-server. Starts its own ephemeral server, runs state
 machines through the AWS SDK, and moves the virtual clock with POST /roto-api/clock/advance so Wait
@@ -275,12 +275,31 @@ def check_loops_fail_instead_of_hanging(s):
     assert time.monotonic() - started < 60
 
 
+def check_rust_services_follow_the_clock(s):
+    sqs = boto3.client("sqs", endpoint_url=s.url, aws_access_key_id="test", aws_secret_access_key="x",
+                       region_name="us-east-1", config=Config(retries={"max_attempts": 1}))
+    queue = sqs.create_queue(QueueName="clocked")["QueueUrl"]
+
+    def receive(timeout=30):
+        return sqs.receive_message(QueueUrl=queue, VisibilityTimeout=timeout).get("Messages", [])
+
+    sqs.send_message(QueueUrl=queue, MessageBody="later", DelaySeconds=60)
+    assert receive() == []
+    s.advance(61)
+    assert [m["Body"] for m in receive()] == ["later"]
+    assert receive() == []  # in flight
+    s.advance(31)  # the visibility timeout has passed
+    assert [m["Body"] for m in receive()] == ["later"]
+    s.post("/roto-api/clock/reset", {})
+    assert s.get("/roto-api/clock")["offset_seconds"] == 0
+
+
 def main():
     server = Server()
     try:
         for check in (check_pass_and_paths, check_choice_and_fail, check_wait_and_clock,
                       check_tasks_stay_running, check_history_pages_and_validation,
-                      check_loops_fail_instead_of_hanging):
+                      check_loops_fail_instead_of_hanging, check_rust_services_follow_the_clock):
             started = time.monotonic()
             check(server)
             print(f"{check.__name__}: ok ({time.monotonic() - started:.1f}s)")

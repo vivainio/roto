@@ -8,7 +8,7 @@ use roto_protocol::{FromJson, Timestamp, ToJson};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub struct EventBridge {
     db: Arc<Db>,
@@ -16,10 +16,8 @@ pub struct EventBridge {
     sqs: Arc<roto_svc_sqs::Sqs>,
 }
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_ms()
 }
 fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "ValidationException", message)

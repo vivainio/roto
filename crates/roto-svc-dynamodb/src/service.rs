@@ -42,10 +42,8 @@ impl DynamoDb {
 }
 
 pub(crate) fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+    // Virtual clock: `POST /roto-api/clock/advance` moves it.
+    roto_core::clock::now_secs()
 }
 
 // ---- conversions ------------------------------------------------------------------------
