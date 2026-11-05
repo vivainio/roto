@@ -13,6 +13,10 @@ roto-server --lua-services services --alb-port 8888
 The Luau service bundle (`--lua-services`) is required for both parts. The control plane keeps all
 state; the proxy only reads it, and writes target health back so `DescribeTargetHealth` reports it.
 
+Roto picks the DNS name of a load balancer. A fixture that needs a given one (the name an application
+configuration refers to) sets it with the Roto-only operation `RotoSetLoadBalancerDnsName`
+(`LoadBalancerArn`, `DNSName`), and `DescribeLoadBalancers` and the `Host` header routing use it from then on.
+
 ## Control plane
 
 Supported operations: `Create`/`Describe`/`DeleteLoadBalancer`, load balancer attributes,

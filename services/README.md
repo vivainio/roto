@@ -212,6 +212,7 @@ with `roto.wire`, from `--setup` or `POST /roto-api/lua`:
 | Operation | Service | Sets |
 | --- | --- | --- |
 | `RotoSetTargetHealth` | `elasticloadbalancing` v2 | `State` (`healthy`, `unhealthy`, `draining`, `initial`, `unavailable`, `unused`), `Reason`, `Description` for `Targets` (default: all) |
+| `RotoSetLoadBalancerDnsName` | `elasticloadbalancing` v2 | `DNSName` of a load balancer (`LoadBalancerArn`), instead of the generated one |
 | `RotoSetInstanceHealth` | `elasticloadbalancing` classic | `State` (`InService`, `OutOfService`, `Unknown`), `ReasonCode`, `Description` for `Instances` (default: all) |
 | `RotoSetInstanceState` | `ec2` | A state for `InstanceId.N`, held until the next lifecycle call |
 | `RotoCompleteExecution` | `states` | `status`, `output`, `error`, `cause` of an execution |

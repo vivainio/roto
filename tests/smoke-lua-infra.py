@@ -127,6 +127,14 @@ def check_elb(s, trace):
     other = v2.describe_target_health(TargetGroupArn=group, Targets=[{"Id": "i-2"}])
     assert other["TargetHealthDescriptions"][0]["TargetHealth"]["State"] == "unused"
 
+    # A fixture can choose the DNS name of a load balancer instead of the generated one.
+    balancer = v2.create_load_balancer(Name="named", Subnets=["subnet-1"])["LoadBalancers"][0]
+    assert balancer["DNSName"].startswith("named-")
+    s.form("elasticloadbalancing", "Action=RotoSetLoadBalancerDnsName&Version=2015-12-01"
+           f"&LoadBalancerArn={balancer['LoadBalancerArn']}&DNSName=internal-named-123456789.elb.example.com")
+    described = v2.describe_load_balancers(Names=["named"])["LoadBalancers"][0]
+    assert described["DNSName"] == "internal-named-123456789.elb.example.com"
+
 
 def check_autoscaling(s, trace):
     a = s.client("autoscaling", trace)

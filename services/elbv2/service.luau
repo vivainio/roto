@@ -714,6 +714,15 @@ local HEALTH_STATES: { [string]: { string } } = {
     unused = { "Target.NotInUse", "Target group is not configured to receive traffic from the load balancer" },
 }
 
+-- Roto extension (not an AWS operation): give a load balancer a chosen DNS name. Roto picks a random one,
+-- and a fixture that mirrors an existing environment needs the name its configuration refers to.
+function M.RotoSetLoadBalancerDnsName(ctx: Ctx, input: any, db: Db)
+    local balancer = get(ctx, db, "lb", roto.required(input, "LoadBalancerArn", "ValidationError"), "LoadBalancerNotFound", "One or more load balancers not found")
+    balancer.DNSName = roto.required(input, "DNSName", "ValidationError")
+    db.put(ns(ctx, "lb"), balancer.LoadBalancerArn, balancer)
+    return {}
+end
+
 -- Roto extension (not an AWS operation): report a chosen health state for registered targets, so a
 -- fixture does not need a listener and live upstream. Reason and Description default per state.
 function M.RotoSetTargetHealth(ctx: Ctx, input: any, db: Db)
