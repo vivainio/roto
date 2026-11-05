@@ -7,16 +7,43 @@ use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
+use roto_core::clock;
 use roto_core::rusqlite::{OptionalExtension, params};
 use roto_core::store::{Db, Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
 use roto_protocol::{json_error, json_response};
 use serde_json::{Value, json};
 
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: "CREATE TABLE documents (namespace TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(namespace,id))",
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "CREATE TABLE documents (namespace TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(namespace,id))",
+    },
+    // Timers. `gen_no` changes whenever a key is rescheduled, so a running job can tell that its
+    // handler replaced it. Times are virtual-clock milliseconds (see `roto_core::clock`).
+    Migration {
+        version: 2,
+        sql: "CREATE TABLE jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account TEXT NOT NULL,
+            region TEXT NOT NULL,
+            key TEXT NOT NULL,
+            run_at INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            gen_no INTEGER NOT NULL DEFAULT 0,
+            payload TEXT NOT NULL DEFAULT 'null',
+            UNIQUE(account, region, key));
+            CREATE INDEX jobs_due ON jobs(run_at)",
+    },
+];
+
+/// A claimed job is invisible to other claimers for this long; a crash mid-job retries after it.
+const JOB_LEASE_MS: i64 = 30_000;
+/// A job whose handler keeps failing is dropped after this many attempts.
+const JOB_MAX_ATTEMPTS: i64 = 5;
+/// Jobs one drain may run, so a handler that reschedules itself forever cannot hang a caller.
+const DRAIN_BUDGET: usize = 10_000;
 
 pub struct LuaService {
     definition: Definition,
@@ -316,7 +343,7 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
 /// else falls to the first member so errors keep their usual shape.
 struct Group {
     signing: &'static str,
-    members: Vec<LuaService>,
+    members: Vec<Arc<LuaService>>,
 }
 
 impl Group {
@@ -325,6 +352,7 @@ impl Group {
             .iter()
             .find(|m| m.claims_unsigned(req))
             .unwrap_or(&self.members[0])
+            .as_ref()
     }
 }
 
@@ -346,29 +374,166 @@ impl ServiceHandler for Group {
     }
 }
 
-/// Registers discovered services by SigV4 signing name, grouping those that share one.
-pub fn into_handlers(services: Vec<LuaService>) -> Vec<Arc<dyn ServiceHandler>> {
+/// Registers discovered services by SigV4 signing name, grouping those that share one. The
+/// returned [`Jobs`] runs the services' timers; call [`Jobs::start`] to begin.
+pub fn into_handlers(services: Vec<LuaService>) -> (Vec<Arc<dyn ServiceHandler>>, Arc<Jobs>) {
+    let services: Vec<Arc<LuaService>> = services.into_iter().map(Arc::new).collect();
     let mut groups: Vec<Group> = Vec::new();
-    for service in services {
+    for service in &services {
         let signing = service.definition.signing;
         match groups.iter_mut().find(|g| g.signing == signing) {
-            Some(group) => group.members.push(service),
+            Some(group) => group.members.push(service.clone()),
             None => groups.push(Group {
                 signing,
-                members: vec![service],
+                members: vec![service.clone()],
             }),
         }
     }
-    groups
+    let handlers = groups
         .into_iter()
         .map(|g| {
             if g.members.len() == 1 && g.members[0].definition.service == g.signing {
-                Arc::new(g.members.into_iter().next().unwrap()) as Arc<dyn ServiceHandler>
+                g.members[0].clone() as Arc<dyn ServiceHandler>
             } else {
                 Arc::new(g)
             }
         })
-        .collect()
+        .collect();
+    let jobs = Arc::new(Jobs {
+        services,
+        gate: Mutex::new(()),
+    });
+    (handlers, jobs)
+}
+
+/// Runs the timers of every Lua service: a worker thread polls for due jobs, and [`Jobs::drain`]
+/// lets a test run everything that is due right now (after advancing the virtual clock).
+///
+/// A job is a row written by `db.schedule(key, ...)` in the same transaction as the handler's
+/// document writes. When it is due the service's `__job(ctx, job, db)` runs in a new
+/// transaction that also deletes the job, so a job that returns is done and a job that raises
+/// is rolled back and retried with backoff. A crash mid-job retries once its lease expires:
+/// delivery is at least once.
+#[derive(Default)]
+pub struct Jobs {
+    services: Vec<Arc<LuaService>>,
+    /// Held for a whole pass, so `drain` waits for a pass the worker already started.
+    gate: Mutex<()>,
+}
+
+impl Jobs {
+    pub fn start(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("roto-lua-jobs".into())
+            .spawn(move || {
+                while let Some(jobs) = weak.upgrade() {
+                    {
+                        let _gate = jobs.gate.lock().unwrap();
+                        jobs.pass(&mut 1000);
+                    }
+                    drop(jobs);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .expect("Lua job worker");
+    }
+
+    /// Runs due jobs until none are left, including jobs that earlier ones scheduled for a time
+    /// that has already arrived. Returns how many ran and whether it finished (`false` means the
+    /// budget ran out, for example a job that reschedules itself with no delay).
+    #[cfg(test)]
+    pub fn drain(&self) -> (usize, bool) {
+        let _gate = self.gate.lock().unwrap();
+        self.drain_locked(&mut { DRAIN_BUDGET })
+    }
+
+    fn drain_locked(&self, budget: &mut usize) -> (usize, bool) {
+        let mut total = 0;
+        loop {
+            let ran = self.pass(budget);
+            total += ran;
+            if ran == 0 {
+                return (total, true);
+            }
+            if *budget == 0 {
+                return (total, false);
+            }
+        }
+    }
+
+    /// Moves the virtual clock forward by `ms`, stopping at each job's due time on the way so
+    /// the job runs at that time and anything it schedules is measured from it. A chain of
+    /// one-hour timers therefore completes inside a single long advance, and every timestamp
+    /// the jobs write is the time they would really have run.
+    pub fn advance(&self, ms: i64) -> Result<(usize, bool), &'static str> {
+        if ms < 0 {
+            return Err("the clock can only move forward");
+        }
+        let _gate = self.gate.lock().unwrap();
+        let target = clock::now_ms().saturating_add(ms);
+        let mut budget = DRAIN_BUDGET;
+        let mut total = 0;
+        loop {
+            let next = self
+                .services
+                .iter()
+                .filter_map(|service| match service.next_job_ms() {
+                    Ok(next) => next,
+                    Err(e) => {
+                        eprintln!("Lua service {} jobs: {e}", service.definition.service);
+                        None
+                    }
+                })
+                .min();
+            let Some(next) = next.filter(|next| *next <= target) else {
+                break;
+            };
+            clock::advance_to_ms(next);
+            let (ran, finished) = self.drain_locked(&mut budget);
+            total += ran;
+            if !finished {
+                return Ok((total, false));
+            }
+            if ran == 0 {
+                break; // due but unclaimable: do not spin
+            }
+        }
+        clock::advance_to_ms(target);
+        let (ran, finished) = self.drain_locked(&mut budget);
+        Ok((total + ran, finished))
+    }
+
+    fn pass(&self, budget: &mut usize) -> usize {
+        let mut ran = 0;
+        for service in &self.services {
+            while *budget > 0 {
+                match service.run_next_job() {
+                    Ok(true) => {
+                        ran += 1;
+                        *budget -= 1;
+                    }
+                    Ok(false) => break,
+                    Err(e) => {
+                        eprintln!("Lua service {} jobs: {e}", service.definition.service);
+                        break;
+                    }
+                }
+            }
+        }
+        ran
+    }
+}
+
+struct Claimed {
+    id: i64,
+    generation: i64,
+    account: String,
+    region: String,
+    key: String,
+    payload: String,
+    attempts: i64,
+    run_at: i64,
 }
 
 fn lua_error(error: mlua::Error) -> AwsError {
@@ -435,6 +600,33 @@ impl LuaService {
             "uuid",
             lua.create_function(|_, ()| Ok(roto_core::ids::request_id()))
                 .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        // Services see the virtual clock, so advancing it moves every timestamp they write.
+        api.set(
+            "now",
+            lua.create_function(|_, ()| Ok(clock::now_ms() as f64 / 1000.0))
+                .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        let os: Table = lua.globals().get("os").map_err(lua_error)?;
+        let real_time: mlua::Function = os.get("time").map_err(lua_error)?;
+        os.set(
+            "time",
+            lua.create_function(move |_, date: Option<Table>| match date {
+                Some(date) => real_time.call::<f64>(date),
+                None => Ok(clock::now_secs() as f64),
+            })
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        let real_date: mlua::Function = os.get("date").map_err(lua_error)?;
+        os.set(
+            "date",
+            lua.create_function(move |_, (format, at): (Option<String>, Option<f64>)| {
+                real_date.call::<LuaValue>((format, at.unwrap_or(clock::now_secs() as f64)))
+            })
+            .map_err(lua_error)?,
         )
         .map_err(lua_error)?;
         api.set(
@@ -532,6 +724,25 @@ impl LuaService {
         operation: &str,
         input: Value,
     ) -> Result<Value, AwsError> {
+        // `__`-prefixed entries (such as `__job`) are internal and not reachable over HTTP.
+        if operation.starts_with("__") {
+            return Err(AwsError::not_implemented(
+                self.definition.service,
+                operation,
+            ));
+        }
+        self.execute(ctx, operation, input, |_| Ok(()))
+    }
+
+    /// Runs one module function in a transaction. `finish` runs in the same transaction after
+    /// the function returns, so its writes commit or roll back together with the function's.
+    fn execute(
+        &self,
+        ctx: &RequestContext,
+        operation: &str,
+        input: Value,
+        finish: impl FnOnce(&roto_core::rusqlite::Transaction<'_>) -> Result<(), AwsError>,
+    ) -> Result<Value, AwsError> {
         let mut runtime = self.runtime.lock().unwrap();
         if runtime.is_none() {
             *runtime = Some(self.load()?);
@@ -573,14 +784,184 @@ impl LuaService {
                     }
                     lua.to_value(&values)
                 })?)?;
+                db.set("schedule", scope.create_function(|lua, (key, options): (String, Option<Table>)| {
+                    if key.is_empty() {
+                        return Err(job_error("a job key must not be empty"));
+                    }
+                    let mut run_at = clock::now_ms();
+                    let mut payload = Value::Null;
+                    if let Some(options) = options {
+                        let at: Option<f64> = options.get("at")?;
+                        let delay: Option<f64> = options.get("delay")?;
+                        if at.is_some() && delay.is_some() {
+                            return Err(job_error("schedule takes `at` or `delay`, not both"));
+                        }
+                        if let Some(delay) = delay {
+                            if !delay.is_finite() || delay < 0.0 {
+                                return Err(job_error("`delay` must be a non-negative number of seconds"));
+                            }
+                            run_at += (delay * 1000.0).round() as i64;
+                        }
+                        if let Some(at) = at {
+                            if !at.is_finite() {
+                                return Err(job_error("`at` must be a Unix time in seconds"));
+                            }
+                            run_at = (at * 1000.0).round() as i64;
+                        }
+                        payload = lua.from_value(options.get::<LuaValue>("payload")?)?;
+                    }
+                    let payload = serde_json::to_string(&payload).map_err(mlua::Error::external)?;
+                    tx.execute(
+                        "INSERT INTO jobs(account,region,key,run_at,payload) VALUES (?1,?2,?3,?4,?5) \
+                         ON CONFLICT(account,region,key) DO UPDATE SET run_at=excluded.run_at, \
+                         payload=excluded.payload, lease_until=0, attempts=0, gen_no=gen_no+1",
+                        params![ctx.account_id, ctx.region, key, run_at, payload],
+                    ).map_err(mlua::Error::external)?;
+                    Ok(())
+                })?)?;
+                db.set("cancel", scope.create_function(|_, key: String| {
+                    tx.execute("DELETE FROM jobs WHERE account=?1 AND region=?2 AND key=?3", params![ctx.account_id, ctx.region, key]).map_err(mlua::Error::external)?;
+                    Ok(())
+                })?)?;
                 let context = lua.to_value(&json!({"account_id":ctx.account_id,"region":ctx.region,"request_id":ctx.request_id}))?;
                 let output: LuaValue = function.call((context, lua.to_value(&input)?, db))?;
                 lua.from_value::<Value>(output)
             });
             lua.remove_interrupt();
-            result.map_err(lua_error)
+            let value = result.map_err(lua_error)?;
+            finish(tx)?;
+            Ok(value)
         })
     }
+
+    /// The service's database if it already exists; never creates one.
+    fn existing_db(&self) -> Result<Option<Arc<Db>>, AwsError> {
+        if let Some(runtime) = self.runtime.lock().unwrap().as_ref() {
+            return Ok(Some(runtime.db.clone()));
+        }
+        let service = self.definition.service;
+        if let Some(db) = self.store.existing_db(service) {
+            return Ok(Some(db));
+        }
+        if self
+            .store
+            .data_dir()
+            .is_some_and(|dir| dir.join(format!("{service}.db")).is_file())
+        {
+            return Ok(Some(self.store.db(service, MIGRATIONS)?));
+        }
+        Ok(None)
+    }
+
+    /// When the next job could run (due time or lease expiry), without loading the service.
+    fn next_job_ms(&self) -> Result<Option<i64>, AwsError> {
+        let Some(db) = self.existing_db()? else {
+            return Ok(None);
+        };
+        db.read(|conn| {
+            Ok(
+                conn.query_row("SELECT MIN(MAX(run_at, lease_until)) FROM jobs", [], |r| {
+                    r.get::<_, Option<i64>>(0)
+                })?,
+            )
+        })
+    }
+
+    /// Claims and runs the earliest due job. Returns whether there was one.
+    fn run_next_job(&self) -> Result<bool, AwsError> {
+        let Some(db) = self.existing_db()? else {
+            return Ok(false);
+        };
+        let now = clock::now_ms();
+        let job = db.transaction(|tx| {
+            let job = tx
+                .query_row(
+                    "SELECT id,gen_no,account,region,key,payload,attempts,run_at FROM jobs \
+                     WHERE run_at<=?1 AND lease_until<=?1 ORDER BY run_at,id LIMIT 1",
+                    [now],
+                    |r| {
+                        Ok(Claimed {
+                            id: r.get(0)?,
+                            generation: r.get(1)?,
+                            account: r.get(2)?,
+                            region: r.get(3)?,
+                            key: r.get(4)?,
+                            payload: r.get(5)?,
+                            attempts: r.get::<_, i64>(6)? + 1,
+                            run_at: r.get(7)?,
+                        })
+                    },
+                )
+                .optional()?;
+            if let Some(job) = &job {
+                tx.execute(
+                    "UPDATE jobs SET lease_until=?1, attempts=?2 WHERE id=?3",
+                    params![now + JOB_LEASE_MS, job.attempts, job.id],
+                )?;
+            }
+            Ok(job)
+        })?;
+        let Some(job) = job else {
+            return Ok(false);
+        };
+        let ctx = RequestContext {
+            account_id: job.account.clone(),
+            region: job.region.clone(),
+            access_key: None,
+            request_id: roto_core::ids::request_id(),
+            base_url: String::new(),
+        };
+        let input = json!({
+            "key": job.key,
+            "payload": serde_json::from_str::<Value>(&job.payload).unwrap_or(Value::Null),
+            "attempts": job.attempts,
+            "run_at": job.run_at as f64 / 1000.0,
+        });
+        let (id, generation) = (job.id, job.generation);
+        let outcome = self.execute(&ctx, "__job", input, |tx| {
+            // Gone unless the handler rescheduled this key, which bumps `gen_no` and keeps the row.
+            tx.execute(
+                "DELETE FROM jobs WHERE id=?1 AND gen_no=?2",
+                params![id, generation],
+            )?;
+            Ok(())
+        });
+        if let Err(error) = outcome {
+            let service = self.definition.service;
+            let give_up = job.attempts >= JOB_MAX_ATTEMPTS;
+            if give_up {
+                eprintln!(
+                    "Lua service {service} dropped job {} after {} attempts: {error}",
+                    job.key, job.attempts
+                );
+            } else {
+                eprintln!(
+                    "Lua service {service} job {} failed (attempt {}): {error}",
+                    job.key, job.attempts
+                );
+            }
+            let retry_at = clock::now_ms() + (1000_i64 << job.attempts.min(6)).min(60_000);
+            db.transaction(|tx| {
+                if give_up {
+                    tx.execute(
+                        "DELETE FROM jobs WHERE id=?1 AND gen_no=?2",
+                        params![id, generation],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE jobs SET lease_until=0, run_at=?1 WHERE id=?2 AND gen_no=?3",
+                        params![retry_at, id, generation],
+                    )?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(true)
+    }
+}
+
+fn job_error(message: &str) -> mlua::Error {
+    mlua::Error::external(AwsError::sender(400, "InvalidParameterException", message))
 }
 
 impl ServiceHandler for LuaService {
@@ -622,24 +1003,10 @@ impl ServiceHandler for LuaService {
         })
     }
     fn reset(&self) -> Result<(), AwsError> {
-        let runtime = self.runtime.lock().unwrap();
-        let db = match runtime.as_ref() {
-            Some(runtime) => Some(runtime.db.clone()),
-            None => match self.store.existing_db(self.service()) {
-                Some(db) => Some(db),
-                None if self
-                    .store
-                    .data_dir()
-                    .is_some_and(|dir| dir.join(format!("{}.db", self.service())).is_file()) =>
-                {
-                    Some(self.store.db(self.service(), MIGRATIONS)?)
-                }
-                None => None,
-            },
-        };
-        if let Some(db) = db {
+        if let Some(db) = self.existing_db()? {
             db.transaction(|tx| {
                 tx.execute("DELETE FROM documents", [])?;
+                tx.execute("DELETE FROM jobs", [])?;
                 Ok(())
             })?;
         }
@@ -799,7 +1166,7 @@ mod tests {
     fn services_sharing_a_signing_name_dispatch_on_the_query_version() {
         let store = Arc::new(Store::ephemeral());
         let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services");
-        let handlers = into_handlers(discover(store, Some(bundle)).unwrap());
+        let (handlers, _jobs) = into_handlers(discover(store, Some(bundle)).unwrap());
         assert_eq!(
             handlers
                 .iter()
@@ -1236,7 +1603,7 @@ mod tests {
                     .get::<_, u32>(0))?
             ))
             .unwrap(),
-            1
+            MIGRATIONS.len() as u32
         );
     }
 
@@ -1291,6 +1658,153 @@ mod tests {
         );
         drop(service);
         drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    const TICKER: &str = r#"
+local M = {}
+function M.Start(ctx, input, db)
+    db.schedule("tick", {delay = input.delay, payload = {left = input.count, fail = input.fail}})
+    return {}
+end
+function M.Cancel(ctx, input, db) db.cancel("tick") return {} end
+function M.Ticks(ctx, input, db) return {Ticks = db.list("ticks")} end
+function M.__job(ctx, job, db)
+    if job.payload.fail then error("boom") end
+    db.put("ticks", string.format("%03d", #db.list("ticks")), {
+        at = os.time(), left = job.payload.left, account = ctx.account_id,
+        region = ctx.region, attempts = job.attempts,
+    })
+    if job.payload.left > 1 then
+        db.schedule(job.key, {delay = 60, payload = {left = job.payload.left - 1}})
+    end
+    return {}
+end
+return M
+"#;
+
+    fn ticker() -> (Arc<dyn ServiceHandler>, Arc<Jobs>, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("roto-ticker-{}", roto_core::ids::request_id()));
+        std::fs::create_dir_all(dir.join("ticker")).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            manifest(json!({"service":"ticker","script":"ticker/service.luau","target_prefix":"Ticker.","json_version":"1.0"}))
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("ticker/service.luau"), TICKER).unwrap();
+        let services = discover(Arc::new(Store::ephemeral()), Some(dir.clone())).unwrap();
+        let (mut handlers, jobs) = into_handlers(services);
+        (handlers.remove(0), jobs, dir)
+    }
+
+    fn ticker_call(
+        handler: &Arc<dyn ServiceHandler>,
+        ctx: &RequestContext,
+        operation: &str,
+        input: Value,
+    ) -> (u16, Value) {
+        let mut req = request(operation, input);
+        req.headers[0].1 = format!("Ticker.{operation}");
+        let response = handler.handle(ctx, &req).unwrap();
+        (
+            response.status,
+            serde_json::from_slice(&response.body).unwrap(),
+        )
+    }
+
+    #[test]
+    fn jobs_run_with_their_scope_cancel_reset_and_stay_internal() {
+        let (handler, jobs, dir) = ticker();
+        let ctx = context("111122223333", "eu-west-1");
+        // `__`-prefixed functions are not reachable over HTTP.
+        assert_ne!(ticker_call(&handler, &ctx, "__job", json!({})).0, 200);
+        // The job runs as the account and region that scheduled it.
+        ticker_call(&handler, &ctx, "Start", json!({"delay":0,"count":1}));
+        assert_eq!(jobs.drain(), (1, true));
+        let (_, body) = ticker_call(&handler, &ctx, "Ticks", json!({}));
+        assert_eq!(body["Ticks"][0]["account"], "111122223333");
+        assert_eq!(body["Ticks"][0]["region"], "eu-west-1");
+        assert_eq!(body["Ticks"][0]["attempts"], 1);
+        // Another account's key does not collide, and cancel removes only its own job.
+        let other = context("444455556666", "eu-west-1");
+        ticker_call(&handler, &ctx, "Start", json!({"delay":0,"count":1}));
+        ticker_call(&handler, &other, "Start", json!({"delay":0,"count":1}));
+        ticker_call(&handler, &ctx, "Cancel", json!({}));
+        assert_eq!(jobs.drain(), (1, true));
+        // Reset drops pending jobs along with documents.
+        ticker_call(&handler, &ctx, "Start", json!({"delay":0,"count":1}));
+        handler.reset().unwrap();
+        assert_eq!(jobs.drain(), (0, true));
+        // Bad scheduling arguments are client errors.
+        let (status, _) = ticker_call(&handler, &ctx, "Start", json!({"delay":-1,"count":1}));
+        assert_eq!(status, 400);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // The only test that moves the shared virtual clock; keep clock steps in this one test.
+    #[test]
+    fn advancing_the_clock_fires_chained_timers_and_retries_failures() {
+        let (handler, jobs, dir) = ticker();
+        let ctx = context("123456789012", "us-east-1");
+        ticker_call(&handler, &ctx, "Start", json!({"delay":0,"count":3}));
+        assert_eq!(
+            jobs.drain(),
+            (1, true),
+            "the first tick is due, the next is 60s away"
+        );
+        for _ in 0..2 {
+            assert_eq!(jobs.drain(), (0, true));
+            clock::advance_ms(61_000).unwrap();
+            assert_eq!(jobs.drain(), (1, true));
+        }
+        assert_eq!(
+            jobs.advance(3_600_000).unwrap(),
+            (0, true),
+            "the chain ended after three ticks"
+        );
+        let (_, body) = ticker_call(&handler, &ctx, "Ticks", json!({}));
+        let at: Vec<i64> = body["Ticks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["at"].as_i64().unwrap())
+            .collect();
+        assert_eq!(at.len(), 3);
+        assert!(at[1] - at[0] >= 60 && at[2] - at[1] >= 60, "{at:?}");
+
+        // One long advance steps through a whole chain, running each tick at its own due time.
+        ticker_call(&handler, &ctx, "Start", json!({"delay":0,"count":3}));
+        assert_eq!(jobs.advance(3 * 3_600_000).unwrap(), (3, true));
+        let (_, body) = ticker_call(&handler, &ctx, "Ticks", json!({}));
+        let ticks = body["Ticks"].as_array().unwrap();
+        assert_eq!(ticks.len(), 6);
+        let chain: Vec<i64> = ticks[3..]
+            .iter()
+            .map(|t| t["at"].as_i64().unwrap())
+            .collect();
+        assert!(
+            chain[1] - chain[0] == 60 && chain[2] - chain[1] == 60,
+            "{chain:?}"
+        );
+        assert!(jobs.advance(-1).is_err());
+
+        // A failing handler rolls back, retries with backoff, and is dropped after 5 attempts.
+        ticker_call(
+            &handler,
+            &ctx,
+            "Start",
+            json!({"delay":0,"count":1,"fail":true}),
+        );
+        let mut ran = jobs.drain().0;
+        assert_eq!(jobs.drain(), (0, true), "the retry waits for its backoff");
+        for _ in 0..7 {
+            clock::advance_ms(70_000).unwrap();
+            ran += jobs.drain().0;
+        }
+        assert_eq!(ran, 5);
+        clock::reset();
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1,6 +1,7 @@
 //! Shared foundation for roto: errors, request context, SigV4 scope parsing, and the
 //! SQLite-backed [`store::Store`].
 
+pub mod clock;
 pub mod error;
 pub mod http;
 pub mod ids;

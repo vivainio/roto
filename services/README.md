@@ -144,6 +144,53 @@ marked JSON array, including empty arrays. Plain empty tables encode as objects;
 JSON null values use mlua's serde null representation. Successful operations
 return JSON objects.
 
+### Timers
+
+A module can schedule work for later with two more `db` functions. Like the storage
+functions they are valid only during a request (or job) transaction, and a timer is
+written in that same transaction, so it exists exactly when the rest of the request's
+writes do.
+
+- `db.schedule(key, {delay = seconds, at = unix_seconds, payload = value})` queues a call
+  of the module's `__job` function. Give at most one of `delay` and `at`; with neither,
+  the job is due immediately. `payload` is any JSON value. Keys are unique per account and
+  region: scheduling an existing key replaces that job, so rescheduling is how a state
+  machine moves to its next step.
+- `db.cancel(key)` removes the job, if any.
+
+When a job is due, Roto calls `__job(ctx, job, db)` in a new transaction as the account
+and region that scheduled it. `job` has `key`, `payload`, `attempts` (1 on the first try)
+and `run_at` (seconds). If `__job` returns, the job is deleted in the same transaction as
+its writes unless it rescheduled its own key. If it raises, everything it wrote rolls back
+and the job is retried with exponential backoff (2 s, 4 s, ... capped at 60 s) and dropped
+after 5 attempts, with a message on the server console. A job claimed by a process that then
+dies is retried after 30 s, so delivery is at least once: handlers should be idempotent.
+`__job` is internal and cannot be called over HTTP.
+
+Jobs live in the service's database (table `jobs`), so they survive a restart with
+`--data-dir`, are removed by `/roto-api/reset`, and are polled by one worker thread every
+100 ms (jobs run one at a time, in due-time order). `os.time()`, `os.date()` and
+`roto.now()` read the [virtual clock](../docs/server.md#virtual-clock), so a test can
+advance time instead of waiting.
+
+```luau
+return {
+    StartThing = function(ctx, input, db)
+        db.put("things", input.Id, {Id = input.Id, Status = "PENDING"})
+        db.schedule("ready/" .. input.Id, {delay = 30, payload = {Id = input.Id}})
+        return {}
+    end,
+    __job = function(ctx, job, db)
+        local thing = db.get("things", job.payload.Id)
+        if thing then
+            thing.Status = "READY"
+            db.put("things", thing.Id, thing)
+        end
+        return {}
+    end,
+}
+```
+
 ### Type-checking modules
 
 Service modules see a different `roto` from setup scripts, so they have their own

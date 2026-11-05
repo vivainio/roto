@@ -121,6 +121,8 @@ struct App {
     websockets: websocket::Hub,
     hooks: std::sync::Mutex<setup::Hooks>,
     lua_api: Option<lua_api::LuaApi>,
+    /// Timers of the Lua services; `/roto-api/clock/advance` drains them.
+    jobs: Arc<lua_service::Jobs>,
 }
 
 #[tokio::main]
@@ -282,7 +284,8 @@ async fn main() {
             eprintln!("error discovering Lua services: {e}");
             std::process::exit(1);
         });
-    for handler in lua_service::into_handlers(lua_services) {
+    let (lua_handlers, lua_jobs) = lua_service::into_handlers(lua_services);
+    for handler in lua_handlers {
         if services.contains_key(handler.service())
             || matches!(
                 handler.service(),
@@ -344,7 +347,9 @@ async fn main() {
         websockets: websocket::Hub::default(),
         hooks: Default::default(),
         lua_api,
+        jobs: lua_jobs.clone(),
     });
+    lua_jobs.start();
 
     {
         let app = Arc::downgrade(&app);
@@ -432,6 +437,9 @@ async fn main() {
         .route("/roto-api/trace", get(request_trace))
         .route("/roto-api/unsupported", get(unsupported_calls))
         .route("/roto-api/reset", post(reset))
+        .route("/roto-api/clock", get(clock_status))
+        .route("/roto-api/clock/advance", post(clock_advance))
+        .route("/roto-api/clock/reset", post(clock_reset))
         .route("/roto-api/lua", post(lua_api::run))
         // moto's server-mode test harness resets state through this path.
         .route("/moto-api/reset", post(reset))
@@ -513,12 +521,74 @@ async fn reset(State(app): State<Arc<App>>) -> Response {
             .unwrap();
     match res {
         Ok(()) => {
+            roto_core::clock::reset();
             app.unsupported.reset();
             app.api_gateway_v2.reset();
             (StatusCode::OK, r#"{"status":"ok"}"#).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+fn clock_json() -> serde_json::Value {
+    serde_json::json!({
+        "now": roto_core::clock::now_ms() as f64 / 1000.0,
+        "offset_seconds": roto_core::clock::offset_ms() as f64 / 1000.0,
+    })
+}
+
+async fn clock_status() -> axum::Json<serde_json::Value> {
+    axum::Json(clock_json())
+}
+
+/// `POST /roto-api/clock/advance {"seconds": 3600, "wait": true}` moves the virtual clock
+/// forward and, unless `wait` is false, runs every Lua-service timer that became due before
+/// returning. Services that read the system clock directly are not affected.
+async fn clock_advance(State(app): State<Arc<App>>, body: Bytes) -> Response {
+    let bad = |message: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": message})),
+        )
+            .into_response()
+    };
+    let input: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(_) => return bad("body must be a JSON object such as {\"seconds\": 60}"),
+    };
+    let Some(seconds) = input["seconds"].as_f64() else {
+        return bad("`seconds` is required and must be a number");
+    };
+    // Ten years is far beyond any test and keeps the millisecond arithmetic far from overflow.
+    if !seconds.is_finite() || !(0.0..=315_360_000.0).contains(&seconds) {
+        return bad("`seconds` must be between 0 and 315360000");
+    }
+    let wait = input["wait"].as_bool().unwrap_or(true);
+    let ms = (seconds * 1000.0).round() as i64;
+    let (jobs_run, drained) = if wait {
+        let jobs = app.jobs.clone();
+        match tokio::task::spawn_blocking(move || jobs.advance(ms))
+            .await
+            .unwrap()
+        {
+            Ok(result) => result,
+            Err(message) => return bad(message),
+        }
+    } else {
+        if let Err(message) = roto_core::clock::advance_ms(ms) {
+            return bad(message);
+        }
+        (0, true)
+    };
+    let mut out = clock_json();
+    out["jobs_run"] = jobs_run.into();
+    out["drained"] = drained.into();
+    axum::Json(out).into_response()
+}
+
+async fn clock_reset() -> axum::Json<serde_json::Value> {
+    roto_core::clock::reset();
+    axum::Json(clock_json())
 }
 
 async fn unsupported_calls(State(app): State<Arc<App>>) -> axum::Json<serde_json::Value> {
@@ -1092,6 +1162,7 @@ mod discovery_tests {
             api_gateway_v2: Default::default(),
             hooks: Default::default(),
             lua_api: None,
+            jobs: Default::default(),
         })
     }
 

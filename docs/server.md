@@ -49,12 +49,37 @@ RUST_LOG=debug roto-server --ephemeral
 | `GET` | `/roto-api/trace` | Recent traced requests; optionally filter with `trace_id` |
 | `GET` | `/roto-api/unsupported` | Deduplicated unsupported HTTP calls and counts |
 | `POST` | `/roto-api/reset` | Clears state across services |
+| `GET` | `/roto-api/clock` | Virtual clock: `now` (Unix seconds) and `offset_seconds` |
+| `POST` | `/roto-api/clock/advance` | Move the virtual clock forward and run due Luau-service timers, see [Virtual clock](#virtual-clock) |
+| `POST` | `/roto-api/clock/reset` | Return the virtual clock to real time (`/roto-api/reset` does this too) |
 | `POST` | `/roto-api/lua` | Runs a Luau script with the setup API; needs `--enable-lua-api`, loopback only |
 | `GET` | `/roto-api/lambda/invocations` | Latest 100 invocations, results and logs, across all accounts and regions (`?account=` and `?region=` narrow it) |
 | `GET` | `/roto-api/s3/notifications` | Pending/failed S3 handoffs |
 | `GET` | `/roto-api/events/deliveries` | Latest 100 EventBridge deliveries |
 | `GET` | `/roto-api/sns/sms-messages` | Direct-to-phone SNS publishes, grouped by recipient |
 | `POST` | `/moto-api/reset` | Alias used by moto's server-mode tests |
+
+### Virtual clock
+
+Luau services can schedule timers (see [Timers](../services/README.md#timers)). To test them
+without waiting, move the virtual clock forward:
+
+```sh
+curl -X POST localhost:5070/roto-api/clock/advance -d '{"seconds": 3600}'
+# {"drained":true,"jobs_run":3,"now":1794000571.666,"offset_seconds":3600.0}
+```
+
+`seconds` is required (0 to 315360000; the clock never moves backwards). Unless you pass
+`"wait": false`, the call returns after every timer that became due has run. It steps through
+the due times in order, so each job runs at its own due time and a chain of timers (a job that
+schedules the next step an hour later) completes inside one long advance, with the timestamps
+it would really have had. `drained` is `false` if it stopped after 10 000 jobs, for example for
+a job that reschedules itself with no delay. `POST /roto-api/reset` also puts the clock back to
+real time.
+
+Only code that reads the virtual clock sees it: Luau services (`os.time()`, `os.date()`,
+`roto.now()`) and their timers. The Rust services (SQS visibility, S3, Scheduler, Lambda
+timeouts and so on) and inline Lua Lambdas keep using real time.
 
 `GET /roto-api/sqs/messages` follows MiniStack's SQS peek response format:
 `{"messages": {"<account>": {"<region>": {"<queue-url>": [messages]}}}}`.

@@ -19,6 +19,12 @@ declare extern type Db with
 	put: (namespace: string, id: string, document: any) -> ()
 	delete: (namespace: string, id: string) -> ()
 	list: (namespace: string) -> { any }
+	-- Timers: queue a call of the module's `__job(ctx, job, db)` function. `delay` is seconds from
+	-- now, `at` is a Unix time in seconds (give at most one); `payload` is any JSON value. The job
+	-- is written in the request's transaction. Scheduling an existing key replaces that job.
+	schedule: (key: string, options: { delay: number?, at: number?, payload: any? }?) -> ()
+	-- Removes the job with this key, if any.
+	cancel: (key: string) -> ()
 end
 
 declare roto: {
@@ -29,6 +35,8 @@ declare roto: {
 	error: (code: string, message: string, status: number?) -> never,
 	id: (prefix: string) -> string,
 	uuid: () -> string,
+	-- Seconds since the Unix epoch on the virtual clock (fractional); `os.time()` uses it too.
+	now: () -> number,
 	sha256: (text: string) -> string,
 	decode_base64: (text: string) -> string,
 	json_decode: (text: string, code: string?) -> any,
