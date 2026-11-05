@@ -588,10 +588,14 @@ JSON; requires R02/R04 for a useful DirectPut slice, R05 for buffering.
 
 MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 
-- [ ] State-machine CRUD, definition validation, tags and execution/history storage.
-- [ ] Bounded ASL interpreter: Pass/Choice/Succeed/Fail and explicit unsupported states.
+- [x] State-machine CRUD, definition validation and execution/history storage (tags remain).
+- [x] Bounded ASL interpreter: Pass/Choice/Succeed/Fail/Wait with Input/Parameters/Result/ResultPath/
+      OutputPath, JSONPath subset, `$$` context, intrinsics, Choice operators, history events
+      (`GetExecutionHistory`), 25 000-event limit. Task/Parallel/Map are not interpreted: the execution
+      stays `RUNNING` there (`tests/smoke-states.py`).
 - [ ] R04 Lambda/SQS task integrations and modeled failures.
-- [ ] R05 Wait/retry/catch, parallel/map, cancellation and restart.
+- [x] R05 timers (Luau `db.schedule`, virtual clock): Wait, machine `TimeoutSeconds`, stop cancels timers.
+- [ ] Retry/Catch, Parallel/Map, restart verification.
 - [ ] Activities/task tokens, versions/aliases and sync execution as later slices.
 
 ### S48 — Athena (`athena`) · MiniStack: `athena.py`, `test_athena.py`

@@ -238,7 +238,7 @@ def check_states(s, trace):
     sf = s.client("stepfunctions", trace)
     machine = sf.create_state_machine(
         name="m", roleArn="arn:aws:iam::123456789012:role/r",
-        definition=json.dumps({"StartAt": "A", "States": {"A": {"Type": "Pass", "End": True}}}))["stateMachineArn"]
+        definition=json.dumps({"StartAt": "A", "States": {"A": {"Type": "Wait", "Seconds": 3600, "End": True}}}))["stateMachineArn"]
     start = sf.start_execution(stateMachineArn=machine, name="e1", input=json.dumps({"a": 1}))
     execution = sf.describe_execution(executionArn=start["executionArn"])
     assert execution["status"] == "RUNNING" and json.loads(execution["input"]) == {"a": 1}

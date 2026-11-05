@@ -666,6 +666,24 @@ impl LuaService {
             .map_err(lua_error)?,
         )
         .map_err(lua_error)?;
+        api.set(
+            "encode_base64",
+            lua.create_function(|_, value: mlua::LuaString| {
+                Ok(base64::engine::general_purpose::STANDARD.encode(value.as_bytes()))
+            })
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        // Compact JSON text of a Luau value; whole numbers print as integers.
+        api.set(
+            "json_encode",
+            lua.create_function(|lua, value: LuaValue| {
+                let value: Value = lua.from_value(value)?;
+                serde_json::to_string(&integral_numbers(value)).map_err(mlua::Error::external)
+            })
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
         lua.globals().set("roto", api).map_err(lua_error)?;
         if let Some(path) = &self.definition.common {
             lua.load(self.bundle.read(path)?)
@@ -957,6 +975,24 @@ impl LuaService {
             })?;
         }
         Ok(true)
+    }
+}
+
+fn integral_numbers(value: Value) -> Value {
+    match value {
+        Value::Number(n) => match n.as_f64() {
+            Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
+                json!(f as i64)
+            }
+            _ => Value::Number(n),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(integral_numbers).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, integral_numbers(v)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 
