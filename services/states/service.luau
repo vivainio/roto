@@ -8,13 +8,36 @@
 -- machine-level TimeoutSeconds use service timers (`db.schedule`), so they follow the virtual
 -- clock (`POST /roto-api/clock/advance`).
 --
--- Not interpreted yet: Task, Parallel and Map states (they need calls to other services). An
--- execution that reaches one stays RUNNING at that state until it is stopped or settled with
--- RotoCompleteExecution (a Roto extension that settles a running execution as SUCCEEDED, FAILED
--- or TIMED_OUT for fixtures). Retry and Catch only apply to those states, so they are not used.
+-- Task states call other services in-process (Lambda functions, and SDK integrations such as
+-- `arn:aws:states:::sqs:sendMessage`) with Retry and Catch; only the Request Response pattern is
+-- supported. Retry backoffs run on timers. The callee commits in its own transaction, so a Task's
+-- effect is not rolled back with the execution.
+--
+-- Callback Tasks (`.waitForTaskToken`) and activity Tasks park the execution with a task token until
+-- SendTaskSuccess/SendTaskFailure, TimeoutSeconds or a missed HeartbeatSeconds settles them. An
+-- activity Task queues its input under `states/activity-queue/<activity ARN>` for GetActivityTask.
+--
+-- `arn:aws:states:::states:startExecution` starts a nested execution in-process (a service cannot
+-- call itself through roto.call); its `.sync`/`.sync:2` forms park the Task on a token that the child
+-- delivers when it settles (see `notify_parent`).
+--
+-- `ecs:*` Tasks go to the ECS Luau service as raw requests; `ecs:runTask.sync` polls DescribeTasks on
+-- a timer (virtual seconds) until the tasks stop.
+--
+-- Parallel and Map states fan out into threads: each branch or Map item is a thread with its own
+-- position, retry counters, timers and task token, so Waits, Retry backoffs and callback or
+-- activity Tasks work inside them and siblings make progress independently. Threads advance
+-- round-robin, one transition at a time, within the request or job transaction. The parent
+-- continues once every child has finished (results in branch/item order); a child failure that
+-- the branch does not handle cancels its siblings and fails the Parallel/Map state, which then
+-- applies its own Retry and Catch. A Map's MaxConcurrency limits how many items run at once;
+-- ToleratedFailure belongs to distributed Map, which is rejected (an inline Map fails on its first
+-- failed item, as in AWS).
+-- RotoCompleteExecution (a Roto extension) settles a running execution as SUCCEEDED, FAILED or
+-- TIMED_OUT for fixtures.
 --
 -- Document namespaces (per account and region): states/machine keyed by ARN; states/execution and
--- states/cursor (where the execution is, its data and the definition it started with) keyed by
+-- states/cursor (the execution's threads and the definition it started with) keyed by
 -- execution ARN; states/history/<execution ARN> (one document per event) and states/history-count.
 -- Timers: `resume/<arn>` wakes a waiting execution, `timeout/<arn>` enforces TimeoutSeconds.
 local M: { [string]: (Ctx, any, Db) -> any } = {}
@@ -28,6 +51,14 @@ local NULL = roto.null
 local MAX_STEPS = 200
 -- AWS fails an execution whose history would pass this many events.
 local MAX_EVENTS = 25000
+
+local function is_activity(resource: string): boolean
+    return string.match(resource, "^arn:[^:]*:states:[^:]*:[^:]*:activity:.") ~= nil
+end
+
+local function timer_key(kind: string, arn: string, tid: string): string
+    return kind .. "/" .. arn .. "/" .. tid
+end
 
 local function ns(ctx: Ctx, kind: string): string
     return roto.scope(ctx, "states/" .. kind)
@@ -596,41 +627,68 @@ end
 -- Definition validation
 
 local STATE_TYPES: { [string]: boolean } = { Pass = true, Task = true, Choice = true, Wait = true, Succeed = true, Fail = true, Parallel = true, Map = true }
-local INTERPRETED: { [string]: boolean } = { Pass = true, Choice = true, Wait = true, Succeed = true, Fail = true }
 
 local function validate_definition(text: any): string
     valid_json(text, "definition")
-    local definition = roto.json_decode(text :: string, "InvalidDefinition")
     local function invalid(message: string): never
         return roto.error("InvalidDefinition", "Invalid State Machine Definition: " .. message)
     end
-    if not is_object(definition) or type(definition.StartAt) ~= "string" or not is_object(definition.States) then
-        invalid("a definition needs StartAt and States")
-    end
-    local states: Doc = definition.States
-    if next(states) == nil then invalid("States must not be empty") end
-    if states[definition.StartAt] == nil then invalid("StartAt '" .. definition.StartAt .. "' is not a state") end
-    local function target(name: any, from: string)
-        if type(name) ~= "string" or states[name] == nil then invalid("state '" .. from .. "' transitions to unknown state '" .. tostring(name) .. "'") end
-    end
-    for name, state in pairs(states) do
-        if not is_object(state) or not STATE_TYPES[state.Type] then invalid("state '" .. name .. "' has an unknown Type") end
-        local kind = state.Type
-        if kind == "Choice" then
-            if not is_array(state.Choices) or #state.Choices == 0 then invalid("Choice state '" .. name .. "' needs Choices") end
-            for _, rule in ipairs(state.Choices) do target(rule.Next, name) end
-            if state.Default ~= nil then target(state.Default, name) end
-        elseif kind ~= "Succeed" and kind ~= "Fail" then
-            if state.Next ~= nil then
-                target(state.Next, name)
-            elseif state.End ~= true then
-                invalid("state '" .. name .. "' needs Next or End")
+    local function check(definition: any)
+        if not is_object(definition) or type(definition.StartAt) ~= "string" or not is_object(definition.States) then
+            invalid("a definition needs StartAt and States")
+        end
+        local states: Doc = definition.States
+        if next(states) == nil then invalid("States must not be empty") end
+        if states[definition.StartAt] == nil then invalid("StartAt '" .. definition.StartAt .. "' is not a state") end
+        local function target(name: any, from: string)
+            if type(name) ~= "string" or states[name] == nil then invalid("state '" .. from .. "' transitions to unknown state '" .. tostring(name) .. "'") end
+        end
+        for name, state in pairs(states) do
+            if not is_object(state) or not STATE_TYPES[state.Type] then invalid("state '" .. name .. "' has an unknown Type") end
+            local kind = state.Type
+            if kind == "Choice" then
+                if not is_array(state.Choices) or #state.Choices == 0 then invalid("Choice state '" .. name .. "' needs Choices") end
+                for _, rule in ipairs(state.Choices) do target(rule.Next, name) end
+                if state.Default ~= nil then target(state.Default, name) end
+            elseif kind ~= "Succeed" and kind ~= "Fail" then
+                if state.Next ~= nil then
+                    target(state.Next, name)
+                elseif state.End ~= true then
+                    invalid("state '" .. name .. "' needs Next or End")
+                end
+            end
+            if kind == "Task" or kind == "Parallel" or kind == "Map" then
+                local catches: { Doc } = state.Catch or {}
+                for _, rule in ipairs(catches) do target(rule.Next, name) end
+                local retries: { Doc } = state.Retry or {}
+                for _, rule in ipairs(retries) do
+                    if not is_array(rule.ErrorEquals) then invalid("a Retry rule in '" .. name .. "' needs ErrorEquals") end
+                end
+            end
+            if kind == "Task" and type(state.Resource) ~= "string" then invalid("Task state '" .. name .. "' needs a Resource") end
+            if kind == "Parallel" then
+                if not is_array(state.Branches) then invalid("Parallel state '" .. name .. "' needs Branches") end
+                for _, branch in ipairs(state.Branches) do check(branch) end
+            elseif kind == "Map" then
+                local processor = state.ItemProcessor or state.Iterator
+                if processor == nil then invalid("Map state '" .. name .. "' needs an ItemProcessor") end
+                local config: any = (processor :: Doc).ProcessorConfig
+                if state.ItemReader ~= nil or state.ResultWriter ~= nil or (type(config) == "table" and config.Mode == "DISTRIBUTED") then
+                    invalid("Map state '" .. name .. "' is a distributed Map (ItemReader, ResultWriter or Mode DISTRIBUTED), which is not supported")
+                end
+                if state.MaxConcurrency ~= nil and (type(state.MaxConcurrency) ~= "number" or state.MaxConcurrency < 0 or state.MaxConcurrency % 1 ~= 0) then
+                    invalid("Map state '" .. name .. "' needs a non-negative integer MaxConcurrency")
+                end
+                check(processor)
+            end
+            if kind == "Wait" then
+                if state.Seconds == nil and state.Timestamp == nil and state.SecondsPath == nil and state.TimestampPath == nil then
+                    invalid("Wait state '" .. name .. "' needs Seconds, Timestamp, SecondsPath or TimestampPath")
+                end
             end
         end
-        if kind == "Wait" and state.Seconds == nil and state.Timestamp == nil and state.SecondsPath == nil and state.TimestampPath == nil then
-            invalid("Wait state '" .. name .. "' needs Seconds, Timestamp, SecondsPath or TimestampPath")
-        end
     end
+    check(roto.json_decode(text :: string, "InvalidDefinition"))
     return text :: string
 end
 
@@ -666,9 +724,26 @@ local function save_history(ctx: Ctx, db: Db, arn: string, history: History)
     db.put(ns(ctx, "history-count"), arn, { count = history.count })
 end
 
-local function cancel_timers(db: Db, arn: string)
-    db.cancel("resume/" .. arn)
+-- Cancels every timer and task token of an execution. `cursor` is the in-memory cursor when the
+-- caller has one that is newer than the stored copy.
+local function cancel_timers(ctx: Ctx, db: Db, arn: string, cursor: Cursor?): { string }
     db.cancel("timeout/" .. arn)
+    db.cancel("continue/" .. arn)
+    local current = cursor or (db.get(ns(ctx, "cursor"), arn) :: Cursor?)
+    local children: { string } = {}
+    if current then
+        for tid, thread in pairs((current :: Cursor).threads) do
+            db.cancel(timer_key("resume", arn, tid))
+            db.cancel(timer_key("task", arn, tid))
+            db.cancel(timer_key("heartbeat", arn, tid))
+            db.cancel(timer_key("poll", arn, tid))
+            if thread.waiting then
+                db.delete(ns(ctx, "token"), thread.waiting.token)
+                if thread.waiting.child then table.insert(children, thread.waiting.child) end
+            end
+        end
+    end
+    return children
 end
 
 local SETTLED_EVENTS: { [string]: { string } } = {
@@ -678,7 +753,10 @@ local SETTLED_EVENTS: { [string]: { string } } = {
     TIMED_OUT = { "ExecutionTimedOut", "executionTimedOutEventDetails" },
 }
 
-local function settle(ctx: Ctx, db: Db, exec: Doc, history: History, status: string, output: any, err: any, cause: any)
+local notify_parent: ((Ctx, Db, Doc) -> ())? = nil
+local abort_nested: (Ctx, Db, string) -> () = function() end
+
+local function settle(ctx: Ctx, db: Db, exec: Doc, history: History, status: string, output: any, err: any, cause: any, cursor: Cursor?)
     exec.status = status
     exec.stopDate = os.time()
     if status == "SUCCEEDED" then
@@ -695,14 +773,27 @@ local function settle(ctx: Ctx, db: Db, exec: Doc, history: History, status: str
         emit(history, event[1], event[2], { error = err, cause = cause })
     end
     db.put(ns(ctx, "execution"), exec.executionArn, exec)
+    local children = cancel_timers(ctx, db, exec.executionArn, cursor)
     db.delete(ns(ctx, "cursor"), exec.executionArn)
-    cancel_timers(db, exec.executionArn)
+    if notify_parent then notify_parent(ctx, db, exec) end
+    -- Nested executions this one was waiting for (`.sync`) are stopped with it.
+    for _, child_arn in ipairs(children) do abort_nested(ctx, db, child_arn) end
+end
+
+-- Stops a nested execution that is still running because the Task waiting for it went away.
+abort_nested = function(ctx: Ctx, db: Db, child_arn: string)
+    local child = db.get(ns(ctx, "execution"), child_arn) :: Doc?
+    if child and (child :: Doc).status == "RUNNING" then
+        local child_history = load_history(ctx, db, child_arn)
+        settle(ctx, db, child :: Doc, child_history, "ABORTED", nil, "States.Aborted", "The parent execution was stopped")
+        save_history(ctx, db, child_arn, child_history)
+    end
 end
 
 ---------------------------------------------------------------------------------------------------
 -- Interpreter
 
-type Outcome = { output: any, next: string?, wait: number?, error: string?, cause: string? }
+type Outcome = { output: any, next: string?, wait: number?, error: string?, cause: string?, waiting: string?, queued: any, spawn: { Spawn }? }
 
 local function step_pass(state: Doc, data: any, scope: Scope): any
     local effective = apply_input_path(state, data, scope.context)
@@ -736,6 +827,249 @@ local function step_wait(state: Doc, data: any, scope: Scope): (any, number)
     end
     if type(seconds) ~= "number" or seconds ~= seconds then fail("States.Runtime", "Wait Seconds must be a number") end
     return apply_output_path(state, effective, scope.context), math.max(seconds, 0)
+end
+
+-- The error name and cause of something raised while evaluating a state.
+local function failure_of(failure: any): (string, string)
+    if type(failure) == "table" and failure.asl_error then return failure.asl_error, failure.cause end
+    return "States.Runtime", tostring(failure)
+end
+
+-- Task states call other services in-process (`roto.call`/`roto.try_wire`) while the execution's
+-- transaction is open: the callee commits on its own and is not rolled back if this execution's
+-- own writes are later rolled back.
+local SERVICE_NAMES: { [string]: string } = {
+    dynamodb = "DynamoDb", sqs = "Sqs", sns = "Sns", secretsmanager = "SecretsManager", ssm = "Ssm",
+    kms = "Kms", kinesis = "Kinesis", events = "Events", logs = "Logs", s3 = "S3", lambda = "Lambda",
+}
+
+local function capitalize(text: string): string
+    return string.upper(string.sub(text, 1, 1)) .. string.sub(text, 2)
+end
+
+-- The call a resource ARN stands for: { service, operation } for an SDK integration or "lambda"
+-- for a function (a bare function ARN, or `arn:aws:states:::lambda:invoke`).
+-- "v1" for `.sync`, "v2" for `.sync:2` (the child's output parsed as JSON), nil otherwise.
+local function sync_mode(resource: string): string?
+    if string.match(resource, "%.sync:2$") then return "v2" end
+    if string.match(resource, "%.sync$") then return "v1" end
+    return nil
+end
+
+-- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
+-- executions) through it, because a service cannot call itself through `roto.call`.
+local active: { ctx: Ctx, db: Db }? = nil
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?) -> any
+
+local function task_target(resource: any): (string, string)
+    if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
+    local text: string = string.gsub(resource, "%.waitForTaskToken$", "")
+    local synchronous = string.match(text, "%.sync:?2?$") ~= nil
+    if synchronous then text = string.gsub(text, "%.sync:?2?$", "") end
+    if synchronous and not (string.match(text, ":states:::states:startExecution$") or string.match(text, ":states:::ecs:runTask$")) then
+        fail("States.Runtime", "The service integration pattern of '" .. resource .. "' is not supported; .sync works only for states:startExecution and ecs:runTask")
+    end
+    if string.match(text, "^arn:[^:]*:lambda:[^:]*:[^:]*:function:.") then return "lambda", text end
+    if is_activity(text) then return "activity", text end
+    local integration = string.match(text, "^arn:[^:]*:states:::(.+)$")
+    if integration == nil then fail("States.Runtime", "Unsupported Task resource '" .. text .. "'") end
+    integration = string.gsub(integration :: string, "^aws%-sdk:", "")
+    if integration == "lambda:invoke" then return "lambda", "" end
+    local service, action = string.match(integration :: string, "^([%w%-]+):(%w+)$")
+    if service == nil then fail("States.Runtime", "Unsupported Task resource '" .. text .. "'") end
+    return service :: string, capitalize(action :: string)
+end
+
+local function function_name(arn: string): string
+    return string.match(arn, "function:([^:]+)") or arn
+end
+
+-- Calls the integration; returns the result or raises the Step Functions error for the failure.
+local function describe_doc(exec: Doc, v2: boolean): Doc
+    local out: Doc = {
+        ExecutionArn = exec.executionArn, StateMachineArn = exec.stateMachineArn, Name = exec.name,
+        Status = exec.status, StartDate = exec.startDate, StopDate = exec.stopDate, Input = exec.input,
+        Error = exec.error, Cause = exec.cause,
+    }
+    if exec.output ~= nil then out.Output = if v2 then roto.json_decode(exec.output) else exec.output end
+    return out
+end
+
+-- ECS speaks lowerCamel in its API and PascalCase in Step Functions parameters and results.
+local function recase(value: any, to_upper: boolean): any
+    if type(value) ~= "table" then return value end
+    if is_array(value) then
+        local out = {}
+        for index, item in ipairs(value) do out[index] = recase(item, to_upper) end
+        return roto.array(out)
+    end
+    local out: Doc = {}
+    for key, item in pairs(value) do
+        local name = tostring(key)
+        local first = string.sub(name, 1, 1)
+        out[(if to_upper then string.upper(first) else string.lower(first)) .. string.sub(name, 2)] = recase(item, to_upper)
+    end
+    return out
+end
+
+-- ECS is a Luau service, which `roto.call` does not reach, so it is called as a raw request.
+local function ecs_call(operation: string, body: any): any
+    local response = roto.try_wire("ecs", "POST", "/", {
+        headers = { ["x-amz-target"] = "AmazonEC2ContainerServiceV20141113." .. operation, ["content-type"] = "application/x-amz-json-1.1" },
+        body = roto.json_encode(body),
+    })
+    if not response.ok then fail("Ecs." .. (response.code or "Error"), response.message or "") end
+    return roto.json_decode(response.body :: string)
+end
+
+-- How often a `.sync` integration that has to be polled looks at its target, in virtual seconds.
+local POLL_SECONDS = 5
+
+-- Looks at the tasks of an `ecs:runTask.sync` Task: nil while any is still running, otherwise the
+-- DescribeTasks result and whether a container exited with a failure.
+local function poll_ecs(poll: any): (any, boolean)
+    local described = ecs_call("DescribeTasks", { cluster = poll.cluster, tasks = poll.tasks })
+    local failed = false
+    for _, task in ipairs(described.tasks) do
+        if task.lastStatus ~= "STOPPED" then return nil, false end
+        local containers: { Doc } = task.containers or {}
+        for _, container in ipairs(containers) do
+            if container.exitCode ~= nil and container.exitCode ~= 0 then failed = true end
+        end
+    end
+    return recase(described, true), failed
+end
+
+local function task_call(resource: string, parameters: any, token: string?): any
+    local service, operation = task_target(resource)
+    local label = SERVICE_NAMES[service] or capitalize(service)
+    if service == "states" and operation == "StartExecution" then
+        if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
+        local params: any = parameters or {}
+        local input: any = params.Input
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?) -> any)(
+            (active :: { ctx: Ctx, db: Db }).ctx,
+            { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
+            (active :: { ctx: Ctx, db: Db }).db,
+            if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil
+        )
+        local exec = (active :: { ctx: Ctx, db: Db }).db.get(ns((active :: { ctx: Ctx, db: Db }).ctx, "execution"), started.executionArn) :: Doc
+        if token ~= nil and sync_mode(resource) ~= nil then
+            if exec.status == "RUNNING" then return { Pending = started.executionArn } end
+            return describe_doc(exec, sync_mode(resource) == "v2")
+        end
+        return { ExecutionArn = started.executionArn, StartDate = started.startDate }
+    end
+    if service == "ecs" then
+        local started = recase(ecs_call(operation, recase(parameters or {}, false)), true)
+        if sync_mode(resource) ~= nil and operation == "RunTask" then
+            local arns = {}
+            local tasks: { Doc } = started.Tasks or {}
+            for _, task in ipairs(tasks) do table.insert(arns, task.TaskArn) end
+            if #arns == 0 then fail("Ecs.TaskFailed", roto.json_encode(started.Failures or {})) end
+            return { Pending = arns[1], Poll = { kind = "ecs", cluster = (started.Tasks[1] :: Doc).ClusterArn, tasks = arns } }
+        end
+        return started
+    end
+    if service == "lambda" then
+        local name, payload = operation, parameters
+        if name == "" then
+            name = (parameters or {}).FunctionName
+            payload = (parameters or {}).Payload
+            if type(name) ~= "string" then fail("States.Runtime", "lambda:invoke needs a FunctionName parameter") end
+            name = function_name(name)
+        else
+            name = function_name(name)
+        end
+        local response = roto.try_wire("lambda", "POST", "/2015-03-31/functions/" .. name .. "/invocations", {
+            headers = { ["x-amz-invocation-type"] = "RequestResponse", ["content-type"] = "application/json" },
+            body = roto.json_encode(if payload == nil then {} else payload),
+        })
+        if not response.ok then
+            fail("Lambda." .. (if response.code == "ResourceNotFoundException" then "ResourceNotFoundException" else "ServiceException"), (response.message or ""))
+        end
+        local text = response.body :: string
+        local decoded: any = if text == "" then NULL else roto.json_decode(text)
+        if response.headers and response.headers["x-amz-function-error"] then
+            local detail: any = if type(decoded) == "table" then decoded else {}
+            fail(detail.errorType or "Lambda.Unknown", text)
+        end
+        if resource ~= "" and string.sub(resource, 1, 4) == "arn:" and string.find(resource, ":states:::", 1, true) then
+            return { ExecutedVersion = "$LATEST", Payload = decoded, StatusCode = response.status }
+        end
+        return decoded
+    end
+    local response = roto.try_call(service, operation, parameters or {})
+    if not response.ok then
+        fail(label .. "." .. (response.code or "Error"), response.message or "")
+    end
+    return response.value
+end
+
+local function resource_type(resource: string): string
+    return string.match(resource, "^arn:[^:]*:states:::([^:]+)") or "lambda"
+end
+
+local function waits_for_token(resource: string): boolean
+    return is_activity(resource) or sync_mode(resource) ~= nil or string.find(resource, ".waitForTaskToken", 1, true) ~= nil
+end
+
+-- Applies ResultSelector, ResultPath and OutputPath to a task's raw result.
+local function finish_task(state: Doc, data: any, scope: Scope, result: any): any
+    if state.ResultSelector ~= nil then
+        result = apply_template(state.ResultSelector, { data = result, context = scope.context })
+    end
+    return apply_output_path(state, apply_result_path(state, data, result), scope.context)
+end
+
+-- Returns the state's output, or (input, token) when the task is a callback (`.waitForTaskToken`)
+-- that now waits for SendTaskSuccess/SendTaskFailure.
+local function step_task(state: Doc, data: any, scope: Scope, history: History): (any, string?, any)
+    local effective = apply_input_path(state, data, scope.context)
+    local resource: string = state.Resource
+    local token: string? = nil
+    local context = scope.context
+    if waits_for_token(resource) then
+        token = roto.uuid() .. roto.uuid()
+        context = table.clone(context)
+        context.Task = { Token = token }
+    end
+    local inner: Scope = { data = effective, context = context }
+    local parameters: any = effective
+    if state.Parameters ~= nil then parameters = apply_template(state.Parameters, inner) end
+    if is_activity(resource) then
+        -- The worker fetches the input with GetActivityTask; nothing is called here.
+        emit(history, "ActivityScheduled", "activityScheduledEventDetails", {
+            resource = resource, input = roto.json_encode(parameters), inputDetails = { truncated = false },
+            timeoutInSeconds = state.TimeoutSeconds, heartbeatInSeconds = state.HeartbeatSeconds,
+        })
+        return data, token, { activity = resource, input = roto.json_encode(parameters) }
+    end
+    emit(history, "TaskScheduled", "taskScheduledEventDetails", {
+        resourceType = resource_type(resource), resource = resource,
+        region = "", parameters = roto.json_encode(parameters),
+    })
+    emit(history, "TaskStarted", "taskStartedEventDetails", { resourceType = resource_type(resource), resource = resource })
+    local ok, result = pcall(task_call, resource, parameters, token)
+    if not ok then
+        local code, cause = failure_of(result)
+        emit(history, "TaskFailed", "taskFailedEventDetails", { resourceType = resource_type(resource), resource = resource, error = code, cause = cause })
+        error(result, 0)
+    end
+    if sync_mode(resource) ~= nil and type(result) == "table" and result.Pending == nil then
+        -- The child execution already finished inside the call: no need to wait for it.
+        token = nil
+        if result.Status ~= "SUCCEEDED" then
+            local cause = roto.json_encode(result)
+            emit(history, "TaskFailed", "taskFailedEventDetails", { resourceType = resource_type(resource), resource = resource, error = "States.TaskFailed", cause = cause })
+            fail("States.TaskFailed", cause)
+        end
+    end
+    if token ~= nil then
+        return data, token, if type(result) == "table" and result.Pending then { child = if result.Poll then nil else result.Pending, poll = result.Poll } else nil
+    end
+    emit(history, "TaskSucceeded", "taskSucceededEventDetails", { resourceType = resource_type(resource), resource = resource, output = roto.json_encode(result), outputDetails = { truncated = false } })
+    return finish_task(state, data, scope, result), nil, nil
 end
 
 local function step_choice(name: string, state: Doc, data: any, scope: Scope): (any, string)
@@ -775,20 +1109,135 @@ local function context_object(exec: Doc, name: string, input: any): any
     }
 end
 
-type Cursor = { definition: string, input: any, state: string?, data: any, resumed: { name: string, kind: string, output: any }? }
+-- An execution is a set of threads: the root, plus one per Parallel branch or Map item that is
+-- running. A thread has its own position, retry counters, timers and task token. A thread that
+-- reached a Parallel/Map state is blocked on `fan` until all of its children have finished.
+type Thread = {
+    id: string, parent: string?, slot: number?,
+    -- Where the thread's definition is, relative to the machine definition (the root has none).
+    path: { any },
+    state: string?, data: any,
+    map: { Index: number, Value: any }?,
+    -- A Wait or retry backoff in progress (a timer wakes the thread); `resumed` is the Wait to
+    -- close with an exit event when it does.
+    sleeping: boolean?,
+    resumed: { name: string, kind: string, output: any }?,
+    -- Retry attempts per rule for the state the thread is on, and whether the state is being
+    -- run again (so it is not entered a second time).
+    retries: { [string]: number }?, retrying: boolean?,
+    -- A callback or activity Task waiting for its token, and a result or failure delivered for it
+    -- that the next step applies to the Task state instead of calling the service.
+    waiting: { token: string, heartbeat: number?, child: string?, poll: any? }?,
+    delivered: { output: any?, error: string?, cause: string? }?,
+    -- Results are keyed by branch/item number (a sparse list would not survive JSON).
+    -- `pending` counts children not yet finished, including ones still queued behind MaxConcurrency.
+    fan: { pending: number, total: number, results: { [string]: any }, children: { string }, queue: { any }, started: number, name: string }?,
+}
 
-local function schedule_resume(db: Db, arn: string, delay: number)
-    db.schedule("resume/" .. arn, { delay = delay, payload = { arn = arn, kind = "resume" } })
+type Cursor = {
+    definition: string, input: any, threads: { [string]: Thread }, next_tid: number,
+    done: boolean?, output: any?,
+}
+
+local function schedule_resume(db: Db, arn: string, tid: string, delay: number)
+    db.schedule(timer_key("resume", arn, tid), { delay = delay, payload = { arn = arn, kind = "resume", tid = tid } })
 end
 
 local function exit_state(history: History, kind: string, name: string, output: any)
     emit(history, kind .. "StateExited", "stateExitedEventDetails", { name = name, output = roto.json_encode(output), outputDetails = { truncated = false } })
 end
 
+-- Whether a Retry/Catch rule's ErrorEquals names this error. `States.ALL` matches everything
+-- except `States.DataLimitExceeded`; `States.TaskFailed` matches any task error but a timeout.
+local function error_matches(names: any, code: string): boolean
+    if code == "States.Runtime" then return false end -- never catchable, as in AWS
+    for _, name in ipairs(names or {}) do
+        if name == code or name == "States.ALL" then return true end
+        if name == "States.TaskFailed" and code ~= "States.Timeout" then return true end
+    end
+    return false
+end
+
+-- Backoff in seconds before the Task is run again, or nil when no Retry rule applies (or its
+-- attempts are used up). Counts the attempt against the rule in `cursor.retries`.
+local function retry_delay(state: Doc, cursor: { retries: { [string]: number }? }, code: string): number?
+    local rules: { Doc } = state.Retry or {}
+    for index, rule in ipairs(rules) do
+        if error_matches(rule.ErrorEquals, code) then
+            local retries = cursor.retries or {}
+            cursor.retries = retries
+            local key = tostring(index)
+            local used = retries[key] or 0
+            if used >= (rule.MaxAttempts or 3) then return nil end
+            retries[key] = used + 1
+            local interval: number = rule.IntervalSeconds or 1
+            local rate: number = rule.BackoffRate or 2
+            return interval * rate ^ used
+        end
+    end
+    return nil
+end
+
+local function find_catcher(state: Doc, code: string): Doc?
+    local rules: { Doc } = state.Catch or {}
+    for _, rule in ipairs(rules) do
+        if error_matches(rule.ErrorEquals, code) then return rule end
+    end
+    return nil
+end
+
+-- What a Parallel or Map state starts: one child thread per branch or item. `key` locates the
+-- child's definition inside the state; `data` is its input.
+type Spawn = { key: { any }, data: any, map: { Index: number, Value: any }? }
+
+local function finish_fanout(state: Doc, data: any, scope: Scope, results: { any }): any
+    local result: any = roto.array(results)
+    if state.ResultSelector ~= nil then
+        result = apply_template(state.ResultSelector, { data = result, context = scope.context })
+    end
+    return apply_output_path(state, apply_result_path(state, data, result), scope.context)
+end
+
+local function spawn_parallel(state: Doc, data: any, scope: Scope): { Spawn }
+    local effective = apply_input_path(state, data, scope.context)
+    local spawns: { Spawn } = {}
+    for index = 1, #state.Branches do
+        table.insert(spawns, { key = { "Branches", index }, data = effective })
+    end
+    return spawns
+end
+
+local function spawn_map(state: Doc, data: any, scope: Scope): { Spawn }
+    local effective = apply_input_path(state, data, scope.context)
+    local inner: Scope = { data = effective, context = scope.context }
+    local items: any = effective
+    if state.ItemsPath ~= nil then items = resolve(state.ItemsPath, inner) end
+    if not is_array(items) then fail("States.Runtime", "The Map state's items must be an array") end
+    local key = if state.ItemProcessor ~= nil then "ItemProcessor" else "Iterator"
+    local selector = state.ItemSelector or state.Parameters
+    local spawns: { Spawn } = {}
+    for index, item in ipairs(items :: { any }) do
+        local map = { Index = index - 1, Value = item }
+        local context = table.clone(scope.context)
+        context.Map = { Item = map }
+        local input = item
+        if selector ~= nil then input = apply_template(selector, { data = effective, context = context }) end
+        table.insert(spawns, { key = { key }, data = input, map = map })
+    end
+    return spawns
+end
+
 -- One state's effect on its input, without touching storage.
-local function evaluate_state(name: string, state: Doc, data: any, scope: Scope): Outcome
+local function evaluate_state(name: string, state: Doc, data: any, scope: Scope, history: History): Outcome
     local kind: string = state.Type
-    if kind == "Pass" then
+    if kind == "Parallel" then
+        return { output = data, spawn = spawn_parallel(state, data, scope) }
+    elseif kind == "Map" then
+        return { output = data, spawn = spawn_map(state, data, scope) }
+    elseif kind == "Task" then
+        local output, token, queued = step_task(state, data, scope, history)
+        return { output = output, next = state.Next, waiting = token, queued = queued }
+    elseif kind == "Pass" then
         return { output = step_pass(state, data, scope), next = state.Next }
     elseif kind == "Wait" then
         local output, seconds = step_wait(state, data, scope)
@@ -803,78 +1252,278 @@ local function evaluate_state(name: string, state: Doc, data: any, scope: Scope)
     return { output = data, error = err or "", cause = cause }
 end
 
--- The error name and cause of something raised while evaluating a state.
-local function failure_of(failure: any): (string, string)
-    if type(failure) == "table" and failure.asl_error then return failure.asl_error, failure.cause end
-    return "States.Runtime", tostring(failure)
+local function thread_ids(cursor: Cursor): { string }
+    local ids: { string } = {}
+    for tid in pairs(cursor.threads) do table.insert(ids, tid) end
+    table.sort(ids, function(x: string, y: string) return (tonumber(string.sub(x, 2)) or 0) < (tonumber(string.sub(y, 2)) or 0) end)
+    return ids
 end
 
--- Runs the execution from its cursor until it settles, waits, reaches a state that is not
--- interpreted, or has used its step allowance.
-local function run(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History)
+local function runnable(thread: Thread): boolean
+    if thread.sleeping or thread.waiting then return false end
+    return thread.fan == nil or thread.fan.pending <= 0
+end
+
+-- Runs the execution's threads, one state transition at a time and round-robin, until the
+-- execution settles or every thread is waiting (on a timer, a task token, or its children), or the
+-- step allowance is used up (a follow-up job continues).
+local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History)
     local arn: string = exec.executionArn
-    local definition = roto.json_decode(cursor.definition)
+    local root: Doc = roto.json_decode(cursor.definition)
+    local failure: { code: string, cause: string }? = nil
+
     local function persist()
         db.put(ns(ctx, "cursor"), arn, cursor)
         save_history(ctx, db, arn, history)
     end
-    if cursor.resumed then
-        exit_state(history, cursor.resumed.kind, cursor.resumed.name, cursor.resumed.output)
-        cursor.resumed = nil
+
+    local function definition_of(thread: Thread): Doc
+        local def: any = root
+        for _, key in ipairs(thread.path) do def = def[key] end
+        return def
     end
-    local steps = 0
-    while true do
-        local name = cursor.state
-        if name == nil then
-            settle(ctx, db, exec, history, "SUCCEEDED", roto.json_encode(cursor.data), nil, nil)
-            save_history(ctx, db, arn, history)
-            return
+
+    -- Removes everything a thread's children left behind: threads, timers and task tokens.
+    local function drop_children(thread: Thread)
+        local fan = thread.fan
+        if not fan then return end
+        for _, cid in ipairs(fan.children) do
+            local child = cursor.threads[cid]
+            if child then
+                drop_children(child)
+                db.cancel(timer_key("resume", arn, cid))
+                db.cancel(timer_key("task", arn, cid))
+                db.cancel(timer_key("heartbeat", arn, cid))
+                db.cancel(timer_key("poll", arn, cid))
+                if child.waiting then
+                    db.delete(ns(ctx, "token"), child.waiting.token)
+                    if child.waiting.child then abort_nested(ctx, db, child.waiting.child) end
+                end
+                cursor.threads[cid] = nil
+            end
         end
-        local state: Doc = definition.States[name]
+        thread.fan = nil
+    end
+
+    -- A state failed. Retry rules first (a backoff on a timer), then Catch rules; an error nobody
+    -- handles fails the enclosing Parallel/Map state, or the execution.
+    local function fail_state(thread: Thread, name: string, state: Doc, code: string, cause: string)
         local kind: string = state.Type
-        if not INTERPRETED[kind] then
-            persist() -- stays RUNNING here: see the header comment
+        if kind == "Task" or kind == "Parallel" or kind == "Map" then
+            local delay = retry_delay(state, thread, code)
+            if delay ~= nil then
+                thread.retrying = true
+                thread.sleeping = true
+                schedule_resume(db, arn, thread.id, delay)
+                return
+            end
+            local catcher = find_catcher(state, code)
+            if catcher ~= nil then
+                local caught = apply_result_path(catcher, thread.data, { Error = code, Cause = cause })
+                exit_state(history, kind, name, caught)
+                thread.data = caught
+                thread.state = catcher.Next
+                thread.retries = nil
+                return
+            end
+        end
+        if thread.parent then
+            local parent = cursor.threads[thread.parent :: string]
+            drop_children(parent)
+            local parent_name = parent.state :: string
+            fail_state(parent, parent_name, definition_of(parent).States[parent_name], code, cause)
+        else
+            failure = { code = code, cause = cause }
+        end
+    end
+
+    -- Starts up to `count` of the fan-out's queued branches or items as child threads.
+    local function launch(thread: Thread, count: number)
+        local fan = thread.fan :: { pending: number, total: number, results: { [string]: any }, children: { string }, queue: { any }, started: number, name: string }
+        for _ = 1, count do
+            local spawn: Spawn? = table.remove(fan.queue, 1)
+            if spawn == nil then return end
+            fan.started += 1
+            local id = "t" .. cursor.next_tid
+            cursor.next_tid += 1
+            local path = table.clone(thread.path)
+            table.insert(path, "States")
+            table.insert(path, fan.name)
+            for _, key in ipairs(spawn.key) do table.insert(path, key) end
+            local child: Thread = { id = id, parent = thread.id, slot = fan.started, path = path, state = nil, data = spawn.data, map = spawn.map }
+            child.state = definition_of(child).StartAt
+            cursor.threads[id] = child
+            table.insert(fan.children, id)
+        end
+    end
+
+    local function complete(thread: Thread)
+        if thread.parent == nil then
+            cursor.done = true
+            cursor.output = thread.data
             return
         end
-        if steps >= MAX_STEPS then
-            schedule_resume(db, arn, 0)
-            persist()
+        local parent = cursor.threads[thread.parent :: string]
+        local fan = parent.fan :: { pending: number, total: number, results: { [string]: any }, children: { string }, queue: { any }, started: number, name: string }
+        fan.results[tostring(thread.slot)] = thread.data
+        fan.pending -= 1
+        cursor.threads[thread.id] = nil
+        launch(parent, 1) -- a MaxConcurrency slot is free
+    end
+
+    -- `limit` is MaxConcurrency: how many children may run at once (0 or nil means all).
+    local function start_children(thread: Thread, name: string, spawns: { Spawn }, limit: number?)
+        thread.fan = { pending = #spawns, total = #spawns, results = {}, children = {}, queue = spawns, started = 0, name = name }
+        local first = #spawns
+        if limit ~= nil and limit > 0 and limit < first then first = limit end
+        launch(thread, first)
+    end
+
+    local function advance(thread: Thread)
+        if thread.resumed then
+            exit_state(history, thread.resumed.kind, thread.resumed.name, thread.resumed.output)
+            thread.resumed = nil
+        end
+        local name = thread.state
+        if name == nil then
+            complete(thread)
             return
         end
-        if history.count + 2 > MAX_EVENTS then
-            settle(ctx, db, exec, history, "FAILED", nil, "States.Runtime", "The execution reached the maximum number of history events (" .. MAX_EVENTS .. ")")
-            save_history(ctx, db, arn, history)
-            return
+        local state: Doc = definition_of(thread).States[name]
+        local kind: string = state.Type
+        if not thread.retrying and thread.fan == nil then
+            emit(history, kind .. "StateEntered", "stateEnteredEventDetails", { name = name, input = roto.json_encode(thread.data), inputDetails = { truncated = false } })
         end
-        steps += 1
-        emit(history, kind .. "StateEntered", "stateEnteredEventDetails", { name = name, input = roto.json_encode(cursor.data), inputDetails = { truncated = false } })
-        local scope: Scope = { data = cursor.data, context = context_object(exec, name, cursor.input) }
-        local ok, outcome = pcall(evaluate_state, name, state, cursor.data, scope)
+        thread.retrying = nil
+        local context = context_object(exec, name, cursor.input)
+        if thread.map then context.Map = { Item = thread.map } end
+        local scope: Scope = { data = thread.data, context = context }
+        local attempts = 0
+        for _, count in pairs(thread.retries or {}) do attempts += count end
+        context.State.RetryCount = attempts
+        local ok, outcome
+        local delivered = thread.delivered
+        thread.delivered = nil
+        local fan = thread.fan
+        if fan ~= nil then
+            -- Every child finished: gather their outputs in order.
+            thread.fan = nil
+            ok, outcome = pcall(function()
+                local results = {}
+                for slot = 1, fan.total do table.insert(results, fan.results[tostring(slot)]) end
+                return { output = finish_fanout(state, thread.data, scope, results), next = state.Next }
+            end)
+        elseif delivered ~= nil and delivered.error ~= nil then
+            if is_activity(state.Resource) then
+                local timed_out = delivered.error == "States.Timeout"
+                emit(history, if timed_out then "ActivityTimedOut" else "ActivityFailed", if timed_out then "activityTimedOutEventDetails" else "activityFailedEventDetails", { error = delivered.error, cause = delivered.cause or "" })
+            else
+                emit(history, "TaskFailed", "taskFailedEventDetails", { resourceType = resource_type(state.Resource), resource = state.Resource, error = delivered.error, cause = delivered.cause or "" })
+            end
+            ok, outcome = false, { asl_error = delivered.error, cause = delivered.cause or "" }
+        elseif delivered ~= nil then
+            if is_activity(state.Resource) then
+                emit(history, "ActivitySucceeded", "activitySucceededEventDetails", { output = roto.json_encode(delivered.output), outputDetails = { truncated = false } })
+            else
+                emit(history, "TaskSucceeded", "taskSucceededEventDetails", { resourceType = resource_type(state.Resource), resource = state.Resource, output = roto.json_encode(delivered.output), outputDetails = { truncated = false } })
+            end
+            local result = finish_task(state, thread.data, scope, delivered.output)
+            ok, outcome = true, { output = result, next = state.Next }
+        else
+            ok, outcome = pcall(evaluate_state, name, state, thread.data, scope, history)
+        end
         if not ok then
             local code, cause = failure_of(outcome)
-            settle(ctx, db, exec, history, "FAILED", nil, code, cause)
-            save_history(ctx, db, arn, history)
+            fail_state(thread, name, state, code, cause)
             return
         end
         local result: Outcome = outcome :: Outcome
         if kind == "Fail" then
-            settle(ctx, db, exec, history, "FAILED", nil, result.error, result.cause)
-            save_history(ctx, db, arn, history)
+            fail_state(thread, name, state, result.error or "", result.cause or "")
+            return
+        end
+        if result.spawn then
+            start_children(thread, name, result.spawn, if kind == "Map" and type(state.MaxConcurrency) == "number" then state.MaxConcurrency else nil)
+            return
+        end
+        if result.waiting then
+            -- A callback or activity Task: park the thread until SendTaskSuccess/SendTaskFailure,
+            -- the Task's TimeoutSeconds or a missed heartbeat delivers an outcome.
+            local heartbeat: number? = if type(state.HeartbeatSeconds) == "number" then state.HeartbeatSeconds else nil
+            thread.waiting = { token = result.waiting, heartbeat = heartbeat, child = if result.queued then result.queued.child else nil, poll = if result.queued then result.queued.poll else nil }
+            db.put(ns(ctx, "token"), result.waiting, { arn = arn, tid = thread.id })
+            if type(state.TimeoutSeconds) == "number" then
+                db.schedule(timer_key("task", arn, thread.id), { delay = state.TimeoutSeconds, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
+            end
+            if heartbeat ~= nil then
+                db.schedule(timer_key("heartbeat", arn, thread.id), { delay = heartbeat, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
+            end
+            if result.queued and result.queued.poll then
+                db.schedule(timer_key("poll", arn, thread.id), { delay = POLL_SECONDS, payload = { arn = arn, kind = "poll", tid = thread.id } })
+            end
+            if result.queued and result.queued.activity then
+                -- Ordered by the virtual clock, then by token for a stable tie-break.
+                local id = string.format("%016d", math.floor(roto.now() * 1000)) .. result.waiting
+                db.put(ns(ctx, "activity-queue") .. "/" .. result.queued.activity, id, { id = id, token = result.waiting, input = result.queued.input, arn = arn })
+            end
             return
         end
         if kind == "Wait" and (result.wait :: number) > 0 then
             -- Wait on a timer; the exit event and the next state happen when it fires.
-            cursor.data = result.output
-            cursor.state = result.next
-            cursor.resumed = { name = name, kind = kind, output = result.output }
-            schedule_resume(db, arn, result.wait :: number)
-            persist()
+            thread.data = result.output
+            thread.state = result.next
+            thread.resumed = { name = name, kind = kind, output = result.output }
+            thread.sleeping = true
+            schedule_resume(db, arn, thread.id, result.wait :: number)
             return
         end
         exit_state(history, kind, name, result.output)
-        cursor.data = result.output
-        cursor.state = result.next
+        thread.data = result.output
+        thread.state = result.next
+        thread.retries = nil
     end
+
+    local steps = 0
+    while failure == nil and not cursor.done do
+        local progressed = false
+        for _, tid in ipairs(thread_ids(cursor)) do
+            local thread = cursor.threads[tid]
+            if thread and runnable(thread) then
+                if steps >= MAX_STEPS then
+                    db.schedule("continue/" .. arn, { delay = 0, payload = { arn = arn, kind = "continue" } })
+                    persist()
+                    return
+                end
+                if history.count + 2 > MAX_EVENTS then
+                    settle(ctx, db, exec, history, "FAILED", nil, "States.Runtime", "The execution reached the maximum number of history events (" .. MAX_EVENTS .. ")", cursor)
+                    save_history(ctx, db, arn, history)
+                    return
+                end
+                steps += 1
+                advance(thread)
+                progressed = true
+                if failure ~= nil or cursor.done then break end
+            end
+        end
+        if not progressed then break end
+    end
+    if failure ~= nil then
+        settle(ctx, db, exec, history, "FAILED", nil, failure.code, failure.cause, cursor)
+        save_history(ctx, db, arn, history)
+    elseif cursor.done then
+        settle(ctx, db, exec, history, "SUCCEEDED", roto.json_encode(cursor.output), nil, nil, cursor)
+        save_history(ctx, db, arn, history)
+    else
+        persist()
+    end
+end
+
+local function run(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History)
+    local previous = active
+    active = { ctx = ctx, db = db }
+    local ok, err = pcall(run_threads, ctx, db, exec, cursor, history)
+    active = previous
+    if not ok then error(err, 0) end
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -996,7 +1645,7 @@ function M.ListStateMachines(ctx: Ctx, input: any, db: Db)
     return out
 end
 
-function M.StartExecution(ctx: Ctx, input: any, db: Db)
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?): any
     local sm = machine(ctx, db, input.stateMachineArn)
     local payload = input.input or "{}"
     valid_json(payload, "input")
@@ -1031,8 +1680,14 @@ function M.StartExecution(ctx: Ctx, input: any, db: Db)
         db.schedule("timeout/" .. arn, { delay = timeout, payload = { arn = arn, kind = "timeout" } })
     end
     db.put(ns(ctx, "execution"), arn, exec)
-    run(ctx, db, exec, { definition = sm.definition, input = data, state = definition.StartAt, data = data }, history)
+    if parent then db.put(ns(ctx, "parent"), arn, { token = parent.token, v2 = parent.v2 }) end
+    local root: Thread = { id = "t0", path = {}, state = definition.StartAt, data = data }
+    run(ctx, db, exec, { definition = sm.definition, input = data, threads = { t0 = root }, next_tid = 1 }, history)
     return { executionArn = arn, startDate = now }
+end
+
+function M.StartExecution(ctx: Ctx, input: any, db: Db)
+    return start_execution(ctx, input, db, nil)
 end
 
 -- Timers: a Wait that finished, a looping machine that yielded, or TimeoutSeconds expiring.
@@ -1048,7 +1703,179 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     end
     local cursor = db.get(ns(ctx, "cursor"), arn) :: Cursor?
     if not cursor then return {} end
+    local kind = job.payload.kind
+    local thread = cursor.threads[job.payload.tid or ""]
+    if kind == "resume" then
+        if not thread then return {} end
+        thread.sleeping = nil
+    elseif kind == "poll" then
+        if not thread or not thread.waiting or not thread.waiting.poll then return {} end
+        local ok, result, failed = pcall(poll_ecs, thread.waiting.poll)
+        if ok and result == nil then
+            -- Still running: look again later.
+            db.schedule(timer_key("poll", arn, thread.id), { delay = POLL_SECONDS, payload = { arn = arn, kind = "poll", tid = thread.id } })
+            return {}
+        end
+        db.delete(ns(ctx, "token"), thread.waiting.token)
+        db.cancel(timer_key("task", arn, thread.id))
+        db.cancel(timer_key("heartbeat", arn, thread.id))
+        thread.waiting = nil
+        thread.retrying = true
+        if not ok then
+            local code, cause = failure_of(result)
+            thread.delivered = { error = code, cause = cause }
+        elseif failed then
+            thread.delivered = { error = "States.TaskFailed", cause = roto.json_encode(result) }
+        else
+            thread.delivered = { output = result }
+        end
+    elseif kind == "task_timeout" then
+        if not thread or not thread.waiting then return {} end
+        db.delete(ns(ctx, "token"), thread.waiting.token)
+        db.cancel(timer_key("task", arn, thread.id))
+        db.cancel(timer_key("heartbeat", arn, thread.id))
+        db.cancel(timer_key("poll", arn, thread.id))
+        thread.waiting = nil
+        thread.retrying = true
+        thread.delivered = { error = "States.Timeout", cause = "The task timed out" }
+    end
     run(ctx, db, exec, cursor, history)
+    return {}
+end
+
+-- The execution, cursor, history and thread a task token belongs to, or the AWS error for a bad token.
+local function waiting_task(ctx: Ctx, db: Db, token: any): (Doc, Cursor, History, Thread)
+    if type(token) ~= "string" or token == "" or #token > 1024 then
+        roto.error("InvalidToken", "Invalid Token: 'Invalid token'")
+    end
+    local entry = db.get(ns(ctx, "token"), token) :: Doc?
+    if not entry then roto.error("TaskDoesNotExist", "Task Does Not Exist: '" .. token .. "'") end
+    local arn: string = (entry :: Doc).arn
+    local exec = db.get(ns(ctx, "execution"), arn) :: Doc?
+    local cursor = db.get(ns(ctx, "cursor"), arn) :: Cursor?
+    local thread = if cursor then cursor.threads[(entry :: Doc).tid or ""] else nil
+    if not exec or exec.status ~= "RUNNING" or not cursor or not thread or not thread.waiting or thread.waiting.token ~= token then
+        roto.error("TaskTimedOut", "Task Timed Out: '" .. token .. "'")
+    end
+    return exec :: Doc, cursor :: Cursor, load_history(ctx, db, arn), thread :: Thread
+end
+
+local function deliver(ctx: Ctx, db: Db, input: any, delivered: { output: any?, error: string?, cause: string? })
+    local exec, cursor, history, thread = waiting_task(ctx, db, input.taskToken)
+    local arn: string = exec.executionArn
+    db.delete(ns(ctx, "token"), (thread.waiting :: { token: string, heartbeat: number?, child: string?, poll: any? }).token)
+    db.cancel(timer_key("task", arn, thread.id))
+    db.cancel(timer_key("heartbeat", arn, thread.id))
+    db.cancel(timer_key("poll", arn, thread.id))
+    thread.waiting = nil
+    thread.retrying = true
+    thread.delivered = delivered
+    run(ctx, db, exec, cursor, history)
+end
+
+-- A nested execution started by `states:startExecution.sync` finished: hand its outcome to the
+-- parent Task as if a worker had called SendTaskSuccess/SendTaskFailure.
+notify_parent = function(ctx: Ctx, db: Db, exec: Doc)
+    local link = db.get(ns(ctx, "parent"), exec.executionArn) :: Doc?
+    if not link then return end
+    db.delete(ns(ctx, "parent"), exec.executionArn)
+    local token = (link :: Doc).token
+    if not db.get(ns(ctx, "token"), token) then return end -- the parent has not parked yet
+    local described = describe_doc(exec, (link :: Doc).v2 == true)
+    if exec.status == "SUCCEEDED" then
+        deliver(ctx, db, { taskToken = token }, { output = described })
+    else
+        deliver(ctx, db, { taskToken = token }, { error = "States.TaskFailed", cause = roto.json_encode(described) })
+    end
+end
+
+function M.SendTaskSuccess(ctx: Ctx, input: any, db: Db)
+    valid_json(input.output, "output")
+    deliver(ctx, db, input, { output = roto.json_decode(input.output) })
+    return {}
+end
+
+function M.SendTaskFailure(ctx: Ctx, input: any, db: Db)
+    deliver(ctx, db, input, { error = input.error or "", cause = input.cause or "" })
+    return {}
+end
+
+function M.SendTaskHeartbeat(ctx: Ctx, input: any, db: Db)
+    local exec, _, _, thread = waiting_task(ctx, db, input.taskToken)
+    local heartbeat = (thread.waiting :: { token: string, heartbeat: number?, child: string?, poll: any? }).heartbeat
+    if heartbeat ~= nil then
+        local arn: string = exec.executionArn
+        db.schedule(timer_key("heartbeat", arn, thread.id), { delay = heartbeat, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
+    end
+    return {}
+end
+
+---------------------------------------------------------------------------------------------------
+-- Activities
+
+local function activity_arn(ctx: Ctx, name: string): string
+    return "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":activity:" .. name
+end
+
+local function activity(ctx: Ctx, db: Db, arn: any): Doc
+    if type(arn) ~= "string" or not is_activity(arn) then roto.error("InvalidArn", "Invalid Arn: '" .. tostring(arn) .. "'") end
+    local doc = db.get(ns(ctx, "activity"), arn) :: Doc?
+    if not doc then roto.error("ActivityDoesNotExist", "Activity Does Not Exist: '" .. arn .. "'") end
+    return doc :: Doc
+end
+
+function M.CreateActivity(ctx: Ctx, input: any, db: Db)
+    local name = roto.required(input, "name", "InvalidName")
+    if #name > 80 or string.find(name, '[<>{}%[%]?*"#%%\\^|~`$&,;:/%c ]') then
+        roto.error("InvalidName", "Invalid Name: '" .. name .. "'")
+    end
+    local arn = activity_arn(ctx, name)
+    local existing = db.get(ns(ctx, "activity"), arn) :: Doc?
+    if existing then return { activityArn = arn, creationDate = (existing :: Doc).creationDate } end
+    local doc: Doc = { activityArn = arn, name = name, creationDate = os.time() }
+    if input.tags ~= nil then doc.tags = tags_from(input.tags) end
+    db.put(ns(ctx, "activity"), arn, doc)
+    return { activityArn = arn, creationDate = doc.creationDate }
+end
+
+function M.DescribeActivity(ctx: Ctx, input: any, db: Db)
+    local doc = activity(ctx, db, input.activityArn)
+    return { activityArn = doc.activityArn, name = doc.name, creationDate = doc.creationDate }
+end
+
+function M.DeleteActivity(ctx: Ctx, input: any, db: Db)
+    local doc = activity(ctx, db, input.activityArn)
+    db.delete(ns(ctx, "activity"), doc.activityArn)
+    return {}
+end
+
+function M.ListActivities(ctx: Ctx, input: any, db: Db)
+    local docs = db.list(ns(ctx, "activity")) :: { Doc }
+    local out = {}
+    for _, doc in ipairs(docs) do
+        table.insert(out, { activityArn = doc.activityArn, name = doc.name, creationDate = doc.creationDate })
+    end
+    return roto.page(input, out, "activities", 100, 1000)
+end
+
+-- Hands the oldest queued task to a worker. AWS holds the request open for up to 60 seconds; with
+-- nothing queued this answers at once with no task token, which is what a poller sees on timeout.
+function M.GetActivityTask(ctx: Ctx, input: any, db: Db)
+    local doc = activity(ctx, db, input.activityArn)
+    local space = ns(ctx, "activity-queue") .. "/" .. doc.activityArn
+    for _, task in ipairs(db.list(space) :: { Doc }) do
+        db.delete(space, task.id)
+        -- A task whose execution already moved on (timeout, stop) has no token any more: skip it.
+        if db.get(ns(ctx, "token"), task.token) then
+            local exec = db.get(ns(ctx, "execution"), task.arn) :: Doc?
+            if exec then
+                local history = load_history(ctx, db, task.arn)
+                emit(history, "ActivityStarted", "activityStartedEventDetails", { workerName = input.workerName })
+                save_history(ctx, db, task.arn, history)
+            end
+            return { taskToken = task.token, input = task.input }
+        end
+    end
     return {}
 end
 
@@ -1090,7 +1917,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
     if not is_object(state) or not STATE_TYPES[state.Type] then
         roto.error("ValidationException", "Invalid State Machine Definition: the state needs a known Type")
     end
-    if not INTERPRETED[state.Type] then
+    if state.Type == "Parallel" or state.Type == "Map" then
         roto.error("ValidationException", state.Type .. " states cannot be tested here yet")
     end
     local payload = input.input or "{}"
@@ -1102,7 +1929,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         name = "TestState", roleArn = input.roleArn, startDate = os.time(),
     }
     local scope: Scope = { data = data, context = context_object(fake, "TestState", data) }
-    local ok, outcome = pcall(evaluate_state, "TestState", state, data, scope)
+    local ok, outcome = pcall(evaluate_state, "TestState", state, data, scope, { events = {}, count = 0 })
     if not ok then
         local code, cause = failure_of(outcome)
         return { status = "FAILED", error = code, cause = cause }

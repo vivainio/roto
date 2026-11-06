@@ -8,6 +8,7 @@ states and execution timeouts finish without waiting.
 import json
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -35,13 +36,24 @@ def code(call):
     raise AssertionError("expected an error")
 
 
+# Lambda functions with command executors, and a queue, for the Task state checks.
+SETUP = """
+roto.lambda.fn("echo", { timeout = 5, executor = { command = { "sh", "-c", "cat" } } })
+roto.lambda.fn("boom", { timeout = 5, executor = { command = { "sh", "-c", "echo oops >&2; exit 1" } } })
+roto.aws.sqs.CreateQueue({ QueueName = "jobs" })
+"""
+
+
 class Server:
     def __init__(self):
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
+        self.setup = tempfile.NamedTemporaryFile("w", suffix=".luau", delete=False)
+        self.setup.write(SETUP)
+        self.setup.close()
         self.proc = subprocess.Popen(
             [str(ROOT / "target/debug/roto-server"), "--port", str(self.port), "--ephemeral",
-             "--lua-services", str(ROOT / "services")],
+             "--lua-services", str(ROOT / "services"), "--setup", self.setup.name],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -52,6 +64,8 @@ class Server:
                 time.sleep(0.1)
         else:
             raise AssertionError("server did not start")
+        self.sqs = boto3.client("sqs", endpoint_url=self.url, aws_access_key_id="test",
+                                aws_secret_access_key="x", region_name="us-east-1")
         self.sf = boto3.client("stepfunctions", endpoint_url=self.url, aws_access_key_id="test",
                                aws_secret_access_key="x", region_name="us-east-1",
                                config=Config(retries={"max_attempts": 1}, inject_host_prefix=False))
@@ -59,6 +73,7 @@ class Server:
     def stop(self):
         self.proc.terminate()
         self.proc.wait(10)
+        Path(self.setup.name).unlink(missing_ok=True)
 
     def post(self, path, body):
         request = urllib.request.Request(self.url + path, data=json.dumps(body).encode(), method="POST")
@@ -224,17 +239,391 @@ def check_wait_and_clock(s):
     assert s.status(stopped)["cause"] == "by hand"
 
 
-def check_tasks_stay_running(s):
-    machine = s.machine("tasky", {"StartAt": "Prep", "States": {
-        "Prep": {"Type": "Pass", "Result": {"ready": True}, "Next": "Work"},
-        "Work": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke", "End": True}}})
-    arn = s.run(machine)
-    assert s.status(arn)["status"] == "RUNNING"
-    assert s.events(arn) == ["ExecutionStarted", "PassStateEntered", "PassStateExited"]
-    s.complete(arn, status="SUCCEEDED", output='{"by":"fixture"}')
+def check_parallel_and_map(s):
+    machine = s.machine("fanout", {"StartAt": "Both", "States": {
+        "Both": {"Type": "Parallel", "ResultPath": "$.both", "Next": "Each", "Branches": [
+            {"StartAt": "A", "States": {"A": {"Type": "Pass", "Result": "a", "End": True}}},
+            {"StartAt": "Echo", "States": {"Echo": {
+                "Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:echo",
+                "Parameters": {"seen.$": "$.items"}, "End": True}}}]},
+        "Each": {"Type": "Map", "ItemsPath": "$.items", "ResultPath": "$.doubled",
+                 "ItemSelector": {"v.$": "$$.Map.Item.Value", "i.$": "$$.Map.Item.Index", "k.$": "$.k"},
+                 "ItemProcessor": {"StartAt": "Pick", "States": {
+                     "Pick": {"Type": "Choice", "Choices": [
+                         {"Variable": "$.v", "NumericGreaterThan": 1, "Next": "Big"}], "Default": "Small"},
+                     "Big": {"Type": "Pass", "Parameters": {"r.$": "States.MathAdd($.v, $.v)", "i.$": "$.i"}, "End": True},
+                     "Small": {"Type": "Pass", "Parameters": {"r.$": "$.v", "i.$": "$.i"}, "End": True}}},
+                 "End": True}}})
+    arn = s.run(machine, {"items": [1, 2, 3], "k": "x"})
     done = s.status(arn)
-    assert (done["status"], done["output"]) == ("SUCCEEDED", '{"by":"fixture"}'), done
-    assert s.events(arn)[-1] == "ExecutionSucceeded"
+    assert done["status"] == "SUCCEEDED", done
+    out = json.loads(done["output"])
+    assert out["both"] == ["a", {"seen": [1, 2, 3]}], out
+    assert out["doubled"] == [{"r": 1, "i": 0}, {"r": 4, "i": 1}, {"r": 6, "i": 2}], out
+
+    # A failing branch fails the state; Catch and Retry apply to it. A Retry inside a branch waits
+    # on a timer like any other, without holding up its sibling.
+    machine = s.machine("fanout-fail", {"StartAt": "Both", "States": {
+        "Both": {"Type": "Parallel", "Catch": [{"ErrorEquals": ["Oops"], "ResultPath": "$.err", "Next": "Ok"}],
+                 "Branches": [
+                     {"StartAt": "Fine", "States": {"Fine": {"Type": "Pass", "End": True}}},
+                     {"StartAt": "Boom", "States": {"Boom": {
+                         "Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:boom",
+                         "Retry": [{"ErrorEquals": ["States.ALL"], "MaxAttempts": 2}],
+                         "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Bad"}], "Next": "Fine2"},
+                         "Fine2": {"Type": "Pass", "End": True},
+                         "Bad": {"Type": "Fail", "Error": "Oops", "Cause": "branch failed"}}}],
+                 "End": True},
+        "Ok": {"Type": "Succeed"}}})
+    arn = s.run(machine, {})
+    assert s.status(arn)["status"] == "RUNNING"  # the branch is backing off before its retry
+    s.advance(10)
+    done = s.status(arn)
+    assert done["status"] == "SUCCEEDED" and json.loads(done["output"])["err"]["Error"] == "Oops", done
+
+
+def check_branches_run_concurrently(s):
+    queue_url = s.sqs.get_queue_url(QueueName="jobs")["QueueUrl"]
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    # Branch A waits 60s then answers; branch B is a callback that needs a token.
+    machine = s.machine("concurrent", {"StartAt": "Both", "States": {
+        "Both": {"Type": "Parallel", "End": True, "Branches": [
+            {"StartAt": "Sleep", "States": {
+                "Sleep": {"Type": "Wait", "Seconds": 60, "Next": "A"},
+                "A": {"Type": "Pass", "Result": "slept", "End": True}}},
+            {"StartAt": "Ask", "States": {"Ask": {
+                "Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+                "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "$$.Task.Token"}, "End": True}}}]}}})
+    arn = s.run(machine, {})
+    token = s.sqs.receive_message(QueueUrl=queue_url)["Messages"][0]["Body"]  # B started while A waits
+    s.advance(60)
+    assert s.status(arn)["status"] == "RUNNING"  # A is done; B still needs its token
+    s.sf.send_task_success(taskToken=token, output='"asked"')
+    done = s.status(arn)
+    assert (done["status"], json.loads(done["output"])) == ("SUCCEEDED", ["slept", "asked"]), done
+
+    # A Map whose items each wait for a token; the results keep the item order whichever finishes first.
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    machine = s.machine("map-callbacks", {"StartAt": "Each", "States": {"Each": {
+        "Type": "Map", "ItemsPath": "$.items", "End": True,
+        "ItemSelector": {"item.$": "$$.Map.Item.Value"},
+        "ItemProcessor": {"StartAt": "Ask", "States": {"Ask": {
+            "Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "States.JsonToString($)",
+                           "MessageAttributes": {"token": {"DataType": "String", "StringValue.$": "$$.Task.Token"}}},
+            "ResultSelector": {"answer.$": "$"}, "End": True}}}}}})
+    arn = s.run(machine, {"items": ["x", "y", "z"]})
+    tokens = {}
+    for _ in range(3):
+        for m in s.sqs.receive_message(QueueUrl=queue_url, MessageAttributeNames=["All"],
+                                       MaxNumberOfMessages=10).get("Messages", []):
+            tokens[json.loads(m["Body"])["item"]] = m["MessageAttributes"]["token"]["StringValue"]
+    assert sorted(tokens) == ["x", "y", "z"], tokens
+    for item in ("z", "x", "y"):
+        assert s.status(arn)["status"] == "RUNNING"
+        s.sf.send_task_success(taskToken=tokens[item], output=json.dumps(item.upper()))
+    done = s.status(arn)
+    assert json.loads(done["output"]) == [{"answer": "X"}, {"answer": "Y"}, {"answer": "Z"}], done
+
+    # One branch failing aborts its siblings: their tokens stop working and their timers are gone.
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    machine = s.machine("abort-siblings", {"StartAt": "Both", "States": {"Both": {
+        "Type": "Parallel", "End": True, "Branches": [
+            {"StartAt": "Ask", "States": {"Ask": {
+                "Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+                "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "$$.Task.Token"}, "End": True}}},
+            {"StartAt": "Nope", "States": {"Nope": {"Type": "Fail", "Error": "Nope", "Cause": "x"}}}]}}})
+    arn = s.run(machine, {})
+    failed = s.status(arn)
+    assert (failed["status"], failed["error"]) == ("FAILED", "Nope"), failed
+    orphan = s.sqs.receive_message(QueueUrl=queue_url)["Messages"][0]["Body"]
+    assert code(lambda: s.sf.send_task_success(taskToken=orphan, output="{}")) == "TaskDoesNotExist"
+    s.advance(10_000)  # nothing left to fire
+    assert s.status(arn)["status"] == "FAILED"
+
+
+def check_map_max_concurrency_and_distributed(s):
+    queue_url = s.sqs.get_queue_url(QueueName="jobs")["QueueUrl"]
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    machine = s.machine("limited", {"StartAt": "Each", "States": {"Each": {
+        "Type": "Map", "ItemsPath": "$.items", "MaxConcurrency": 2, "End": True,
+        "ItemProcessor": {"StartAt": "Ask", "States": {"Ask": {
+            "Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+            "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "$$.Task.Token"},
+            "ResultSelector": {"got.$": "$"}, "End": True}}}}}})
+    arn = s.run(machine, {"items": [1, 2, 3, 4, 5]})
+
+    def tokens():
+        out = []
+        while True:
+            batch = s.sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get("Messages", [])
+            if not batch:
+                return out
+            for m in batch:
+                s.sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=m["ReceiptHandle"])
+                out.append(m["Body"])
+
+    answered = 0
+    while answered < 5:
+        batch = tokens()
+        assert 0 < len(batch) <= 2, (answered, len(batch))  # never more than two at once
+        for token in batch:
+            answered += 1
+            s.sf.send_task_success(taskToken=token, output=str(answered))
+    done = s.status(arn)
+    assert json.loads(done["output"]) == [{"got": n} for n in (1, 2, 3, 4, 5)], done
+
+    distributed = {"StartAt": "Each", "States": {"Each": {
+        "Type": "Map", "ItemReader": {"Resource": "arn:aws:states:::s3:listObjectsV2"}, "End": True,
+        "ItemProcessor": {"ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": "STANDARD"},
+                          "StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}}}}
+    assert code(lambda: s.machine("distributed", distributed)) == "InvalidDefinition"
+    assert code(lambda: s.machine("bad-concurrency", {"StartAt": "Each", "States": {"Each": {
+        "Type": "Map", "MaxConcurrency": -1, "End": True,
+        "ItemProcessor": {"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}}}})) == "InvalidDefinition"
+
+
+def check_nested_executions(s):
+    quick = s.machine("child-quick", {"StartAt": "P", "States": {
+        "P": {"Type": "Pass", "Parameters": {"doubled.$": "States.MathAdd($.n, $.n)"}, "End": True}}})
+    slow = s.machine("child-slow", {"StartAt": "W", "States": {
+        "W": {"Type": "Wait", "Seconds": 30, "Next": "P"},
+        "P": {"Type": "Pass", "Parameters": {"slept.$": "$.n"}, "End": True}}})
+    bad = s.machine("child-bad", {"StartAt": "F", "States": {"F": {"Type": "Fail", "Error": "Kaput", "Cause": "no"}}})
+
+    def parent(child, resource):
+        return s.machine("parent-" + resource.replace(":", "-").replace(".", "-") + child.rsplit(":", 1)[1], {
+            "StartAt": "Call", "States": {
+                "Call": {"Type": "Task", "Resource": resource,
+                         "Parameters": {"StateMachineArn": child, "Input": {"n.$": "$.n"}},
+                         "ResultSelector": {"out.$": "$.Output", "status.$": "$.Status"}, "ResultPath": "$.child",
+                         "Catch": [{"ErrorEquals": ["States.TaskFailed"], "ResultPath": "$.err", "Next": "Done"}],
+                         "Next": "Done"},
+                "Done": {"Type": "Succeed"}}})
+
+    sync = "arn:aws:states:::states:startExecution.sync:2"
+    out = json.loads(s.status(s.run(parent(quick, sync), {"n": 4}))["output"])
+    assert out["child"] == {"out": {"doubled": 8}, "status": "SUCCEEDED"}, out  # finished inside the call
+
+    slow_parent = parent(slow, sync)
+    arn = s.run(slow_parent, {"n": 7})
+    assert s.status(arn)["status"] == "RUNNING"  # waiting on the child's Wait
+    s.advance(30)
+    out = json.loads(s.status(arn)["output"])
+    assert out["child"] == {"out": {"slept": 7}, "status": "SUCCEEDED"}, out
+
+    out = json.loads(s.status(s.run(parent(bad, sync), {"n": 1}))["output"])
+    assert json.loads(out["err"]["Cause"])["Status"] == "FAILED", out
+
+    # Stopping the parent stops the child it is waiting for.
+    arn = s.run(slow_parent, {"n": 2})
+    child = s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"]
+    assert len(child) == 1, child  # the first child finished when the clock advanced
+    s.sf.stop_execution(executionArn=arn)
+    assert s.status(child[0]["executionArn"])["status"] == "ABORTED"
+    s.advance(60)  # the child's Wait timer is gone
+
+    # A branch dropped because its sibling failed stops the child it was waiting for as well.
+    running_before = len(s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"])
+    both = s.machine("branch-child", {"StartAt": "Both", "States": {"Both": {
+        "Type": "Parallel", "End": True, "Branches": [
+            {"StartAt": "Call", "States": {"Call": {
+                "Type": "Task", "Resource": sync, "End": True,
+                "Parameters": {"StateMachineArn": slow, "Input": {"n": 3}}}}},
+            {"StartAt": "Nope", "States": {"Nope": {"Type": "Wait", "Seconds": 1, "Next": "Boom"},
+                                           "Boom": {"Type": "Fail", "Error": "Boom", "Cause": "x"}}}]}}})
+    arn = s.run(both, {})
+    assert s.status(arn)["status"] == "RUNNING"
+    started = s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"]
+    assert len(started) == running_before + 1, started
+    s.advance(2)  # the sibling fails; the branch waiting on the child is dropped
+    assert s.status(arn)["status"] == "FAILED"
+    assert len(s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"]) == running_before
+
+    # Request Response starts the child and moves on without waiting for it.
+    started = s.status(s.run(s.machine("fire-and-forget", {"StartAt": "Call", "States": {"Call": {
+        "Type": "Task", "Resource": "arn:aws:states:::states:startExecution",
+        "Parameters": {"StateMachineArn": slow, "Input": {"n": 1}}, "ResultPath": "$.child", "End": True}}}), {}))
+    assert started["status"] == "SUCCEEDED" and "ExecutionArn" in json.loads(started["output"])["child"], started
+
+
+def check_ecs_run_task_sync(s):
+    ecs = boto3.client("ecs", endpoint_url=s.url, aws_access_key_id="test", aws_secret_access_key="x",
+                       region_name="us-east-1")
+    ecs.create_cluster(clusterName="jobs")
+    ecs.register_task_definition(family="work", containerDefinitions=[{"name": "main", "image": "busybox",
+                                                                      "memory": 64}])
+    machine = s.machine("ecs-sync", {"StartAt": "Run", "States": {
+        "Run": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync",
+                "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"},
+                "ResultSelector": {"stopped.$": "$.Tasks[0].LastStatus"}, "ResultPath": "$.run",
+                "Catch": [{"ErrorEquals": ["States.TaskFailed"], "ResultPath": "$.err", "Next": "Done"}],
+                "Next": "Done"},
+        "Done": {"Type": "Succeed"}}})
+
+    def set_status(task_arn, **fields):
+        request = urllib.request.Request(
+            s.url + "/", data=json.dumps({"cluster": "jobs", "task": task_arn, **fields}).encode(), method="POST",
+            headers={"x-amz-target": "AmazonEC2ContainerServiceV20141113.RotoSetTaskStatus",
+                     "content-type": "application/x-amz-json-1.1"})
+        urllib.request.urlopen(request).read()
+
+    def only_running_task(known):
+        tasks = [t for t in ecs.list_tasks(cluster="jobs")["taskArns"] if t not in known]
+        assert len(tasks) == 1, tasks
+        return tasks[0]
+
+    arn = s.run(machine, {})
+    first = only_running_task([])
+    s.advance(10)
+    assert s.status(arn)["status"] == "RUNNING"  # the task has not stopped
+    ecs.stop_task(cluster="jobs", task=first)
+    s.advance(5)
+    done = s.status(arn)
+    assert done["status"] == "SUCCEEDED" and json.loads(done["output"])["run"] == {"stopped": "STOPPED"}, done
+
+    arn = s.run(machine, {})
+    second = only_running_task([first])
+    set_status(second, lastStatus="STOPPED", exitCode=3)
+    s.advance(5)
+    out = json.loads(s.status(arn)["output"])
+    assert "err" in out and out["err"]["Error"] == "States.TaskFailed", out
+
+    # Without .sync the Task returns right after RunTask.
+    plain = s.status(s.run(s.machine("ecs-plain", {"StartAt": "Run", "States": {"Run": {
+        "Type": "Task", "Resource": "arn:aws:states:::ecs:runTask",
+        "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"}, "End": True}}}), {}))
+    assert plain["status"] == "SUCCEEDED" and json.loads(plain["output"])["Tasks"][0]["LastStatus"], plain
+
+
+def check_task_states_call_other_services(s):
+    queue_url = s.sqs.get_queue_url(QueueName="jobs")["QueueUrl"]
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    machine = s.machine("tasks", {"StartAt": "Echo", "States": {
+        "Echo": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke",
+                 "Parameters": {"FunctionName": "echo", "Payload.$": "$"},
+                 "ResultSelector": {"echoed.$": "$.Payload"}, "ResultPath": "$.lambda", "Next": "Direct"},
+        "Direct": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:echo",
+                   "InputPath": "$.lambda", "ResultPath": "$.direct", "OutputPath": "$", "Next": "Send"},
+        "Send": {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage",
+                 "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "States.JsonToString($.lambda)"},
+                 "ResultSelector": {"sent.$": "$.MessageId"}, "ResultPath": "$.sqs", "End": True}}})
+    arn = s.run(machine, {"n": 1})
+    done = s.status(arn)
+    assert done["status"] == "SUCCEEDED", done
+    out = json.loads(done["output"])
+    assert out["lambda"] == {"echoed": {"n": 1}}, out
+    assert out["sqs"]["sent"], out
+    types = s.events(arn)
+    assert types.count("TaskSucceeded") == 3 and "TaskScheduled" in types, types
+    messages = s.sqs.receive_message(QueueUrl=queue_url)["Messages"]
+    assert json.loads(messages[0]["Body"]) == {"echoed": {"n": 1}}, messages
+
+
+def check_callback_tasks(s):
+    queue_url = s.sqs.get_queue_url(QueueName="jobs")["QueueUrl"]
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    machine = s.machine("callback", {"StartAt": "Ask", "States": {
+        "Ask": {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+                "TimeoutSeconds": 100, "ResultPath": "$.answer",
+                "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "$$.Task.Token"},
+                "Catch": [{"ErrorEquals": ["Denied", "States.Timeout"], "ResultPath": "$.err", "Next": "Done"}],
+                "Next": "Done"},
+        "Done": {"Type": "Succeed"}}})
+
+    def token():
+        messages = s.sqs.receive_message(QueueUrl=queue_url, WaitTimeSeconds=0)["Messages"]
+        s.sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=messages[0]["ReceiptHandle"])
+        return messages[0]["Body"]
+
+    arn = s.run(machine, {"id": 1})
+    assert s.status(arn)["status"] == "RUNNING"
+    first = token()
+    s.sf.send_task_heartbeat(taskToken=first)
+    s.sf.send_task_success(taskToken=first, output='{"ok": true}')
+    out = json.loads(s.status(arn)["output"])
+    assert out == {"id": 1, "answer": {"ok": True}}, out
+    assert code(lambda: s.sf.send_task_success(taskToken=first, output="{}")) == "TaskDoesNotExist"
+    assert code(lambda: s.sf.send_task_success(taskToken="x" * 1100, output="{}")) == "InvalidToken"
+
+    arn = s.run(machine, {})
+    s.sf.send_task_failure(taskToken=token(), error="Denied", cause="no")
+    done = s.status(arn)
+    assert json.loads(done["output"])["err"] == {"Error": "Denied", "Cause": "no"}, done
+
+    arn = s.run(machine, {})
+    stale = token()
+    s.advance(101)
+    assert json.loads(s.status(arn)["output"])["err"]["Error"] == "States.Timeout"
+    assert code(lambda: s.sf.send_task_success(taskToken=stale, output="{}")) == "TaskDoesNotExist"
+
+
+def check_activities_and_heartbeats(s):
+    activity = s.sf.create_activity(name="worker")["activityArn"]
+    assert s.sf.create_activity(name="worker")["activityArn"] == activity
+    assert [a["name"] for a in s.sf.list_activities()["activities"]] == ["worker"]
+    assert s.sf.describe_activity(activityArn=activity)["name"] == "worker"
+    machine = s.machine("activity-flow", {"StartAt": "Work", "States": {
+        "Work": {"Type": "Task", "Resource": activity, "TimeoutSeconds": 300, "HeartbeatSeconds": 30,
+                 "Parameters": {"job.$": "$.job"}, "ResultPath": "$.result",
+                 "Catch": [{"ErrorEquals": ["States.Timeout"], "ResultPath": "$.err", "Next": "Done"}],
+                 "Next": "Done"},
+        "Done": {"Type": "Succeed"}}})
+    assert not s.sf.get_activity_task(activityArn=activity).get("taskToken")  # nothing queued yet
+    first = s.run(machine, {"job": 1})
+    second = s.run(machine, {"job": 2})
+    task = s.sf.get_activity_task(activityArn=activity, workerName="w1")
+    assert json.loads(task["input"]) == {"job": 1}, task
+    s.advance(20)
+    s.sf.send_task_heartbeat(taskToken=task["taskToken"])
+    s.advance(20)  # 40s in: alive because the heartbeat moved the deadline
+    assert s.status(first)["status"] == "RUNNING"
+    s.sf.send_task_success(taskToken=task["taskToken"], output='"done"')
+    assert json.loads(s.status(first)["output"])["result"] == "done"
+    types = s.events(first)
+    assert {"ActivityScheduled", "ActivityStarted", "ActivitySucceeded"} <= set(types), types
+    # The second job is never fetched, so it misses its heartbeat.
+    s.advance(100)
+    out = json.loads(s.status(second)["output"])
+    assert out["err"]["Error"] == "States.Timeout", out
+    assert not s.sf.get_activity_task(activityArn=activity).get("taskToken")
+    s.sf.delete_activity(activityArn=activity)
+    assert code(lambda: s.sf.describe_activity(activityArn=activity)) == "ActivityDoesNotExist"
+
+
+def check_retry_and_catch(s):
+    machine = s.machine("recover", {"StartAt": "Boom", "States": {
+        "Boom": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:boom",
+                 "Retry": [{"ErrorEquals": ["States.TaskFailed"], "IntervalSeconds": 10, "MaxAttempts": 2,
+                            "BackoffRate": 2}],
+                 "Catch": [{"ErrorEquals": ["States.ALL"], "ResultPath": "$.caught", "Next": "Done"}],
+                 "Next": "Never"},
+        "Never": {"Type": "Fail", "Error": "NotCaught"},
+        "Done": {"Type": "Succeed"}}})
+    arn = s.run(machine, {"keep": True})
+    assert s.status(arn)["status"] == "RUNNING", s.status(arn)  # waiting for the first retry
+    s.advance(10)
+    assert s.status(arn)["status"] == "RUNNING"  # second retry waits 20s
+    s.advance(20)
+    done = s.status(arn)
+    assert done["status"] == "SUCCEEDED", done
+    out = json.loads(done["output"])
+    assert out["keep"] is True and out["caught"]["Error"], out
+    types = s.events(arn)
+    # Three attempts, but the state is entered and exited once: a retry does not re-enter it.
+    assert types.count("TaskFailed") == 3, types
+    assert types.count("TaskStateEntered") == 1 and types.count("TaskStateExited") == 1, types
+
+    # Without a Catch the failure settles the execution, and a missing service fails cleanly.
+    plain = s.machine("uncaught", {"StartAt": "Q", "States": {
+        "Q": {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage",
+              "Parameters": {"QueueUrl": "http://localhost/000000000000/missing", "MessageBody": "x"},
+              "End": True}}})
+    failed = s.status(s.run(plain))
+    assert failed["status"] == "FAILED" and failed["error"].startswith("Sqs."), failed
+    unsupported = s.machine("sync", {"StartAt": "Q", "States": {
+        "Q": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke.sync", "End": True}}})
+    assert s.status(s.run(unsupported))["error"] == "States.Runtime"
 
 
 def check_history_pages_and_validation(s):
@@ -316,9 +705,12 @@ def check_update_tags_and_test_state(s):
     assert (waited["status"], json.loads(waited["output"])) == ("SUCCEEDED", {"k": 1}) and "nextState" not in waited
     failed = test_state({"Type": "Fail", "Error": "Bad", "Cause": "because"})
     assert (failed["status"], failed["error"], failed["cause"]) == ("FAILED", "Bad", "because")
+    for fan_out in ({"Type": "Parallel", "Branches": [], "End": True},
+                    {"Type": "Map", "ItemProcessor": {"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}},
+                     "End": True}):
+        assert code(lambda: test_state(fan_out)) == "ValidationException"
     broken = test_state({"Type": "Pass", "InputPath": "$.missing", "End": True})
     assert (broken["status"], broken["error"]) == ("FAILED", "States.Runtime")
-    assert code(lambda: test_state({"Type": "Task", "Resource": "arn:x", "End": True})) == "ValidationException"
 
 
 def check_rust_services_follow_the_clock(s):
@@ -344,7 +736,11 @@ def main():
     server = Server()
     try:
         for check in (check_pass_and_paths, check_choice_and_fail, check_wait_and_clock,
-                      check_tasks_stay_running, check_history_pages_and_validation,
+                      check_parallel_and_map, check_branches_run_concurrently,
+                      check_map_max_concurrency_and_distributed, check_nested_executions, check_ecs_run_task_sync,
+                      check_task_states_call_other_services,
+                      check_callback_tasks, check_activities_and_heartbeats,
+                      check_retry_and_catch, check_history_pages_and_validation,
                       check_loops_fail_instead_of_hanging, check_update_tags_and_test_state,
                       check_rust_services_follow_the_clock):
             started = time.monotonic()

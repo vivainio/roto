@@ -167,6 +167,26 @@ after 5 attempts, with a message on the server console. A job claimed by a proce
 dies is retried after 30 s, so delivery is at least once: handlers should be idempotent.
 `__job` is internal and cannot be called over HTTP.
 
+## Calling other services
+
+While a handler or job runs, `roto.call(service, operation, input)` and
+`roto.wire(service, method, path, {headers, query, body})` run another service's handler
+in-process as the same account and region, and return the decoded response (`wire` returns
+`{ok, status, headers, body}`; header names are lower case). `roto.try_call` and
+`roto.try_wire` never raise: a failed callee comes back as `{ok = false, status, code, message}`,
+which is how a state machine turns it into a `Catch`-able error. `call` covers the JSON services
+(DynamoDB, SQS, SSM, Secrets Manager, Kinesis, KMS, Logs, EventBridge) and the XML services with
+an embedded model (S3, IAM, SNS, STS, CloudFormation); use `wire` for the rest, for example
+Lambda `Invoke` (`POST /2015-03-31/functions/<name>/invocations`).
+
+The callee commits in its own transaction, immediately: there is no atomicity across
+services, so if the caller's request later rolls back, the callee's effects stay. A service
+cannot call itself, nor one already running on the same call stack (it holds its VM lock
+while it runs, so that would deadlock), and calls nest at most eight deep. A handler that
+reaches back into the caller over HTTP from an external executor is not detected and will
+wait on the caller's lock. Internal calls are not request-traced and do not trigger
+interceptors.
+
 Jobs live in the service's database (table `jobs`), so they survive a restart with
 `--data-dir`, are removed by `/roto-api/reset`, and are polled by one worker thread every
 100 ms (jobs run one at a time, in due-time order). `os.time()`, `os.date()` and
@@ -246,7 +266,7 @@ Auto Scaling group and a load balancer is registered in each by the same ID.
 | `elasticloadbalancing` (v2) | existing set | `DescribeTargetHealth` reports a stored health state even without a listener |
 | `autoscaling` | Create/Delete/Update/DescribeAutoScalingGroups, `DescribeAutoScalingInstances`, `AttachInstances`, `DetachInstances`, `SetInstanceHealth`, `Suspend/ResumeProcesses`, `CreateOrUpdateTags`, `DeleteTags`, `DescribeTags`, `PutScheduledUpdateGroupAction`, `DescribeScheduledActions`, `DeleteScheduledAction`, `BatchDeleteScheduledAction` | Membership is stored as given; no launches or scaling policies. `AttachInstances` raises the desired capacity, as in AWS |
 | `ec2` | `RunInstances`, `DescribeInstances` (filters, tags, pagination), `DescribeInstanceStatus`, `Start/Stop/Reboot/TerminateInstances`, security group create/describe/delete, `CreateTags`, `DeleteTags`, `DescribeTags` | `pending`→`running`, `stopping`→`stopped`, `shutting-down`→`terminated` on the next request that reads the instance; terminated instances stay visible for an hour |
-| `states` | `Create/Delete/DescribeStateMachine`, `ListStateMachines`, `StartExecution`, `StopExecution`, `DescribeExecution`, `ListExecutions`, `GetExecutionHistory`, `UpdateStateMachine`, `Tag/Untag/ListTagsForResource`, `DescribeStateMachineForExecution`, `TestState` | Executions are interpreted: Pass, Choice, Wait, Succeed and Fail states with the full path/parameter pipeline, JSONPath, `$$` context, intrinsic functions, history events, `TimeoutSeconds`; Waits run on timers (see [Virtual clock](../docs/server.md#virtual-clock)). Task, Parallel and Map states are not interpreted yet: an execution that reaches one stays `RUNNING` until stopped or completed by a fixture. SDKs send `TestState` to `sync-<host>`; against a local endpoint set `inject_host_prefix=False` (boto3) |
+| `states` | `Create/Delete/DescribeStateMachine`, `ListStateMachines`, `StartExecution`, `StopExecution`, `DescribeExecution`, `ListExecutions`, `GetExecutionHistory`, `UpdateStateMachine`, `Tag/Untag/ListTagsForResource`, `DescribeStateMachineForExecution`, `SendTaskSuccess`, `SendTaskFailure`, `SendTaskHeartbeat`, `Create/Describe/Delete/ListActivities`, `GetActivityTask`, `TestState` | Executions are interpreted: Pass, Task, Choice, Wait, Succeed and Fail states with the full path/parameter pipeline, JSONPath, `$$` context, intrinsic functions, history events, `TimeoutSeconds`; Waits and Retry backoffs run on timers (see [Virtual clock](../docs/server.md#virtual-clock)). Task states call Lambda functions (`arn:aws:lambda:...:function:f`, `arn:aws:states:::lambda:invoke`) and SDK integrations (`arn:aws:states:::sqs:sendMessage`, `dynamodb:putItem`, `sns:publish`, `aws-sdk:<service>:<action>` for DynamoDB, SQS, SNS, SSM, Secrets Manager, KMS, Kinesis, EventBridge, CloudWatch Logs, S3, IAM, STS and CloudFormation) with Retry and Catch; `.waitForTaskToken` callbacks park the execution (token in `$$.Task.Token`, optional `TimeoutSeconds` on the virtual clock) until `SendTaskSuccess`/`SendTaskFailure`; A Task whose Resource is an activity ARN queues its input for `GetActivityTask` (which answers at once with no token when nothing is queued, instead of long-polling); `TimeoutSeconds` and `HeartbeatSeconds` apply to callback and activity Tasks. `states:startExecution` starts a nested execution, and its `.sync` and `.sync:2` forms wait for it (a child that is still running delivers its outcome to the parent when it settles); `ecs:runTask` (and the other ECS operations, with PascalCase parameters) is supported too, and `ecs:runTask.sync` polls `DescribeTasks` every 5 virtual seconds until every task is `STOPPED` (a non-zero container exit code fails the Task with `States.TaskFailed`); since no containers run, a test stops the task with `StopTask` or `RotoSetTaskStatus`. Every other `.sync` integration is rejected. The called service commits on its own, so a Task's effect is not undone with the execution. Parallel and Map states run each branch or item as its own thread, so Waits, Retry backoffs and callback or activity Tasks work inside them and siblings progress independently; a branch failure cancels its siblings and fails the state (`MaxConcurrency` limits how many Map items run at once; distributed Map is rejected when the machine is created, and an inline Map fails on its first failed item, as in AWS). SDKs send `TestState` to `sync-<host>`; against a local endpoint set `inject_host_prefix=False` (boto3) |
 | `ecs` (tasks) | `RunTask`, `DescribeTasks`, `ListTasks`, `StopTask` | `PROVISIONING`→`RUNNING`, `STOPPING`→`STOPPED` on the next read; no containers run |
 | `ssm` (Run Command, Rust) | `SendCommand`, `ListCommands`, `ListCommandInvocations`, `GetCommandInvocation`, `CancelCommand` | Invocations stay `Pending` until a fixture completes them; targets are instance IDs only |
 
