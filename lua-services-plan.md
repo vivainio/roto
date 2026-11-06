@@ -135,9 +135,9 @@ register them as independent modules unchanged.
 
 ### R04 — Calls between services
 
-- [ ] Expose supported Rust/Luau service calls with explicit caller account/region.
-- [ ] Define lock ordering, recursion limits and errors for reentrant calls.
-- [ ] Define transaction boundaries; do not imply cross-service atomic rollback.
+- [x] Luau services: `roto.call`/`roto.try_call`/`roto.wire`/`roto.try_wire` run another service's handler as the caller's account/region (Rust services and Luau services; typed `call` for JSON/XML-model services, `wire` for the rest).
+- [x] Reentrancy: a service cannot call itself or one already on the thread's call stack (it would deadlock on that service's VM lock); nesting is capped at 8. Not covered: a cycle through an external executor over HTTP.
+- [x] Transaction boundaries: the callee commits in its own transaction; no cross-service rollback.
 - [ ] Preserve traces and prevent credentials leaking into persisted job payloads.
 - [ ] Verify real S3/Lambda/SQS interactions and downstream failures.
 

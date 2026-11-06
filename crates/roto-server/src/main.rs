@@ -307,6 +307,7 @@ async fn main() {
                 std::process::exit(1);
             });
     services.insert("cloudformation", Arc::new(cloudformation));
+    lua_jobs.connect(services.clone());
     let endpoint = format!(
         "http://{}:{}",
         if args.host == "0.0.0.0" {

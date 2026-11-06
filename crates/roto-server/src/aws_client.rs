@@ -37,6 +37,7 @@ const JSON_SERVICES: &[&str] = &[
     "kms",
     "logs",
     "events",
+    "sqs",
 ];
 
 pub(crate) fn supports(service: &str) -> bool {

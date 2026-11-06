@@ -1,7 +1,9 @@
 //! Lazy, trusted Lua services. Storage callbacks live only for one SQLite transaction.
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -45,8 +47,126 @@ const JOB_MAX_ATTEMPTS: i64 = 5;
 /// Jobs one drain may run, so a handler that reschedules itself forever cannot hang a caller.
 const DRAIN_BUDGET: usize = 10_000;
 
+/// Every service handler, filled in once the server has built them all. Luau services reach
+/// other services through it (`roto.call`, `roto.wire`).
+pub type Peers = Arc<OnceLock<HashMap<&'static str, Arc<dyn ServiceHandler>>>>;
+
+/// Deepest chain of service-to-service calls (a service calling a service calling ...).
+const MAX_CALL_DEPTH: usize = 8;
+
+thread_local! {
+    /// Services whose Luau is running on this thread, outermost first. A service holds its VM
+    /// lock while it runs, so calling one already on the stack would deadlock; it is refused.
+    static CALL_STACK: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+struct StackGuard;
+impl StackGuard {
+    fn enter(service: &'static str) -> Result<Self, AwsError> {
+        CALL_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.len() >= MAX_CALL_DEPTH {
+                return Err(AwsError::internal(format!(
+                    "service calls nested deeper than {MAX_CALL_DEPTH}: {} -> {service}",
+                    stack.join(" -> ")
+                )));
+            }
+            stack.push(service);
+            Ok(StackGuard)
+        })
+    }
+}
+impl Drop for StackGuard {
+    fn drop(&mut self) {
+        CALL_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+type WireResponse = (u16, Vec<(String, String)>, Vec<u8>);
+type WireArgs = (String, Vec<(String, String)>, Vec<u8>);
+
+/// A failed call to another service, in the shape Luau sees it.
+struct PeerError {
+    status: u16,
+    code: String,
+    message: String,
+}
+
+impl PeerError {
+    fn local(code: &str, message: String) -> Self {
+        PeerError {
+            status: 500,
+            code: code.into(),
+            message,
+        }
+    }
+    /// Reads the status, error code and message out of an error response body (JSON or XML).
+    fn from_response(status: u16, body: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(body);
+        let (mut code, message) = if let Ok(json) = serde_json::from_str::<Value>(&text) {
+            let field = |names: &[&str]| {
+                names
+                    .iter()
+                    .find_map(|n| json.get(*n).and_then(Value::as_str))
+                    .map(str::to_owned)
+            };
+            (
+                field(&["__type", "code", "Code"]).unwrap_or_default(),
+                field(&["message", "Message"]).unwrap_or_default(),
+            )
+        } else {
+            let tag = |name: &str| {
+                let open = format!("<{name}>");
+                let start = text.find(&open)? + open.len();
+                let end = text[start..].find(&format!("</{name}>"))? + start;
+                Some(text[start..end].to_owned())
+            };
+            (
+                tag("Code").unwrap_or_default(),
+                tag("Message").unwrap_or_default(),
+            )
+        };
+        if let Some((_, short)) = code.rsplit_once('#') {
+            code = short.to_owned();
+        }
+        if code.is_empty() {
+            code = format!("HttpStatus{status}");
+        }
+        PeerError {
+            status,
+            code,
+            message,
+        }
+    }
+    fn from_aws(error: &AwsError) -> Self {
+        let text = error.to_string();
+        PeerError {
+            status: 500,
+            code: "InternalFailure".into(),
+            message: text,
+        }
+    }
+    fn into_table(self, lua: &Lua) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("ok", false)?;
+        t.set("status", self.status)?;
+        t.set("code", self.code)?;
+        t.set("message", self.message)?;
+        Ok(t)
+    }
+}
+
+impl std::fmt::Display for PeerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({}): {}", self.code, self.status, self.message)
+    }
+}
+
 pub struct LuaService {
     definition: Definition,
+    peers: Peers,
     store: Arc<Store>,
     bundle: Arc<Bundle>,
     runtime: Mutex<Option<Runtime>>,
@@ -327,9 +447,11 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
             }
         }
     }
+    let peers = Peers::default();
     for definition in definitions {
         services.push(LuaService {
             definition,
+            peers: peers.clone(),
             store: store.clone(),
             bundle: bundle.clone(),
             runtime: Mutex::new(None),
@@ -422,6 +544,13 @@ pub struct Jobs {
 }
 
 impl Jobs {
+    /// Gives the Lua services the handlers of every service, so they can call each other.
+    pub fn connect(&self, handlers: HashMap<&'static str, Arc<dyn ServiceHandler>>) {
+        if let Some(service) = self.services.first() {
+            let _ = service.peers.set(handlers);
+        }
+    }
+
     pub fn start(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         std::thread::Builder::new()
@@ -772,6 +901,8 @@ impl LuaService {
             .map_err(lua_error)?
             .ok_or_else(|| AwsError::not_implemented(self.definition.service, operation))?;
         let lua = &runtime.lua;
+        let service_name = self.definition.service;
+        let _stack = StackGuard::enter(service_name)?;
         runtime.db.transaction(|tx| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             crate::setup::set_deadline(lua, deadline, "Lua service timed out");
@@ -842,14 +973,184 @@ impl LuaService {
                     Ok(())
                 })?)?;
                 let context = lua.to_value(&json!({"account_id":ctx.account_id,"region":ctx.region,"request_id":ctx.request_id}))?;
-                let output: LuaValue = function.call((context, lua.to_value(&input)?, db))?;
-                lua.from_value::<Value>(output)
+                let roto: Table = lua.globals().get("roto")?;
+                self.install_peer_calls(&roto, scope, ctx)?;
+                let output = function.call::<LuaValue>((context, lua.to_value(&input)?, db));
+                for name in ["call", "try_call", "wire", "try_wire"] {
+                    roto.set(name, LuaValue::Nil)?;
+                }
+                lua.from_value::<Value>(output?)
             });
             lua.remove_interrupt();
             let value = result.map_err(lua_error)?;
             finish(tx)?;
             Ok(value)
         })
+    }
+
+    /// Adds `roto.call`, `roto.try_call`, `roto.wire` and `roto.try_wire` for the length of one
+    /// execution. They run the other service's handler in this thread, in its own transaction:
+    /// there is no atomicity across services, and a service cannot call itself or any service
+    /// already running on this thread's stack.
+    fn install_peer_calls<'scope, 'env>(
+        &'env self,
+        roto: &Table,
+        scope: &'scope mlua::Scope<'scope, 'env>,
+        ctx: &'env RequestContext,
+    ) -> mlua::Result<()> {
+        let me = self.definition.service;
+        let peers = &self.peers;
+        let handler = move |service: &str| -> Result<Arc<dyn ServiceHandler>, PeerError> {
+            let handler = peers
+                .get()
+                .and_then(|map| map.get(service))
+                .cloned()
+                .ok_or_else(|| {
+                    PeerError::local(
+                        "ServiceUnavailable",
+                        format!("Service unavailable: {service}"),
+                    )
+                })?;
+            let busy = CALL_STACK.with(|stack| stack.borrow().contains(&handler.service()));
+            if busy || service == me {
+                return Err(PeerError::local(
+                    "ReentrantCall",
+                    format!("{me} cannot call {service}: it is already running on this call stack"),
+                ));
+            }
+            Ok(handler)
+        };
+        let call =
+            move |service: &str, operation: &str, input: Value| -> Result<Value, PeerError> {
+                let handler = handler(service)?;
+                if !crate::aws_client::supports(service) {
+                    return Err(PeerError::local(
+                        "UnsupportedService",
+                        format!("Unknown service for roto.call: {service}; use roto.wire"),
+                    ));
+                }
+                crate::aws_client::call(handler.as_ref(), ctx, service, operation, &input).map_err(
+                    |message| match message.strip_prefix("AWS request failed (") {
+                        Some(rest) => {
+                            let (status, body) = rest.split_once("): ").unwrap_or(("500", rest));
+                            PeerError::from_response(status.parse().unwrap_or(500), body.as_bytes())
+                        }
+                        None => PeerError::local("InvalidRequest", message),
+                    },
+                )
+            };
+        let wire = move |service: &str,
+                         method: String,
+                         path: String,
+                         query: String,
+                         headers: Vec<(String, String)>,
+                         body: Vec<u8>|
+              -> Result<WireResponse, PeerError> {
+            let handler = handler(service)?;
+            let response = handler
+                .handle(
+                    ctx,
+                    &RawRequest {
+                        method,
+                        path,
+                        query,
+                        headers,
+                        body,
+                    },
+                )
+                .map_err(|e| PeerError::from_aws(&e))?;
+            if response.status >= 400 {
+                return Err(PeerError::from_response(response.status, &response.body));
+            }
+            Ok((response.status, response.headers, response.body))
+        };
+        let call = Arc::new(call);
+        let wire = Arc::new(wire);
+
+        let input_of = |lua: &Lua, input: LuaValue| -> mlua::Result<Value> {
+            if input.is_nil() {
+                Ok(json!({}))
+            } else {
+                lua.from_value(input)
+            }
+        };
+        let wire_args = |lua: &Lua, opts: Option<Table>| -> mlua::Result<WireArgs> {
+            let Some(opts) = opts else {
+                return Ok((String::new(), Vec::new(), Vec::new()));
+            };
+            let headers: std::collections::BTreeMap<String, String> =
+                match opts.get::<LuaValue>("headers")? {
+                    LuaValue::Nil => Default::default(),
+                    value => lua.from_value(value)?,
+                };
+            let body = match opts.get::<LuaValue>("body")? {
+                LuaValue::Nil => Vec::new(),
+                LuaValue::String(s) => s.as_bytes().to_vec(),
+                value => serde_json::to_vec(&lua.from_value::<Value>(value)?)
+                    .map_err(mlua::Error::external)?,
+            };
+            Ok((
+                opts.get::<Option<String>>("query")?.unwrap_or_default(),
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v))
+                    .collect(),
+                body,
+            ))
+        };
+        let wire_result = |lua: &Lua, (status, headers, body): WireResponse| {
+            let headers: serde_json::Map<String, Value> = headers
+                .into_iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), Value::String(v)))
+                .collect();
+            lua.to_value(&json!({
+                "ok": true,
+                "status": status,
+                "headers": headers,
+                "body": String::from_utf8_lossy(&body),
+            }))
+        };
+
+        let c = call.clone();
+        roto.set(
+            "call",
+            scope.create_function(
+                move |lua, (service, operation, input): (String, String, LuaValue)| {
+                    let input = input_of(lua, input)?;
+                    let value = c(&service, &operation, input)
+                        .map_err(|e| mlua::Error::external(e.to_string()))?;
+                    lua.to_value(&value)
+                },
+            )?,
+        )?;
+        let c = call;
+        roto.set(
+            "try_call",
+            scope.create_function(
+                move |lua, (service, operation, input): (String, String, LuaValue)| {
+                    let input = input_of(lua, input)?;
+                    match c(&service, &operation, input) {
+                        Ok(value) => lua.to_value(&json!({"ok": true, "value": value})),
+                        Err(e) => Ok(LuaValue::Table(e.into_table(lua)?)),
+                    }
+                },
+            )?,
+        )?;
+        let w = wire.clone();
+        roto.set("wire", scope.create_function(move |lua, (service, method, path, opts): (String, String, String, Option<Table>)| {
+            let (query, headers, body) = wire_args(lua, opts)?;
+            let out = w(&service, method, path, query, headers, body).map_err(|e| mlua::Error::external(e.to_string()))?;
+            wire_result(lua, out)
+        })?)?;
+        let w = wire;
+        roto.set("try_wire", scope.create_function(move |lua, (service, method, path, opts): (String, String, String, Option<Table>)| {
+            let (query, headers, body) = wire_args(lua, opts)?;
+            match w(&service, method, path, query, headers, body) {
+                Ok(out) => wire_result(lua, out),
+                Err(e) => Ok(LuaValue::Table(e.into_table(lua)?)),
+            }
+        })?)?;
+        Ok(())
     }
 
     /// The service's database if it already exists; never creates one.
@@ -1841,6 +2142,78 @@ return M
         }
         assert_eq!(ran, 5);
         clock::reset();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn services_call_each_other_but_not_back_into_a_running_service() {
+        let dir = std::env::temp_dir().join(format!("roto-peers-{}", roto_core::ids::request_id()));
+        let entry = |name: &str, prefix: &str| json!({"service":name,"script":format!("{name}/service.luau"),"target_prefix":prefix,"json_version":"1.0"});
+        for name in ["alpha", "beta"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        std::fs::write(
+            dir.join("manifest.json"),
+            json!({"version":1,"services":[entry("alpha","Alpha."),entry("beta","Beta.")]})
+                .to_string(),
+        )
+        .unwrap();
+        // Hop forwards to the other service with one fewer hop; at zero it answers.
+        for (name, other, other_prefix) in [("alpha", "beta", "Beta."), ("beta", "alpha", "Alpha.")]
+        {
+            std::fs::write(
+                dir.join(format!("{name}/service.luau")),
+                format!(r#"
+local M = {{}}
+function M.Echo(ctx, input, db) return {{From = "{name}", Account = ctx.account_id, Input = input}} end
+function M.Hop(ctx, input, db)
+    if input.hops == 0 then return {{Done = "{name}"}} end
+    local r = roto.try_wire("{other}", "POST", "/", {{headers = {{["x-amz-target"] = "{other_prefix}Hop"}}, body = {{hops = input.hops - 1}}}})
+    if not r.ok then return {{Failed = r.code, Message = r.message}} end
+    return roto.json_decode(r.body)
+end
+function M.Self(ctx, input, db) return roto.try_wire("{name}", "POST", "/", {{headers = {{["x-amz-target"] = "{name}.Echo"}}}}) end
+function M.Missing(ctx, input, db) return roto.try_wire("nope", "POST", "/") end
+function M.Raise(ctx, input, db) return roto.wire("nope", "POST", "/") end
+function M.Late(ctx, input, db) return roto.call and {{Has = true}} or {{Has = false}} end
+return M
+"#),
+            )
+            .unwrap();
+        }
+        let services = discover(Arc::new(Store::ephemeral()), Some(dir.clone())).unwrap();
+        let (handlers, jobs) = into_handlers(services);
+        jobs.connect(handlers.iter().map(|h| (h.service(), h.clone())).collect());
+        let alpha = &handlers[0];
+        let ctx = context("111122223333", "eu-west-1");
+        let invoke = |op: &str, input: Value| -> Value {
+            let req = RawRequest {
+                method: "POST".into(),
+                path: "/".into(),
+                headers: vec![("x-amz-target".into(), format!("Alpha.{op}"))],
+                body: serde_json::to_vec(&input).unwrap(),
+                ..Default::default()
+            };
+            let response = alpha.handle(&ctx, &req).unwrap();
+            serde_json::from_slice(&response.body).unwrap()
+        };
+        // A call to a different service and back out works until the same service is reached again.
+        let reentered = invoke("Hop", json!({"hops": 2}));
+        assert_eq!(reentered["Failed"], "ReentrantCall", "{reentered}");
+        let direct = invoke("Self", json!({}));
+        assert_eq!(direct["code"], "ReentrantCall", "{direct}");
+        let missing = invoke("Missing", json!({}));
+        assert_eq!(missing["code"], "ServiceUnavailable");
+        let raised = invoke("Raise", json!({}));
+        assert!(
+            raised["message"]
+                .as_str()
+                .unwrap()
+                .contains("Service unavailable"),
+            "{raised}"
+        );
+        // The peer functions exist only while a service is executing.
+        assert_eq!(invoke("Late", json!({}))["Has"], true);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

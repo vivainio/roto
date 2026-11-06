@@ -27,6 +27,18 @@ declare extern type Db with
 	cancel: (key: string) -> ()
 end
 
+-- Result of `roto.try_call` and `roto.try_wire`: `ok` is true with the response, or false with
+-- the callee's HTTP status and AWS error code and message.
+type RotoPeerResult = {
+	ok: boolean,
+	value: any?,
+	status: number?,
+	code: string?,
+	message: string?,
+	headers: { [string]: string }?,
+	body: string?,
+}
+
 declare roto: {
 	version: string,
 	api_version: number,
@@ -45,6 +57,16 @@ declare roto: {
 	json_decode: (text: string, code: string?) -> any,
 	-- Marks a table as a JSON array, so an empty one encodes as `[]` rather than `{}`.
 	array: (items: { any }?) -> { any },
+
+	-- Calls another service in-process, as the caller's account and region, while a handler or job
+	-- runs. The callee commits in its own transaction: there is no atomicity across services. A
+	-- service cannot call itself or one already running on this call stack, and calls nest at most
+	-- eight deep. `call` raises when the callee fails; `try_call` returns the failure as data.
+	-- Typed protocols (JSON, query, rest-xml services with an AWS model) only; `wire` sends a raw request.
+	call: (service: string, operation: string, input: any?) -> any,
+	try_call: (service: string, operation: string, input: any?) -> RotoPeerResult,
+	wire: (service: string, method: string, path: string, options: { headers: { [string]: string }?, query: string?, body: any? }?) -> RotoPeerResult,
+	try_wire: (service: string, method: string, path: string, options: { headers: { [string]: string }?, query: string?, body: any? }?) -> RotoPeerResult,
 
 	-- Helpers defined by the bundle's `common.luau`.
 	required: (input: any, key: string, code: string?) -> string,
