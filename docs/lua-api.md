@@ -46,6 +46,7 @@ raises an error); **any** = also safe inside runtime callbacks.
 | `roto.vars` | table of strings | any | [Context](#context-and-values) |
 | `roto.null`, `roto.array(table)` | JSON null, marked array | any | [Context](#context-and-values) |
 | `roto.json_decode(text)` | decoded value (raises on bad JSON) | any | [Reading responses](#reading-responses) |
+| `roto.json_encode(value)` | compact JSON string | any | [Context](#context-and-values) |
 | `roto.encode_base64(text)`, `roto.decode_base64(text)` | base64 string, decoded string (raise on invalid base64) | any | [Context](#context-and-values) |
 | `roto.sqs.queue(name, options?)` | `{name, url, arn}` | setup | [SQS](#sqs) |
 | `roto.s3.bucket(name, options?)` | `{name, arn}` | setup | [S3](#s3) |
@@ -94,6 +95,7 @@ the requiring file and must start with `./` or `../`).
 | `roto.null` | Explicit JSON null |
 | `roto.array(table)` | Marks and returns the supplied table as a JSON array |
 | `roto.json_decode(text)` | Decodes a JSON string; malformed JSON raises an error |
+| `roto.json_encode(value)` | Compact JSON text of a value; whole numbers print as integers, `roto.null` as `null` |
 | `roto.encode_base64(text)`, `roto.decode_base64(text)` | Standard base64 of a string, and back; both are binary-safe, and invalid base64 raises an error |
 
 ```luau
@@ -111,7 +113,7 @@ arrays. An unmarked empty table encodes as `{}`; `roto.array({})` encodes as `[]
 `nil` omits an object field; use `roto.null` to keep a field with a null value.
 Return JSON-compatible values, without cycles or functions.
 
-All APIs except `roto.array`, `roto.null`, `roto.json_decode`, `roto.encode_base64`, `roto.decode_base64` and the context values are startup-only. Calling them
+All APIs except `roto.array`, `roto.null`, `roto.json_decode`, `roto.json_encode`, `roto.encode_base64`, `roto.decode_base64` and the context values are startup-only. Calling them
 inside a Lambda, interceptor, or MQTT callback raises an error. Setup failures
 stop startup and include source locations; earlier successful service changes
 are not rolled back as a group. Bindings and callbacks are local configuration:
@@ -723,6 +725,8 @@ Durable state belongs in `db`, since mutable module globals are not rolled back.
 | `roto.sha256(text)` | Lowercase hexadecimal SHA-256 digest |
 | `roto.decode_base64(text)` | Standard base64 decoded to UTF-8; invalid UTF-8 is replaced; invalid base64 raises an error |
 | `roto.json_decode(text, error_code?)` | Decoded JSON; malformed JSON raises `error_code` or `InvalidParameterException` |
+| `roto.json_encode(value)` | Compact JSON text of a value; whole numbers print as integers, `roto.null` as `null` |
+| `roto.encode_base64(text)` | Standard base64 of a string; binary-safe |
 
 Namespace and ID arguments are strings. Namespaces are not automatically scoped:
 include account and region when isolation is required. Setup APIs are not

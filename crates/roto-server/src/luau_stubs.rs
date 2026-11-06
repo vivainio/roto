@@ -446,6 +446,7 @@ mod tests {
             "\tcall: (",
             "\twire: (",
             "\tjson_decode: (",
+            "\tjson_encode: (",
             "\tarray: <T>(",
             "\tencode_base64: (",
             "\tdecode_base64: (",

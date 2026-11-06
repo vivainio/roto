@@ -913,6 +913,15 @@ pub fn run_source(
             lua.to_value(&value)
         })?,
     )?;
+    // Compact JSON text of a value; whole numbers print as integers.
+    roto.set(
+        "json_encode",
+        lua.create_function(|lua, value: LuaValue| {
+            let value: Value = lua.from_value(value)?;
+            serde_json::to_string(&crate::lua_service::integral_numbers(value))
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
     // Lua strings are byte strings, so both directions are binary-safe.
     roto.set(
         "encode_base64",
@@ -1766,6 +1775,8 @@ assert(roto.call("kms", "CreateKey", {}).KeyMetadata.KeyId)
 roto.call("logs", "CreateLogGroup", {logGroupName = "/app"})
 assert(roto.json_decode('{"a":[1,2]}').a[2] == 2)
 assert(not pcall(roto.json_decode, "{"))
+assert(roto.json_encode({a = roto.array({1, 2.5}), b = roto.null}) == '{"a":[1,2.5],"b":null}')
+assert(roto.json_encode(roto.array({})) == "[]")
 assert(roto.encode_base64("user:token") == "dXNlcjp0b2tlbg==")
 assert(roto.encode_base64("ab") == "YWI=" and roto.encode_base64("") == "")
 assert(roto.decode_base64("dXNlcjp0b2tlbg==") == "user:token")

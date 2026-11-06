@@ -1279,7 +1279,7 @@ impl LuaService {
     }
 }
 
-fn integral_numbers(value: Value) -> Value {
+pub(crate) fn integral_numbers(value: Value) -> Value {
     match value {
         Value::Number(n) => match n.as_f64() {
             Some(f) if n.is_f64() && f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
@@ -2077,6 +2077,47 @@ return M
         // Bad scheduling arguments are client errors.
         let (status, _) = ticker_call(&handler, &ctx, "Start", json!({"delay":-1,"count":1}));
         assert_eq!(status, 400);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn services_encode_json_with_integral_numbers_and_nulls() {
+        let dir = std::env::temp_dir().join(format!("roto-json-{}", roto_core::ids::request_id()));
+        std::fs::create_dir_all(dir.join("enc")).unwrap();
+        std::fs::write(
+            dir.join("manifest.json"),
+            json!({"version":1,"services":[{"service":"enc","script":"enc/service.luau","target_prefix":"Enc.","json_version":"1.0"}]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("enc/service.luau"),
+            r#"
+local M = {}
+function M.Encode(ctx, input, db)
+    return {
+        Text = roto.json_encode({a = roto.array({1, 2.5}), b = roto.null}),
+        Empty = roto.json_encode(roto.array({})),
+        Round = roto.json_decode(roto.json_encode({n = 3})).n,
+    }
+end
+return M
+"#,
+        )
+        .unwrap();
+        let services = discover(Arc::new(Store::ephemeral()), Some(dir.clone())).unwrap();
+        let (handlers, _jobs) = into_handlers(services);
+        let req = RawRequest {
+            method: "POST".into(),
+            path: "/".into(),
+            headers: vec![("x-amz-target".into(), "Enc.Encode".into())],
+            body: b"{}".to_vec(),
+            ..Default::default()
+        };
+        let response = handlers[0].handle(&context("111122223333", "us-east-1"), &req).unwrap();
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["Text"], r#"{"a":[1,2.5],"b":null}"#);
+        assert_eq!(body["Empty"], "[]");
+        assert_eq!(body["Round"], 3);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

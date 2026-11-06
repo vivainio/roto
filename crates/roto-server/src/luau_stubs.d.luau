@@ -338,6 +338,8 @@ declare roto: {
 	array: <T>(t: { T }) -> { T },
 	-- Decodes a JSON string. Raises on malformed JSON.
 	json_decode: (text: string) -> any,
+	-- Compact JSON text of a value. Whole numbers print as integers; `roto.null` is null.
+	json_encode: (value: any) -> string,
 	-- Standard base64 of a string; binary-safe.
 	encode_base64: (text: string) -> string,
 	-- Decodes standard base64 to a (binary-safe) string. Raises on invalid base64.
