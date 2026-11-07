@@ -1349,7 +1349,7 @@ roto.hooks.request("iotdata", "Publish", function() return {status=429, body="th
             .unwrap();
         assert!(String::from_utf8_lossy(&body).contains("<Code>NotImplemented</Code>"));
 
-        let request = Request::builder().uri("/2015-03-31/functions/demo/aliases/live")
+        let request = Request::builder().uri("/2019-09-30/functions/demo/concurrency")
             .header("authorization", "AWS4-HMAC-SHA256 Credential=test/20261010/us-east-1/lambda/aws4_request, SignedHeaders=host, Signature=test")
             .body(Body::empty()).unwrap();
         assert_eq!(
@@ -1366,7 +1366,7 @@ roto.hooks.request("iotdata", "Publish", function() return {status=429, body="th
         assert_eq!(unroutable["count"], 2);
         assert_eq!(unroutable["operation"], serde_json::Value::Null);
         let lambda = calls.iter().find(|c| c["service"] == "lambda").unwrap();
-        assert_eq!(lambda["operation"], "GetAlias");
+        assert_eq!(lambda["operation"], "GetFunctionConcurrency");
         let sts = calls.iter().find(|c| c["service"] == "sts").unwrap();
         assert_eq!(sts["operation"], "DecodeAuthorizationMessage");
         assert!(!snapshot.to_string().contains("private-payload"));

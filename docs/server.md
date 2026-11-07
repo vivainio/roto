@@ -61,7 +61,7 @@ RUST_LOG=debug roto-server --ephemeral
 
 ### Virtual clock
 
-Luau services can schedule timers (see [Timers](../services/README.md#timers)). To test them
+Luau services can schedule timers (see [Timers](https://github.com/vivainio/roto/blob/main/services/README.md#timers)). To test them
 without waiting, move the virtual clock forward:
 
 ```sh

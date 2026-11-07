@@ -2113,7 +2113,9 @@ return M
             body: b"{}".to_vec(),
             ..Default::default()
         };
-        let response = handlers[0].handle(&context("111122223333", "us-east-1"), &req).unwrap();
+        let response = handlers[0]
+            .handle(&context("111122223333", "us-east-1"), &req)
+            .unwrap();
         let body: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(body["Text"], r#"{"a":[1,2.5],"b":null}"#);
         assert_eq!(body["Empty"], "[]");
