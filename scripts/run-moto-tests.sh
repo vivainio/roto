@@ -9,7 +9,11 @@ svc="${1:?service dir, e.g. test_sts}"; shift || true
 port="${ROTO_TEST_PORT:-5070}"
 venv="${ROTO_MOTO_VENV:-$root/.venv-moto}"
 if [[ ! -x "$venv/bin/python" ]]; then
-  python3 -m venv "$venv" && "$venv/bin/pip" install -q -r "$root/tests/moto/requirements.txt"
+  python3.14 -m venv "$venv" && "$venv/bin/pip" install -q -r "$root/tests/moto/requirements.txt"
+fi
+if ! "$venv/bin/python" -c 'import sys; sys.exit(sys.version_info[:2] != (3, 14))'; then
+  echo "Moto tests require Python 3.14. Recreate $venv with python3.14 -m venv, then install tests/moto/requirements.txt." >&2
+  exit 1
 fi
 cargo build -q --manifest-path "$root/Cargo.toml" -p roto-server
 data="$(mktemp -d)"

@@ -69,11 +69,14 @@ impl CloudWatchLogs {
                 "invalid Lambda function ARN for log delivery",
             ));
         };
+        let (function_name, version) = function_name
+            .split_once(':')
+            .unwrap_or((function_name, "$LATEST"));
         let group_name = format!("/aws/lambda/{function_name}");
         let now = now_ms();
         let date = Timestamp(now / 1000).to_iso8601();
         let date = date.get(..10).unwrap_or("1970-01-01").replace('-', "/");
-        let stream_name = format!("{date}/[$LATEST]{invocation_id}");
+        let stream_name = format!("{date}/[{version}]{invocation_id}");
 
         self.db.transaction(|tx| {
             ensure_group(tx, account, region, &group_name, now)?;

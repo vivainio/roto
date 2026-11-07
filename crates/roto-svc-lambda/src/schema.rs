@@ -5,6 +5,18 @@ code -> Text,
 tags -> Text,
 policy -> Text,
 }}
+diesel::table! { aliases (arn) {
+arn -> Text,
+config -> Text,
+}}
+diesel::table! { durable_executions (arn) {
+arn -> Text,
+function_arn -> Text,
+name -> Text,
+data -> Text,
+state -> Text,
+due -> BigInt,
+}}
 diesel::table! { invocations (id) {
 id -> Text,
 arn -> Text,

@@ -1,4 +1,5 @@
 //! Lambda metadata and invocation through locally configured command/HTTP executors.
+mod durable;
 mod event_sources;
 mod executor;
 #[allow(clippy::all)]
@@ -8,6 +9,7 @@ mod schema;
 mod service;
 #[cfg(test)]
 mod tests;
+mod versions;
 
 use roto_core::store::{Migration, Store};
 use roto_core::{AwsError, RawRequest, RawResponse, RequestContext, ServiceHandler};
@@ -54,6 +56,22 @@ pub const IMPLEMENTED: &[&str] = &[
     "UpdateFunctionCode",
     "DeleteFunction",
     "Invoke",
+    "CheckpointDurableExecution",
+    "GetDurableExecutionState",
+    "GetDurableExecution",
+    "StopDurableExecution",
+    "SendDurableExecutionCallbackSuccess",
+    "SendDurableExecutionCallbackFailure",
+    "SendDurableExecutionCallbackHeartbeat",
+    "GetDurableExecutionHistory",
+    "ListDurableExecutionsByFunction",
+    "PublishVersion",
+    "CreateAlias",
+    "UpdateAlias",
+    "GetAlias",
+    "DeleteAlias",
+    "ListAliases",
+    "ListVersionsByFunction",
     "AddPermission",
     "RemovePermission",
     "GetPolicy",
@@ -69,6 +87,11 @@ CREATE INDEX invocation_queue ON invocations(state, due, created);
 " }, Migration { version: 2, sql: "
 ALTER TABLE invocations ADD COLUMN origin TEXT NOT NULL DEFAULT 'async';
 CREATE TABLE event_source_mappings (uuid TEXT PRIMARY KEY, account TEXT NOT NULL, region TEXT NOT NULL, source TEXT NOT NULL, function TEXT NOT NULL, config TEXT NOT NULL, UNIQUE(account,region,source,function));
+" }, Migration { version: 3, sql: "
+CREATE TABLE durable_executions (arn TEXT PRIMARY KEY, function_arn TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL, state TEXT NOT NULL, due BIGINT NOT NULL, UNIQUE(function_arn, name));
+CREATE INDEX durable_queue ON durable_executions(state, due);
+" }, Migration { version: 4, sql: "
+CREATE TABLE aliases (arn TEXT PRIMARY KEY, config TEXT NOT NULL);
 " }];
 
 pub struct LambdaHandler(pub Arc<Lambda>);
@@ -96,6 +119,10 @@ impl ServiceHandler for LambdaHandler {
     }
     fn claims_unsigned(&self, req: &RawRequest) -> bool {
         req.path.starts_with("/2015-03-31/")
+            || req.path.starts_with("/2025-12-01/durable-executions/")
+            || req
+                .path
+                .starts_with("/2025-12-01/durable-execution-callbacks/")
             || req.path.starts_with("/2017-03-31/tags/")
             || req.path.starts_with("/roto-api/lambda/")
     }

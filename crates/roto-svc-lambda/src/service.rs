@@ -25,6 +25,17 @@ pub(crate) fn now() -> i64 {
     // Virtual clock: `POST /roto-api/clock/advance` moves it.
     roto_core::clock::now_ms()
 }
+pub(crate) fn chain_id(arn: &str, operation: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(arn.as_bytes());
+    hash.update(b"/");
+    hash.update(operation.as_bytes());
+    hash.finalize()
+        .iter()
+        .take(24)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 pub(crate) fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "InvalidParameterValueException", message)
 }
@@ -45,7 +56,19 @@ pub(crate) fn arn(ctx: &RequestContext, name: &str) -> Result<String, AwsError> 
         let name = name.strip_prefix(&prefix).ok_or_else(|| missing(name))?;
         return arn(ctx, name);
     }
-    let name = name.strip_suffix(":$LATEST").unwrap_or(name);
+    let (name, suffix) = name
+        .split_once(':')
+        .map_or((name, None), |(name, suffix)| (name, Some(suffix)));
+    if suffix.is_some_and(|q| {
+        q != "$LATEST"
+            && (q.is_empty()
+                || q.len() > 128
+                || !q
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    }) {
+        return Err(invalid("Invalid function qualifier"));
+    }
     if name.is_empty()
         || name.len() > 64
         || !name
@@ -53,17 +76,28 @@ pub(crate) fn arn(ctx: &RequestContext, name: &str) -> Result<String, AwsError> 
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Err(invalid(
-            "FunctionName must contain 1–64 letters, digits, hyphens or underscores; only $LATEST is supported",
+            "FunctionName must contain 1–64 letters, digits, hyphens or underscores; invalid function name",
         ));
     }
     Ok(format!(
-        "arn:aws:lambda:{}:{}:function:{name}",
-        ctx.region, ctx.account_id
+        "arn:aws:lambda:{}:{}:function:{name}{}",
+        ctx.region,
+        ctx.account_id,
+        suffix
+            .filter(|q| *q != "$LATEST")
+            .map(|q| format!(":{q}"))
+            .unwrap_or_default()
     ))
 }
 fn qualifier(q: &Option<String>) -> Result<(), AwsError> {
-    if q.as_deref().is_some_and(|q| q != "$LATEST") {
-        return Err(AwsError::not_implemented("lambda", "versions/aliases"));
+    if q.as_deref().is_some_and(|q| {
+        q != "$LATEST"
+            && (q.is_empty()
+                || !q
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    }) {
+        return Err(invalid("Invalid qualifier"));
     }
     Ok(())
 }
@@ -71,6 +105,7 @@ fn config(value: &Value) -> Result<FunctionConfiguration, AwsError> {
     FunctionConfiguration::from_json(value, "")
 }
 fn validate_config(value: &Value) -> Result<(), AwsError> {
+    crate::durable::validate_config(value)?;
     if !value["Timeout"]
         .as_u64()
         .is_some_and(|n| (1..=900).contains(&n))
@@ -101,12 +136,32 @@ fn stamp(value: &mut Value) {
 }
 
 impl Lambda {
+    pub(crate) fn bound_executor(&self, arn: &str) -> Option<crate::Executor> {
+        let bindings = self.executors.read().unwrap();
+        bindings
+            .functions
+            .get(arn)
+            .or_else(|| {
+                bindings
+                    .functions
+                    .get(arn.rsplit(':').next().unwrap_or(arn))
+            })
+            .cloned()
+    }
     pub fn new(store: &Store, executors: Executors) -> Result<Self, AwsError> {
         for executor in executors.functions.values() {
             executor.validate().map_err(invalid)?;
         }
         let db = store.diesel_db("lambda", crate::MIGRATIONS)?;
         db.transaction(|tx| {
+            diesel::update(
+                durable_executions::table.filter(durable_executions::state.eq("running")),
+            )
+            .set((
+                durable_executions::state.eq("queued"),
+                durable_executions::due.eq(now()),
+            ))
+            .execute(tx)?;
             diesel::update(
                 invocations::table
                     .filter(invocations::state.eq("running"))
@@ -167,6 +222,8 @@ impl Lambda {
     pub fn reset(&self) -> Result<(), AwsError> {
         self.rie_pool.clear(None);
         self.db.transaction(|tx| {
+            diesel::delete(durable_executions::table).execute(tx)?;
+            diesel::delete(aliases::table).execute(tx)?;
             diesel::delete(event_source_mappings::table).execute(tx)?;
             diesel::delete(functions::table).execute(tx)?;
             diesel::delete(invocations::table).execute(tx)?;
@@ -206,12 +263,17 @@ impl Lambda {
         event: Value,
         client_context: Option<String>,
     ) -> Result<Job, AwsError> {
-        let arn = arn(ctx, name)?;
+        let arn = self.resolve_arn(ctx, name, None)?;
         let value = self.load(&arn)?;
         let bindings = self.executors.read().unwrap();
-        let executor = bindings
+        let mut executor = bindings
             .functions
             .get(&arn)
+            .or_else(|| {
+                (arn.split(':').count() > 7)
+                    .then(|| arn.rsplit_once(':').unwrap().0)
+                    .and_then(|base| bindings.functions.get(base))
+            })
             .or_else(|| {
                 bindings
                     .functions
@@ -223,6 +285,21 @@ impl Lambda {
                     "No local executor bound to {arn}; bind one with Lua setup"
                 ))
             })?;
+        if arn.split(':').count() > 7 {
+            let code: String = self.db.read(|tx| {
+                Ok(functions::table
+                    .find(&arn)
+                    .select(functions::code)
+                    .first(tx)?)
+            })?;
+            if let Some(snapshot) = serde_json::from_str::<Value>(&code)
+                .ok()
+                .and_then(|v| v.get("__roto_executor").cloned())
+            {
+                executor = serde_json::from_value(snapshot)
+                    .map_err(|e| AwsError::internal(e.to_string()))?;
+            }
+        }
         let environment = value["Environment"]["Variables"]
             .as_object()
             .map(|o| {
@@ -302,6 +379,18 @@ impl Lambda {
         event: Value,
     ) -> Result<String, AwsError> {
         let job = self.job(ctx, name, event, None)?;
+        if self.load(&job.arn)?.get("DurableConfig").is_some() {
+            let response = self.invoke(
+                ctx,
+                InvocationRequest {
+                    function_name: crate::versions::qualified(&job.arn),
+                    invocation_type: Some("Event".into()),
+                    payload: Some(Blob(serde_json::to_vec(&job.event).unwrap())),
+                    ..Default::default()
+                },
+            )?;
+            return Ok(response.durable_execution_arn.unwrap());
+        }
         self.record(&job, "queued")?;
         Ok(job.request_id)
     }
@@ -337,6 +426,9 @@ impl Lambda {
                     .expect("Lambda runtime");
                 while let Some(lambda) = weak.upgrade() {
                     lambda.rie_pool.expire();
+                    if let Err(error) = lambda.run_durable(&runtime) {
+                        eprintln!("Lambda durable execution: {error}");
+                    }
                     let next = lambda.db.transaction(|tx| {
                         let row: Option<(String, String, i32)> = invocations::table
                             .filter(invocations::state.eq("queued"))
@@ -385,6 +477,132 @@ impl Lambda {
 
 #[roto_core::implements_operations]
 impl Service for Lambda {
+    fn publish_version(
+        &self,
+        ctx: &RequestContext,
+        i: PublishVersionRequest,
+    ) -> Result<FunctionConfiguration, AwsError> {
+        self.version_publish(ctx, i)
+    }
+    fn create_alias(
+        &self,
+        ctx: &RequestContext,
+        i: CreateAliasRequest,
+    ) -> Result<AliasConfiguration, AwsError> {
+        self.alias_set(ctx, i.to_json(), false)
+    }
+    fn update_alias(
+        &self,
+        ctx: &RequestContext,
+        i: UpdateAliasRequest,
+    ) -> Result<AliasConfiguration, AwsError> {
+        self.alias_set(ctx, i.to_json(), true)
+    }
+    fn get_alias(
+        &self,
+        ctx: &RequestContext,
+        i: GetAliasRequest,
+    ) -> Result<AliasConfiguration, AwsError> {
+        self.alias_get(ctx, &i.function_name, &i.name)
+    }
+    fn delete_alias(&self, ctx: &RequestContext, i: DeleteAliasRequest) -> Result<(), AwsError> {
+        self.alias_delete(ctx, &i.function_name, &i.name)
+    }
+    fn list_aliases(
+        &self,
+        ctx: &RequestContext,
+        i: ListAliasesRequest,
+    ) -> Result<ListAliasesResponse, AwsError> {
+        self.alias_list(ctx, i)
+    }
+    fn list_versions_by_function(
+        &self,
+        ctx: &RequestContext,
+        i: ListVersionsByFunctionRequest,
+    ) -> Result<ListVersionsByFunctionResponse, AwsError> {
+        self.version_list(ctx, i)
+    }
+    fn send_durable_execution_callback_success(
+        &self,
+        ctx: &RequestContext,
+        i: SendDurableExecutionCallbackSuccessRequest,
+    ) -> Result<SendDurableExecutionCallbackSuccessResponse, AwsError> {
+        let payload = i
+            .result
+            .map(|b| {
+                String::from_utf8(b.0)
+                    .map(Value::String)
+                    .map_err(|_| invalid("Callback result must be UTF-8"))
+            })
+            .transpose()?;
+        self.durable_callback(ctx, &i.callback_id, "success", payload)?;
+        Ok(SendDurableExecutionCallbackSuccessResponse {})
+    }
+    fn send_durable_execution_callback_failure(
+        &self,
+        ctx: &RequestContext,
+        i: SendDurableExecutionCallbackFailureRequest,
+    ) -> Result<SendDurableExecutionCallbackFailureResponse, AwsError> {
+        self.durable_callback(
+            ctx,
+            &i.callback_id,
+            "failure",
+            Some(i.error.map(|e| e.to_json()).unwrap_or(
+                json!({"ErrorType":"CallbackFailure","ErrorMessage":"Callback failed"}),
+            )),
+        )?;
+        Ok(SendDurableExecutionCallbackFailureResponse {})
+    }
+    fn send_durable_execution_callback_heartbeat(
+        &self,
+        ctx: &RequestContext,
+        i: SendDurableExecutionCallbackHeartbeatRequest,
+    ) -> Result<SendDurableExecutionCallbackHeartbeatResponse, AwsError> {
+        self.durable_callback(ctx, &i.callback_id, "heartbeat", None)?;
+        Ok(SendDurableExecutionCallbackHeartbeatResponse {})
+    }
+    fn get_durable_execution_history(
+        &self,
+        ctx: &RequestContext,
+        i: GetDurableExecutionHistoryRequest,
+    ) -> Result<GetDurableExecutionHistoryResponse, AwsError> {
+        self.durable_history(ctx, i)
+    }
+    fn list_durable_executions_by_function(
+        &self,
+        ctx: &RequestContext,
+        i: ListDurableExecutionsByFunctionRequest,
+    ) -> Result<ListDurableExecutionsByFunctionResponse, AwsError> {
+        self.durable_list(ctx, i)
+    }
+    fn checkpoint_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        i: CheckpointDurableExecutionRequest,
+    ) -> Result<CheckpointDurableExecutionResponse, AwsError> {
+        self.durable_checkpoint(ctx, i)
+    }
+    fn get_durable_execution_state(
+        &self,
+        ctx: &RequestContext,
+        i: GetDurableExecutionStateRequest,
+    ) -> Result<GetDurableExecutionStateResponse, AwsError> {
+        self.durable_state(ctx, i)
+    }
+    fn get_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        i: GetDurableExecutionRequest,
+    ) -> Result<GetDurableExecutionResponse, AwsError> {
+        self.durable_get(ctx, i)
+    }
+    fn stop_durable_execution(
+        &self,
+        ctx: &RequestContext,
+        i: StopDurableExecutionRequest,
+    ) -> Result<StopDurableExecutionResponse, AwsError> {
+        self.durable_stop(ctx, i)
+    }
     fn create_event_source_mapping(
         &self,
         ctx: &RequestContext,
@@ -427,8 +645,8 @@ impl Service for Lambda {
         i: CreateFunctionRequest,
     ) -> Result<FunctionConfiguration, AwsError> {
         let arn = arn(ctx, &i.function_name)?;
-        if i.publish == Some(true) {
-            return Err(AwsError::not_implemented("lambda", "PublishVersion"));
+        if arn.split(':').count() != 7 {
+            return Err(invalid("Published function versions are immutable"));
         }
         let mut value = i.to_json();
         let code = value
@@ -476,6 +694,15 @@ impl Service for Lambda {
                 .execute(tx)?;
             Ok(())
         })?;
+        if i.publish == Some(true) {
+            return self.publish_version(
+                ctx,
+                PublishVersionRequest {
+                    function_name: i.function_name,
+                    ..Default::default()
+                },
+            );
+        }
         config(&value)
     }
     fn get_function_configuration(
@@ -484,7 +711,7 @@ impl Service for Lambda {
         i: GetFunctionConfigurationRequest,
     ) -> Result<FunctionConfiguration, AwsError> {
         qualifier(&i.qualifier)?;
-        config(&self.load(&arn(ctx, &i.function_name)?)?)
+        config(&self.load(&self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?)?)
     }
     fn get_function(
         &self,
@@ -492,7 +719,7 @@ impl Service for Lambda {
         i: GetFunctionRequest,
     ) -> Result<GetFunctionResponse, AwsError> {
         qualifier(&i.qualifier)?;
-        let arn = arn(ctx, &i.function_name)?;
+        let arn = self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?;
         let value = self.load(&arn)?;
         let tags: String = self.db.read(|c| {
             Ok(functions::table
@@ -524,6 +751,13 @@ impl Service for Lambda {
         let mut values = self.db.read(|c| {
             Ok(functions::table
                 .filter(functions::arn.like(&prefix))
+                .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                    if i.function_version.as_deref() == Some("ALL") {
+                        "1"
+                    } else {
+                        "json_extract(config, '$.Version') = '$LATEST'"
+                    },
+                ))
                 .filter(functions::arn.gt(i.marker.unwrap_or_default()))
                 .order(functions::arn)
                 .limit(i64::from(limit) + 1)
@@ -550,6 +784,9 @@ impl Service for Lambda {
         i: UpdateFunctionConfigurationRequest,
     ) -> Result<FunctionConfiguration, AwsError> {
         let arn = arn(ctx, &i.function_name)?;
+        if arn.split(':').count() != 7 {
+            return Err(invalid("Published function versions are immutable"));
+        }
         let mut value = self.load(&arn)?;
         if i.revision_id
             .as_deref()
@@ -576,10 +813,10 @@ impl Service for Lambda {
         i: UpdateFunctionCodeRequest,
     ) -> Result<FunctionConfiguration, AwsError> {
         let arn = arn(ctx, &i.function_name)?;
-        let mut value = self.load(&arn)?;
-        if i.publish == Some(true) {
-            return Err(AwsError::not_implemented("lambda", "PublishVersion"));
+        if arn.split(':').count() != 7 {
+            return Err(invalid("Published function versions are immutable"));
         }
+        let mut value = self.load(&arn)?;
         if i.revision_id
             .as_deref()
             .is_some_and(|r| Some(r) != value["RevisionId"].as_str())
@@ -610,6 +847,15 @@ impl Service for Lambda {
                 .execute(tx)?;
             Ok(())
         })?;
+        if i.publish == Some(true) {
+            return self.publish_version(
+                ctx,
+                PublishVersionRequest {
+                    function_name: i.function_name,
+                    ..Default::default()
+                },
+            );
+        }
         config(&value)
     }
     fn delete_function(
@@ -618,8 +864,36 @@ impl Service for Lambda {
         i: DeleteFunctionRequest,
     ) -> Result<DeleteFunctionResponse, AwsError> {
         qualifier(&i.qualifier)?;
-        let arn = arn(ctx, &i.function_name)?;
+        let arn = self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?;
         self.db.transaction(|tx| {
+            let versions = functions::table.select(functions::arn).load::<String>(tx)?;
+            let alias_rows = aliases::table
+                .select((aliases::arn, aliases::config))
+                .load::<(String, String)>(tx)?;
+            if arn.split(':').count() > 7 {
+                let (base, version) = arn.rsplit_once(':').unwrap();
+                if alias_rows.iter().any(|(name, data)| {
+                    name.starts_with(&format!("{base}:"))
+                        && serde_json::from_str::<Value>(data)
+                            .ok()
+                            .is_some_and(|v| v["FunctionVersion"] == version)
+                }) {
+                    return Err(conflict("Version is referenced by an alias"));
+                }
+            } else {
+                for version in versions
+                    .iter()
+                    .filter(|name| name.starts_with(&format!("{arn}:")))
+                {
+                    diesel::delete(functions::table.find(version)).execute(tx)?;
+                }
+                for (alias, _) in alias_rows
+                    .iter()
+                    .filter(|(name, _)| name.starts_with(&format!("{arn}:")))
+                {
+                    diesel::delete(aliases::table.find(alias)).execute(tx)?;
+                }
+            }
             if diesel::delete(functions::table.filter(functions::arn.eq(&(arn)))).execute(tx)? == 0
             {
                 return Err(missing(&i.function_name));
@@ -647,7 +921,11 @@ impl Service for Lambda {
         {
             return Err(invalid("Invalid LogType"));
         }
-        self.load(&arn(ctx, &i.function_name)?)?;
+        let configuration =
+            self.load(&self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?)?;
+        if configuration.get("DurableConfig").is_some() {
+            return self.durable_invoke(ctx, i, &configuration);
+        }
         if kind == "DryRun" {
             return Ok(InvocationResponse {
                 status_code: Some(204),
@@ -675,7 +953,7 @@ impl Service for Lambda {
         .map_err(|e| AwsError::sender(400, "InvalidRequestContentException", e.to_string()))?;
         let job = self.job(
             ctx,
-            &i.function_name,
+            configuration["FunctionArn"].as_str().unwrap(),
             event,
             if kind == "RequestResponse" {
                 i.client_context
@@ -702,7 +980,12 @@ impl Service for Lambda {
             status_code: Some(200),
             function_error: outcome.failed.then(|| "Unhandled".into()),
             payload: Some(Blob(serde_json::to_vec(&outcome.payload).unwrap())),
-            executed_version: Some("$LATEST".into()),
+            executed_version: Some(
+                configuration["Version"]
+                    .as_str()
+                    .unwrap_or("$LATEST")
+                    .into(),
+            ),
             log_result: (i.log_type.as_deref() == Some("Tail"))
                 .then(|| base64::encode(&bytes[bytes.len().saturating_sub(4096)..])),
             ..Default::default()
@@ -714,7 +997,7 @@ impl Service for Lambda {
         i: AddPermissionRequest,
     ) -> Result<AddPermissionResponse, AwsError> {
         qualifier(&i.qualifier)?;
-        let arn = arn(ctx, &i.function_name)?;
+        let arn = self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?;
         self.load(&arn)?;
         let mut statement = json!({"Sid":i.statement_id,"Effect":"Allow","Action":i.action,"Principal":{"Service":i.principal},"Resource":arn});
         if let Some(source) = i.source_arn {
@@ -748,7 +1031,7 @@ impl Service for Lambda {
         i: GetPolicyRequest,
     ) -> Result<GetPolicyResponse, AwsError> {
         qualifier(&i.qualifier)?;
-        let arn = arn(ctx, &i.function_name)?;
+        let arn = self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?;
         let value = self.load(&arn)?;
         let source: String = self.db.read(|c| {
             Ok(functions::table
@@ -773,7 +1056,7 @@ impl Service for Lambda {
         i: RemovePermissionRequest,
     ) -> Result<(), AwsError> {
         qualifier(&i.qualifier)?;
-        let arn = arn(ctx, &i.function_name)?;
+        let arn = self.resolve_arn(ctx, &i.function_name, i.qualifier.as_deref())?;
         self.load(&arn)?;
         self.db.transaction(|tx| {
             let source: String = functions::table

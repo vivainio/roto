@@ -9,7 +9,7 @@ use roto_core::{AwsError, RequestContext, ids};
 use roto_protocol::{FromJson, ToJson};
 use serde_json::{Value, json};
 
-use crate::executor::execute;
+use crate::executor::{Outcome, execute};
 use crate::generated::*;
 use crate::service::{Lambda, arn, conflict, invalid, missing, now};
 
@@ -71,7 +71,7 @@ impl Lambda {
             .ok_or_else(|| invalid("EventSourceArn is required"))?;
         let function = value["FunctionArn"].as_str().unwrap();
         scope(ctx, source, function)?;
-        let config = self.load(function)?;
+        let config = self.load(&self.resolve_arn(ctx, function, None)?)?;
         let sqs = self.sqs.as_ref().ok_or_else(|| {
             AwsError::not_implemented(
                 "lambda",
@@ -391,9 +391,36 @@ impl Lambda {
             return Ok(());
         }
         job.event = event.clone();
-        self.record(&job, "running")?;
-        let outcome = runtime.block_on(execute(&job, &self.rie_pool));
-        self.finish(&job, &outcome, 1, false)?;
+        let outcome = if self.load(&job.arn)?.get("DurableConfig").is_some() {
+            let message_ids = records
+                .iter()
+                .map(|r| r["messageId"].as_str().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("/");
+            let response = self.invoke(
+                ctx,
+                InvocationRequest {
+                    function_name: crate::versions::qualified(&job.arn),
+                    durable_execution_name: Some(format!(
+                        "sqs-{}",
+                        crate::service::chain_id(source, &message_ids)
+                    )),
+                    payload: Some(roto_protocol::Blob(serde_json::to_vec(&event).unwrap())),
+                    ..Default::default()
+                },
+            )?;
+            Outcome {
+                failed: response.function_error.is_some(),
+                logs: String::new(),
+                payload: serde_json::from_slice(&response.payload.unwrap_or_default().0)
+                    .unwrap_or(Value::Null),
+            }
+        } else {
+            self.record(&job, "running")?;
+            let outcome = runtime.block_on(execute(&job, &self.rie_pool));
+            self.finish(&job, &outcome, 1, false)?;
+            outcome
+        };
         if outcome.failed {
             self.processing_result(ctx, id, "Function error");
             return Ok(());

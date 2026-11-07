@@ -1,0 +1,3 @@
+aws-durable-execution-sdk-python==3.0.1
+aws-durable-execution-sdk-python-testing==1.4.0
+pytest==9.1.1

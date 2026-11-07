@@ -125,6 +125,15 @@ pub(crate) struct Job {
     pub client_context: Option<String>,
 }
 
+impl Job {
+    pub(crate) fn function_name(&self) -> &str {
+        self.arn.split(':').nth(6).unwrap_or("")
+    }
+    pub(crate) fn version(&self) -> &str {
+        self.arn.split(':').nth(7).unwrap_or("$LATEST")
+    }
+}
+
 fn default_memory_size() -> u64 {
     128
 }
@@ -213,10 +222,8 @@ async fn execute_inner(job: &Job, pool: &RiePool) -> Outcome {
                 .env("AWS_REGION", &job.region)
                 .env("AWS_DEFAULT_REGION", &job.region)
                 .env("AWS_ENDPOINT_URL", &job.endpoint)
-                .env(
-                    "AWS_LAMBDA_FUNCTION_NAME",
-                    job.arn.rsplit(':').next().unwrap_or(""),
-                )
+                .env("AWS_LAMBDA_FUNCTION_NAME", job.function_name())
+                .env("AWS_LAMBDA_FUNCTION_VERSION", job.version())
                 .env("ROTO_INVOCATION_ID", &job.request_id)
                 .env("ROTO_FUNCTION_ARN", &job.arn)
                 .stdin(Stdio::piped())
@@ -560,11 +567,12 @@ async fn engine_candidates() -> Vec<ContainerEngine> {
 
 fn container_environment(job: &Job, engine: ContainerEngine) -> BTreeMap<String, String> {
     let mut env = job.environment.clone();
+    env.insert("AWS_LAMBDA_FUNCTION_VERSION".into(), job.version().into());
     env.insert("AWS_REGION".into(), job.region.clone());
     env.insert("AWS_DEFAULT_REGION".into(), job.region.clone());
     env.insert(
         "AWS_LAMBDA_FUNCTION_NAME".into(),
-        job.arn.rsplit(':').next().unwrap_or("").to_owned(),
+        job.function_name().to_owned(),
     );
     env.insert(
         "AWS_LAMBDA_FUNCTION_MEMORY_SIZE".into(),

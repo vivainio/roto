@@ -125,7 +125,7 @@ pub(crate) async fn spawn(
         }
     });
 
-    let name = job.arn.rsplit(':').next().unwrap_or("").to_owned();
+    let name = job.function_name().to_owned();
     let mut cmd = tokio::process::Command::new(&argv[0]);
     cmd.args(&argv[1..])
         .envs(&job.environment)
@@ -134,7 +134,7 @@ pub(crate) async fn spawn(
         .env("AWS_DEFAULT_REGION", &job.region)
         .env("AWS_ENDPOINT_URL", &job.endpoint)
         .env("AWS_LAMBDA_FUNCTION_NAME", &name)
-        .env("AWS_LAMBDA_FUNCTION_VERSION", "$LATEST")
+        .env("AWS_LAMBDA_FUNCTION_VERSION", job.version())
         .env(
             "AWS_LAMBDA_FUNCTION_MEMORY_SIZE",
             job.memory_size.to_string(),

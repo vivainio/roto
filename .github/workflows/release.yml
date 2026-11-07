@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       - run: python3 -m unittest discover -s tests -p test_package_lua_services.py
       - name: Package optional Lua services
         run: python3 scripts/package-lua-services.py --output "dist/roto-lua-services-${GITHUB_REF_NAME}.zip"
