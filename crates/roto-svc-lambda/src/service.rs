@@ -14,11 +14,23 @@ use crate::executor::{Executors, Job, Outcome, execute};
 use crate::generated::*;
 
 pub struct Lambda {
+    // Direct Invoke calls must share a live reactor: warm Runtime API workers
+    // keep their listeners and pipe readers between synchronous requests.
+    runtime: Option<tokio::runtime::Runtime>,
     pub(crate) db: Arc<Db>,
     executors: RwLock<Executors>,
     pub(crate) rie_pool: crate::executor::RiePool,
     pub(crate) sqs: Option<Arc<roto_svc_sqs::Sqs>>,
     logs: RwLock<Option<Arc<roto_svc_logs::CloudWatchLogs>>>,
+}
+
+impl Drop for Lambda {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            // Lambda can be dropped from the server's async context.
+            runtime.shutdown_background();
+        }
+    }
 }
 
 pub(crate) fn now() -> i64 {
@@ -185,6 +197,14 @@ impl Lambda {
             Ok(())
         })?;
         Ok(Self {
+            runtime: Some(
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .thread_name("roto-lambda-runtime")
+                    .enable_all()
+                    .build()
+                    .map_err(|e| AwsError::internal(e.to_string()))?,
+            ),
             db,
             executors: RwLock::new(executors),
             rie_pool: Default::default(),
@@ -969,11 +989,11 @@ impl Service for Lambda {
             });
         }
         self.record(&job, "running")?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| AwsError::internal(e.to_string()))?;
-        let outcome = runtime.block_on(execute(&job, &self.rie_pool));
+        let outcome = self
+            .runtime
+            .as_ref()
+            .unwrap()
+            .block_on(execute(&job, &self.rie_pool));
         self.finish(&job, &outcome, 1, false)?;
         let bytes = outcome.logs.as_bytes();
         Ok(InvocationResponse {

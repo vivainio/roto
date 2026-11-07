@@ -23,6 +23,7 @@ nav = [
     { "Core services" = [
       { "S3" = "s3.md" },
       { "Lambda" = "lambda.md" },
+      { "Durable functions" = "durable-functions.md" },
       { "CloudWatch Logs" = "cloudwatch-logs.md" },
       { "EventBridge" = "eventbridge.md" },
       { "EventBridge Scheduler" = "scheduler.md" },

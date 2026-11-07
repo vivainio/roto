@@ -31,6 +31,8 @@ aws --endpoint-url http://localhost:5070 lambda invoke \
 
 The [Luau scripting guide](lua.md) covers resource creation and executor bindings. The
 [Demos chapter](demos.md#invoke-a-lambda-container-image) shows the RIE image invocation.
+For SDK-decorated workflows, see [Durable functions](durable-functions.md), including
+native Python, AWS's runtime client, container, and custom-runtime options.
 
 ## Custom runtime binaries
 

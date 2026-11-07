@@ -7,6 +7,8 @@ The Moto launcher checks its virtual environment's version before running tests.
 ```sh
 python3.14 -m venv .venv-moto
 .venv-moto/bin/python -m pip install -r tests/moto/requirements.txt -r tests/durable/requirements.txt
+.venv-moto/bin/python -m maturin build --profile dev --locked --out dist
+.venv-moto/bin/python -m pip install --no-deps dist/*.whl
 .venv-moto/bin/python -m unittest discover -s tests -p 'test_*.py'
 .venv-moto/bin/python -m pytest -q tests/durable
 ```

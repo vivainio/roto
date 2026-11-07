@@ -12,30 +12,27 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
 class Server:
-    def __init__(self, directory):
+    def __init__(self, directory, handler_name="handler.handler", handler_cwd=None):
         self.directory = directory
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
         self.endpoint = f"http://127.0.0.1:{self.port}"
         self.setup = directory / "setup.luau"
-        argv = ", ".join(json.dumps(arg) for arg in [sys.executable, str(Path(__file__).with_name("command.py"))])
+        argv = ", ".join(json.dumps(arg) for arg in [sys.executable, "-m", "roto_aws.lambda_runtime"])
+        cwd = json.dumps(str(handler_cwd or Path(__file__).resolve().parent))
         self.setup.write_text(
             '--!strict\n'
-            f'roto.lambda.bind("durable-test", {{command = {{{argv}}}, '
-            'env = {AWS_ACCESS_KEY_ID = "testing", AWS_SECRET_ACCESS_KEY = "testing"}})\n'
-            f'roto.lambda.bind("plain-test", {{command = {{{argv}, "--plain"}}}})\n'
+            f'roto.lambda.bind("durable-test", {{runtime = {{{argv}, {json.dumps(handler_name)}}}, cwd = {cwd}}})\n'
+            f'roto.lambda.bind("plain-test", {{runtime = {{{argv}, "handler.plain_handler"}}, cwd = {cwd}}})\n'
         )
         self.process = None
 
     def start(self):
         self.log = (self.directory / "server.log").open("a+")
         self.process = subprocess.Popen(
-            [str(ROOT / "target/debug/roto-server"), "--port", str(self.port),
+            [str(Path(sys.executable).parent / "roto-server"), "--port", str(self.port),
              "--data-dir", str(self.directory / "store"), "--setup", str(self.setup)],
             stdout=self.log, stderr=self.log,
         )
@@ -73,7 +70,7 @@ class Server:
     def create(self, **durable):
         return self.client.create_function(
             FunctionName="durable-test", Role="arn:aws:iam::123456789012:role/local",
-            Runtime="provided.al2023", Handler="external", Code={"ZipFile": b""}, Timeout=30,
+            Runtime="provided.al2023", Handler="handler.handler", Code={"ZipFile": b""}, Timeout=30,
             DurableConfig={"ExecutionTimeout": 120, "RetentionPeriodInDays": 1, **durable},
         )
 

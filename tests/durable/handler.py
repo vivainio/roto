@@ -105,3 +105,7 @@ def handler(event: dict, context: DurableContext) -> dict:
 def publish_callback(context: StepContext, callback_id: str, audit_path: str) -> None:
     Path(audit_path + ".callback").write_text(callback_id)
     record(audit_path, "publish")
+
+
+def plain_handler(event, context):
+    return {"value": event["value"] * 10}

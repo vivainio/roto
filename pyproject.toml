@@ -17,4 +17,7 @@ Issues = "https://github.com/vivainio/roto/issues"
 
 [tool.maturin]
 bindings = "bin"
+module-name = "roto_aws"
 manifest-path = "crates/roto-server/Cargo.toml"
+python-source = "python"
+python-packages = ["roto_aws"]

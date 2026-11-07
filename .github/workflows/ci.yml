@@ -129,4 +129,8 @@ jobs:
         with: { python-version: "3.14" }
       - run: cargo build -p roto-server --locked
       - run: python -m pip install -r tests/durable/requirements.txt
+      - name: Build and install the wheel containing the Python runtime adapter
+        run: |
+          python -m maturin build --profile dev --locked --out dist
+          python -m pip install --no-deps dist/*.whl
       - run: python -m pytest -q tests/durable
