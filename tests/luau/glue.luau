@@ -66,6 +66,11 @@ test.suite("Glue tables", function(suite)
     end)
     suite.case("batch delete reports missing tables", function()
         call("CreateTable", {DatabaseName = "demo", TableInput = {Name = "temporary"}})
+        local found = false
+        for _, table in call("GetTables", {DatabaseName = "demo"}).TableList do
+            if table.Name == "temporary" then found = true end
+        end
+        assert(found)
         local result = call("BatchDeleteTable", {DatabaseName = "demo", TablesToDelete = {"temporary", "missing"}})
         test.equal(result.Errors[1].ErrorDetail.ErrorCode, "EntityNotFoundException")
         fails("GetTable", {DatabaseName = "demo", Name = "temporary"}, "EntityNotFoundException")

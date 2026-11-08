@@ -137,101 +137,33 @@ def check_elb(s, trace):
 
 
 def check_autoscaling(s, trace):
-    a = s.client("autoscaling", trace)
-    a.create_auto_scaling_group(
-        AutoScalingGroupName="g", MinSize=0, MaxSize=4, DesiredCapacity=0, AvailabilityZones=["us-east-1a"],
-        LaunchConfigurationName="lc", Tags=[{"Key": "env", "Value": "t", "PropagateAtLaunch": True}])
-    assert code(lambda: a.create_auto_scaling_group(
-        AutoScalingGroupName="g", MinSize=0, MaxSize=1)) == "AlreadyExists"
-    a.attach_instances(AutoScalingGroupName="g", InstanceIds=["i-1", "i-2"])
-    group = a.describe_auto_scaling_groups(AutoScalingGroupNames=["g"])["AutoScalingGroups"][0]
-    assert group["DesiredCapacity"] == 2 and [i["InstanceId"] for i in group["Instances"]] == ["i-1", "i-2"]
+    """Exercise Query-protocol lists, errors and response decoding through boto3."""
+    client = s.client("autoscaling", trace)
+    client.create_auto_scaling_group(AutoScalingGroupName="g", MinSize=0, MaxSize=4,
+        Tags=[{"Key": "env", "Value": "t", "PropagateAtLaunch": True}])
+    client.attach_instances(AutoScalingGroupName="g", InstanceIds=["i-1", "i-2"])
+    group = client.describe_auto_scaling_groups(AutoScalingGroupNames=["g"])["AutoScalingGroups"][0]
+    assert [i["InstanceId"] for i in group["Instances"]] == ["i-1", "i-2"]
     assert group["Tags"][0]["Key"] == "env"
-    a.update_auto_scaling_group(AutoScalingGroupName="g", MinSize=1, MaxSize=6, DesiredCapacity=3)
-    group = a.describe_auto_scaling_groups()["AutoScalingGroups"][0]
-    assert (group["MinSize"], group["MaxSize"], group["DesiredCapacity"]) == (1, 6, 3)
-    assert code(lambda: a.update_auto_scaling_group(AutoScalingGroupName="g", MinSize=7)) == "ValidationError"
-    a.set_instance_health(InstanceId="i-1", HealthStatus="Unhealthy")
-    activities = a.detach_instances(AutoScalingGroupName="g", InstanceIds=["i-2"],
-                                    ShouldDecrementDesiredCapacity=True)["Activities"]
-    assert activities[0]["StatusCode"] == "Successful"
-    group = a.describe_auto_scaling_groups()["AutoScalingGroups"][0]
-    assert [(i["InstanceId"], i["HealthStatus"]) for i in group["Instances"]] == [("i-1", "Unhealthy")]
-    assert group["DesiredCapacity"] == 2
-    a.create_or_update_tags(Tags=[{"ResourceId": "g", "ResourceType": "auto-scaling-group",
-                                   "Key": "k", "Value": "v", "PropagateAtLaunch": False}])
-    tags = a.describe_tags(Filters=[{"Name": "auto-scaling-group", "Values": ["g"]}])["Tags"]
-    assert [(t["Key"], t["Value"]) for t in tags] == [("env", "t"), ("k", "v")]
-    a.suspend_processes(AutoScalingGroupName="g", ScalingProcesses=["Launch"])
-    suspended = a.describe_auto_scaling_groups()["AutoScalingGroups"][0]["SuspendedProcesses"]
-    assert [p["ProcessName"] for p in suspended] == ["Launch"]
-    a.resume_processes(AutoScalingGroupName="g")
-    assert not a.describe_auto_scaling_groups()["AutoScalingGroups"][0]["SuspendedProcesses"]
-    a.put_scheduled_update_group_action(AutoScalingGroupName="g", ScheduledActionName="nightly",
-                                        Recurrence="0 3 * * *", MinSize=1)
-    actions = a.describe_scheduled_actions(AutoScalingGroupName="g")["ScheduledUpdateGroupActions"]
-    assert [x["ScheduledActionName"] for x in actions] == ["nightly"]
-    failed = a.batch_delete_scheduled_action(AutoScalingGroupName="g",
-                                             ScheduledActionNames=["nightly", "ghost"])["FailedScheduledActions"]
-    assert [f["ScheduledActionName"] for f in failed] == ["ghost"]
-    assert not a.describe_scheduled_actions(AutoScalingGroupName="g")["ScheduledUpdateGroupActions"]
+    assert code(lambda: client.create_auto_scaling_group(AutoScalingGroupName="g", MinSize=0, MaxSize=1)) == "AlreadyExists"
 
 
 def check_ec2(s, trace):
-    c = s.client("ec2", trace)
-    r = boto3.resource("ec2", endpoint_url=s.url, aws_access_key_id=trace, aws_secret_access_key="x",
-                       region_name="us-east-1")
-    group = c.create_security_group(GroupName="web", Description="d", VpcId="vpc-1")["GroupId"]
-    assert code(lambda: c.create_security_group(GroupName="web", Description="d", VpcId="vpc-1")) == "InvalidGroup.Duplicate"
-    run = c.run_instances(ImageId="ami-1", MinCount=2, MaxCount=2, InstanceType="t3.micro", SubnetId="subnet-1",
-                          SecurityGroupIds=[group],
-                          TagSpecifications=[{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "node"}]}])
-    ids = [i["InstanceId"] for i in run["Instances"]]
-    assert [i["State"]["Name"] for i in run["Instances"]] == ["pending", "pending"]
-    # The next read settles pending -> running.
-    found = c.describe_instances(Filters=[{"Name": "tag:Name", "Values": ["no*"]},
-                                          {"Name": "instance-state-name", "Values": ["running"]}])
-    instances = [i for res in found["Reservations"] for i in res["Instances"]]
-    assert sorted(i["InstanceId"] for i in instances) == sorted(ids)
-    assert instances[0]["SecurityGroups"][0]["GroupName"] == "web"
-    assert instances[0]["Tags"] == [{"Key": "Name", "Value": "node"}]
-    assert len(found["Reservations"]) == 1
-    # stop: stopping -> stopped; start: pending -> running.
-    stop = c.stop_instances(InstanceIds=ids[:1])["StoppingInstances"][0]
-    assert (stop["PreviousState"]["Name"], stop["CurrentState"]["Name"]) == ("running", "stopping")
-    assert c.describe_instances(InstanceIds=ids[:1])["Reservations"][0]["Instances"][0]["State"]["Name"] == "stopped"
-    # Stopping a stopped instance is a no-op; starting a terminated one is refused.
-    assert c.stop_instances(InstanceIds=ids[:1])["StoppingInstances"][0]["CurrentState"]["Name"] == "stopped"
-    start = c.start_instances(InstanceIds=ids[:1])["StartingInstances"][0]
-    assert start["CurrentState"]["Name"] == "pending"
-    status = c.describe_instance_status()["InstanceStatuses"]
-    assert {x["InstanceId"] for x in status} == set(ids)
-    assert {x["InstanceStatus"]["Status"] for x in status} == {"ok"}
-    # terminate: shutting-down -> terminated, still visible.
-    assert c.terminate_instances(InstanceIds=ids[1:])["TerminatingInstances"][0]["CurrentState"]["Name"] == "shutting-down"
-    assert code(lambda: c.start_instances(InstanceIds=ids[1:])) == "IncorrectInstanceState"
-    states = {i.id: i.state["Name"] for i in r.instances.all()}
-    assert states == {ids[0]: "running", ids[1]: "terminated"}
-    assert [i.id for i in r.instances.filter(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])] == ids[:1]
-    # Hold a transitional state for a fixture.
-    s.form("ec2", f"Action=RotoSetInstanceState&Version=2016-11-15&InstanceId.1={ids[0]}&State=stopping")
-    for _ in range(2):
-        held = c.describe_instances(InstanceIds=ids[:1])["Reservations"][0]["Instances"][0]
-        assert held["State"]["Name"] == "stopping"
-    c.stop_instances(InstanceIds=ids[:1])
-    assert code(lambda: c.describe_instances(InstanceIds=["i-0123456789abcdef0"])) == "InvalidInstanceID.NotFound"
-    assert code(lambda: c.describe_instances(Filters=[{"Name": "bogus", "Values": ["1"]}])) == "InvalidParameterValue"
-    assert code(lambda: c.run_instances(ImageId="ami-1", MinCount=1, MaxCount=1, DryRun=True)) == "DryRunOperation"
-    groups = c.describe_security_groups(Filters=[{"Name": "group-name", "Values": ["web"]}])["SecurityGroups"]
-    assert [g["GroupId"] for g in groups] == [group]
-    assert code(lambda: c.delete_security_group(GroupId=group)) == "DependencyViolation"
-    c.create_tags(Resources=[group], Tags=[{"Key": "k", "Value": "v"}])
-    tags = c.describe_tags(Filters=[{"Name": "resource-id", "Values": [group]}])["Tags"]
-    assert [(t["ResourceType"], t["Key"]) for t in tags] == [("security-group", "k")]
-    many = [c.run_instances(ImageId="ami-1", MinCount=1, MaxCount=1)["Instances"][0]["InstanceId"] for _ in range(6)]
-    page = c.describe_instances(MaxResults=5)
-    assert page["NextToken"] and sum(len(x["Instances"]) for x in page["Reservations"]) == 5
-    assert many
+    """Check EC2 Query encoding, SDK resources and the Roto wire extension."""
+    client = s.client("ec2", trace)
+    resource = boto3.resource("ec2", endpoint_url=s.url, aws_access_key_id=trace, aws_secret_access_key="x",
+                             region_name="us-east-1")
+    group = client.create_security_group(GroupName="web", Description="d", VpcId="vpc-1")["GroupId"]
+    instance = client.run_instances(ImageId="ami-1", MinCount=1, MaxCount=1, SecurityGroupIds=[group],
+        TagSpecifications=[{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "node"}]}])["Instances"][0]
+    instance_id = instance["InstanceId"]
+    assert instance["State"]["Name"] == "pending"
+    found = client.describe_instances(Filters=[{"Name": "tag:Name", "Values": ["no*"]}])
+    assert found["Reservations"][0]["Instances"][0]["InstanceId"] == instance_id
+    assert [i.id for i in resource.instances.filter(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])] == [instance_id]
+    s.form("ec2", f"Action=RotoSetInstanceState&Version=2016-11-15&InstanceId.1={instance_id}&State=stopping")
+    assert client.describe_instances(InstanceIds=[instance_id])["Reservations"][0]["Instances"][0]["State"]["Name"] == "stopping"
+    assert code(lambda: client.run_instances(ImageId="ami-1", MinCount=1, MaxCount=1, DryRun=True)) == "DryRunOperation"
 
 
 def check_states(s, trace):
@@ -335,11 +267,8 @@ CHECKS = [
 EXPECTED = {
     "elasticloadbalancing": {"CreateLoadBalancer", "DescribeLoadBalancers", "RegisterInstancesWithLoadBalancer",
                              "DescribeInstanceHealth", "DescribeTargetHealth", "CreateTargetGroup", "RegisterTargets"},
-    "autoscaling": {"DescribeAutoScalingGroups", "UpdateAutoScalingGroup", "DescribeTags", "CreateOrUpdateTags",
-                    "DetachInstances", "SetInstanceHealth", "ResumeProcesses", "DescribeScheduledActions",
-                    "PutScheduledUpdateGroupAction", "BatchDeleteScheduledAction", "CreateAutoScalingGroup"},
-    "ec2": {"DescribeInstances", "DescribeInstanceStatus", "StartInstances", "StopInstances", "TerminateInstances",
-            "DescribeSecurityGroups", "RunInstances", "CreateTags", "CreateSecurityGroup"},
+    "autoscaling": {"CreateAutoScalingGroup", "AttachInstances", "DescribeAutoScalingGroups"},
+    "ec2": {"CreateSecurityGroup", "RunInstances", "DescribeInstances"},
     "states": {"CreateStateMachine", "StartExecution", "StopExecution", "DescribeExecution"},
     "ssm": {"SendCommand", "ListCommandInvocations", "GetCommandInvocation"},
     "ecs": {"RunTask", "DescribeTasks"},

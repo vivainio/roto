@@ -81,6 +81,7 @@ test.suite("WAF rule groups and web ACLs", function(suite)
             Rules = {{Name = "admin", Priority = 0, Statement = match, VisibilityConfig = vis}}}, invalid)
         local rg = call("GetRuleGroup", rgid).RuleGroup
         test.equal(rg.Capacity, 10); test.equal(rg.LabelNamespace, "awswaf:123456789012:rulegroup:rg:")
+        test.equal(call("ListRuleGroups", {Scope = "REGIONAL"}).RuleGroups[1].Id, rgid.Id)
         test.equal(call("GetRuleGroup", {ARN = rgarn}).RuleGroup.Id, rgid.Id)
         test.equal(call("GetWebACL", {ARN = aclarn}).WebACL.Id, aclid.Id)
         fails("DeleteIPSet", extend(ipid, {LockToken = call("GetIPSet", ipid).LockToken}), "WAFAssociatedItemException")

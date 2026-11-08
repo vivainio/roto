@@ -123,11 +123,10 @@ The virtual clock affects services that use Roto's clock, including Luau service
 jobs. Native workers that use wall time are not advanced by this API. These tests
 supplement the HTTP smoke tests, which continue to cover protocol and SDK behavior.
 
-To compare ECR cases and the ported CUR, ACM, Config, Budgets and Cloud Map
-workflows with their HTTP equivalents, run `python3 tests/benchmark-luau-services.py 5` after
-building the server. It reports warm-run medians for the Luau driver, HTTP with a
-fresh server per workflow, and HTTP with one server reset between workflows. The
-shared-server mode retains service runtimes, unlike a fresh test environment.
+To compare isolated ECR cases with the same cases sharing a suite, run
+`python3 tests/benchmark-luau-suites.py 5` after building the server. The suite
+performs extra cleanup calls between cases; the benchmark derives both workloads
+from the Luau tests rather than maintaining a second set of checks.
 
 ## Moto compatibility tests
 

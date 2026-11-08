@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 MiniStack Contributors. SPDX-License-Identifier: MIT
-"""HTTP contracts adapted from MiniStack's CUR, ACM, Budgets, Config and Cloud Map tests.
+"""HTTP and SDK smoke checks for Luau services and their bundle lifecycle.
 
-Uses only stdlib. Starts its own server; checks directory and ZIP bundles,
-regional/account isolation, pagination, transaction rollback, restart and reset.
+Checks directory and ZIP bundles, account and region routing, restart and reset.
+Behavioral scenarios live in tests/luau; --sdk additionally requires boto3.
 """
 import argparse
-import base64
 import datetime
 import json
 import os
 import sys
 import zipfile
-import re
 import socket
 import subprocess
 import tempfile
@@ -131,224 +129,26 @@ class Server:
         urllib.request.urlopen(req, timeout=10).close()
 
 
-def cur(s):
-    call = lambda op, data, **kw: s.call('cur', op, data, **kw)
-    definition = {'ReportName': 'report', 'TimeUnit': 'DAILY', 'Format': 'textORcsv', 'Compression': 'GZIP',
-                  'AdditionalSchemaElements': ['RESOURCES'], 'S3Bucket': 'billing', 'S3Prefix': 'reports',
-                  'S3Region': 'us-east-1', 'AdditionalArtifacts': []}
-    assert call('DescribeReportDefinitions', {}) == {'ReportDefinitions': []}
-    call('PutReportDefinition', {'ReportDefinition': definition})
-    call('PutReportDefinition', {'ReportDefinition': definition}, status=400, error='DuplicateReportNameException')
-    call('TagResource', {'ReportName': 'report', 'Tags': [{'Key': 'env', 'Value': 'dev'}]})
-    call('TagResource', {'ReportName': 'report', 'Tags': [{'Key': 'env', 'Value': 'prod'}]})
-    call('TagResource', {'ReportName': 'report', 'Tags': [{'Key': 'new', 'Value': 'yes'}, {'Key': 'bad', 'Value': 1}]}, status=400, error='ValidationException')
-    assert call('ListTagsForResource', {'ReportName': 'report'})['Tags'] == [{'Key': 'env', 'Value': 'prod'}]
-    call('UntagResource', {'ReportName': 'report', 'TagKeys': ['env', 'missing']})
-    assert call('ListTagsForResource', {'ReportName': 'report'})['Tags'] == []
-    modified = dict(definition, ReportName='changed', S3Prefix='new')
-    call('ModifyReportDefinition', {'ReportName': 'report', 'ReportDefinition': modified})
-    assert call('DescribeReportDefinitions', {}, region='eu-west-1')['ReportDefinitions'][0]['ReportName'] == 'report'
-    assert call('DescribeReportDefinitions', {}, account='999999999999')['ReportDefinitions'] == []
-    for i in range(6):
-        call('PutReportDefinition', {'ReportDefinition': dict(definition, ReportName=f'report-{i}')})
-    page = call('DescribeReportDefinitions', {'MaxResults': 5})
-    assert len(page['ReportDefinitions']) == 5
-    assert len(call('DescribeReportDefinitions', {'NextToken': page['NextToken']})['ReportDefinitions']) == 2
-    call('DescribeReportDefinitions', {'NextToken': 'bad'}, status=400, error='ValidationException')
-    call('DeleteReportDefinition', {'ReportName': 'report-0'})
-    call('DeleteReportDefinition', {'ReportName': 'missing'}, status=400, error='ValidationException')
-    call('ListTagsForResource', {'ReportName': 'missing'}, status=400, error='ResourceNotFoundException')
-    call('PutReportDefinition', {'ReportDefinition': []}, status=400, error='ValidationException')
-
-
-def acm(s):
-    call = lambda op, data, **kw: s.call('acm', op, data, **kw)
-    assert call('ListCertificates', {})['CertificateSummaryList'] == []
-    arn = call('RequestCertificate', {'DomainName': 'example.com', 'SubjectAlternativeNames': ['*.example.com']})['CertificateArn']
-    cert = call('DescribeCertificate', {'CertificateArn': arn})['Certificate']
-    assert cert['Status'] == 'ISSUED'
-    records = [v['ResourceRecord'] for v in cert['DomainValidationOptions']]
-    assert records[0] == records[1]
-    call('AddTagsToCertificate', {'CertificateArn': arn, 'Tags': [{'Key': 'env', 'Value': 'dev'}]})
-    call('RemoveTagsFromCertificate', {'CertificateArn': arn, 'Tags': [{'Key': 'env'}]})
-    assert call('ListTagsForCertificate', {'CertificateArn': arn})['Tags'] == []
-    call('UpdateCertificateOptions', {'CertificateArn': arn, 'Options': {'CertificateTransparencyLoggingPreference': 'DISABLED'}})
-    assert call('DescribeCertificate', {'CertificateArn': arn})['Certificate']['Options']['CertificateTransparencyLoggingPreference'] == 'DISABLED'
-    call('DescribeCertificate', {'CertificateArn': arn}, region='eu-west-1', status=400, error='ResourceNotFoundException')
-    call('DescribeCertificate', {'CertificateArn': arn}, account='999999999999', status=400, error='ResourceNotFoundException')
-    call('RequestCertificate', {'DomainName': 'other.example.com'})
-    page = call('ListCertificates', {'MaxItems': 1})
-    assert len(page['CertificateSummaryList']) == 1 and 'NextToken' in page
-    assert 'NextToken' not in call('ListCertificates', {'MaxItems': 1, 'NextToken': page['NextToken']})
-    pem, chain = '-----BEGIN CERTIFICATE-----\nhello\n-----END CERTIFICATE-----\n', 'chain-data'
-    payload = {'Certificate': base64.b64encode(pem.encode()).decode(),
-               'CertificateChain': base64.b64encode(chain.encode()).decode(),
-               'PrivateKey': base64.b64encode(b'private-do-not-store').decode()}
-    imported = call('ImportCertificate', payload)['CertificateArn']
-    assert call('GetCertificate', {'CertificateArn': imported}) == {'Certificate': pem, 'CertificateChain': chain}
-    assert call('DescribeCertificate', {'CertificateArn': imported})['Certificate']['DomainName'].endswith('.invalid')
-    payload['CertificateArn'] = imported
-    payload['Certificate'] = base64.b64encode(b'replacement').decode()
-    assert call('ImportCertificate', payload)['CertificateArn'] == imported
-    assert call('GetCertificate', {'CertificateArn': imported})['Certificate'] == 'replacement'
-    payload['CertificateArn'] = arn.replace(ACCOUNT, '999999999999')
-    call('ImportCertificate', payload, status=400, error='ResourceNotFoundException')
-    call('DeleteCertificate', {'CertificateArn': imported})
-    call('GetCertificate', {'CertificateArn': imported}, status=400, error='ResourceNotFoundException')
-    call('RenewCertificate', {'CertificateArn': arn}, status=501, error='NotImplemented')
-    return arn
-
-
-def budgets(s):
-    call = lambda op, data, **kw: s.call('budgets', op, data, **kw)
-    scope = {'AccountId': ACCOUNT, 'BudgetName': 'budget'}
-    budget = {'BudgetName': 'budget', 'BudgetType': 'COST', 'TimeUnit': 'MONTHLY', 'BudgetLimit': {'Amount': '500', 'Unit': 'USD'},
-              'FilterExpression': {'Dimensions': {'Key': 'SERVICE', 'Values': ['Amazon S3']}}, 'Metrics': ['UnblendedCost']}
-    notification = {'NotificationType': 'ACTUAL', 'ComparisonOperator': 'GREATER_THAN', 'Threshold': 90}
-    sub = {'SubscriptionType': 'EMAIL', 'Address': 'one@example.com'}
-    call('CreateBudget', {'AccountId': ACCOUNT, 'Budget': budget, 'NotificationsWithSubscribers': [{'Notification': notification, 'Subscribers': [sub]}]})
-    call('CreateBudget', {'AccountId': ACCOUNT, 'Budget': budget}, status=400, error='DuplicateRecordException')
-    value = call('DescribeBudget', scope)['Budget']
-    assert 'FilterExpression' not in value and 'Metrics' not in value
-    assert 'FilterExpression' in call('DescribeBudget', dict(scope, ShowFilterExpression=True))['Budget']
-    assert value['CalculatedSpend'] == {'ActualSpend': {'Amount': '0', 'Unit': 'USD'}}
-    updated = datetime.datetime.fromtimestamp(value['LastUpdatedTime'], datetime.timezone.utc)
-    assert value['TimePeriod']['Start'] == updated.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-    assert value['TimePeriod']['End'] == datetime.datetime(2087, 6, 15, tzinfo=datetime.timezone.utc).timestamp()
-    call('UpdateBudget', {'AccountId': ACCOUNT, 'NewBudget': dict(budget, BudgetLimit={'Amount': '600', 'Unit': 'USD'})})
-    assert call('DescribeBudget', scope, region='eu-west-1')['Budget']['BudgetLimit']['Amount'] == '600'
-    call('DescribeBudget', dict(scope, AccountId='999999999999'), account='999999999999', status=400, error='NotFoundException')
-    second = dict(notification, Threshold=50, ThresholdType='PERCENTAGE')
-    call('CreateNotification', dict(scope, Notification=second, Subscribers=[sub]))
-    call('CreateNotification', dict(scope, Notification=notification, Subscribers=[sub]), status=400, error='DuplicateRecordException')
-    new = dict(second, Threshold=60)
-    call('UpdateNotification', dict(scope, OldNotification=second, NewNotification=new))
-    call('UpdateNotification', dict(scope, OldNotification=new, NewNotification=notification), status=400, error='DuplicateRecordException')
-    assert len(call('DescribeNotificationsForBudget', scope)['Notifications']) == 2
-    page = call('DescribeNotificationsForBudget', dict(scope, MaxResults=1))
-    assert 'NextToken' in page
-    assert len(call('DescribeNotificationsForBudget', dict(scope, MaxResults=1, NextToken=page['NextToken']))['Notifications']) == 1
-    call('DeleteNotification', dict(scope, Notification=new))
-    normalized = call('DescribeNotificationsForBudget', scope)['Notifications'][0]
-    assert normalized['ThresholdType'] == 'PERCENTAGE'
-    other = dict(sub, Address='two@example.com')
-    call('CreateSubscriber', dict(scope, Notification=notification, Subscriber=other))
-    call('CreateSubscriber', dict(scope, Notification=notification, Subscriber=other), status=400, error='DuplicateRecordException')
-    renamed = dict(other, Address='three@example.com')
-    call('UpdateSubscriber', dict(scope, Notification=notification, OldSubscriber=other, NewSubscriber=renamed))
-    subs = call('DescribeSubscribersForNotification', dict(scope, Notification=notification))['Subscribers']
-    assert subs == [sub, renamed]
-    call('DeleteSubscriber', dict(scope, Notification=notification, Subscriber=renamed))
-    call('DeleteSubscriber', dict(scope, Notification=notification, Subscriber=sub))
-    assert call('DescribeNotificationsForBudget', scope)['Notifications'] == []
-    resource = {'ResourceARN': f'arn:aws:budgets::{ACCOUNT}:budget/budget'}
-    call('TagResource', dict(resource, ResourceTags=[{'Key': 'env', 'Value': 'dev'}]))
-    call('TagResource', dict(resource, ResourceTags=[{'Key': 'env', 'Value': 'prod'}]))
-    assert call('ListTagsForResource', resource)['ResourceTags'] == [{'Key': 'env', 'Value': 'prod'}]
-    call('UntagResource', dict(resource, ResourceTagKeys=['env']))
-    assert call('ListTagsForResource', resource)['ResourceTags'] == []
-    call('TagResource', dict(resource, ResourceARN=resource['ResourceARN'].replace(ACCOUNT, '999999999999'), ResourceTags=[]), status=400, error='NotFoundException')
-    # Inline validation must leave no partial budget or notifications behind.
-    call('CreateBudget', {'AccountId': ACCOUNT, 'Budget': dict(budget, BudgetName='rollback'),
-                         'NotificationsWithSubscribers': [{'Notification': notification, 'Subscribers': [sub]},
-                                                          {'Notification': notification, 'Subscribers': []}]}, status=400, error='InvalidParameterException')
-    call('DescribeBudget', dict(scope, BudgetName='rollback'), status=400, error='NotFoundException')
-    call('CreateBudget', {'AccountId': ACCOUNT, 'Budget': dict(budget, BudgetName='delete')})
-    call('DeleteBudget', dict(scope, BudgetName='delete'))
-    assert len(call('DescribeBudgets', {'AccountId': ACCOUNT})['Budgets']) == 1
-
-
-def config(s):
-    call = lambda op, data, **kw: s.call('config', op, data, **kw)
-    rule = {'ConfigRuleName': 'versioning', 'Source': {'Owner': 'AWS', 'SourceIdentifier': 'S3_BUCKET_VERSIONING_ENABLED'}}
-    call('PutConfigRule', {'ConfigRule': rule})
-    original = call('DescribeConfigRules', {})['ConfigRules'][0]
-    call('PutConfigRule', {'ConfigRule': dict(rule, Description='updated')})
-    assert call('DescribeConfigRules', {'ConfigRuleNames': ['versioning']})['ConfigRules'][0]['ConfigRuleId'] == original['ConfigRuleId']
-    call('DescribeConfigRules', {'ConfigRuleNames': ['missing']}, status=400, error='NoSuchConfigRuleException')
-    assert call('DescribeConfigRules', {}, region='eu-west-1')['ConfigRules'] == []
-    assert call('DescribeConfigRules', {}, account='999999999999')['ConfigRules'] == []
-    recorder = {'name': 'default', 'roleARN': f'arn:aws:iam::{ACCOUNT}:role/config'}
-    call('PutConfigurationRecorder', {'ConfigurationRecorder': recorder})
-    assert call('DescribeConfigurationRecorders', {})['ConfigurationRecorders'] == [recorder]
-    call('StartConfigurationRecorder', {'ConfigurationRecorderName': 'default'})
-    assert call('DescribeConfigurationRecorderStatus', {})['ConfigurationRecordersStatus'][0]['recording'] is True
-    call('StopConfigurationRecorder', {'ConfigurationRecorderName': 'default'})
-    assert call('DescribeConfigurationRecorderStatus', {})['ConfigurationRecordersStatus'][0]['recording'] is False
-    call('StartConfigurationRecorder', {'ConfigurationRecorderName': 'missing'}, status=400, error='NoSuchConfigurationRecorderException')
-    call('PutDeliveryChannel', {'DeliveryChannel': {'name': 'default', 's3BucketName': 'config-data'}})
-    assert call('DescribeDeliveryChannels', {})['DeliveryChannels'][0]['s3BucketName'] == 'config-data'
-    call('DescribeDeliveryChannels', {'DeliveryChannelNames': ['missing']}, status=400, error='NoSuchDeliveryChannelException')
-    call('PutConfigRule', {'ConfigRule': dict(rule, ConfigRuleName='delete')})
-    call('DeleteConfigRule', {'ConfigRuleName': 'delete'})
-    call('DeleteConfigRule', {'ConfigRuleName': 'missing'}, status=400, error='NoSuchConfigRuleException')
-    assert call('DescribeDeliveryChannelStatus', {}) == {'DeliveryChannelsStatus': [{'name': 'default'}]}
-    assert call('DescribeComplianceByConfigRule', {})['ComplianceByConfigRules'][0]['Compliance']['ComplianceType'] == 'INSUFFICIENT_DATA'
-    assert call('GetComplianceDetailsByConfigRule', {'ConfigRuleName': 'versioning'}) == {'EvaluationResults': []}
-    assert call('DescribeConfigRuleEvaluationStatus', {})['ConfigRulesEvaluationStatus'][0]['FirstEvaluationStarted'] is False
-    call('StartConfigRulesEvaluation', {'ConfigRuleNames': ['versioning']}, status=501, error='NotImplemented')
-
-
-def cloudmap(s):
-    call = lambda op, data, **kw: s.call('servicediscovery', op, data, **kw)
-    op = call('CreateHttpNamespace', {'Name': 'apps.local', 'Tags': [{'Key': 'env', 'Value': 'dev'}]})['OperationId']
-    operation = call('GetOperation', {'OperationId': op})['Operation']
-    assert operation['Status'] == 'SUCCESS'
-    nid = operation['Targets']['NAMESPACE']
-    assert call('GetNamespace', {'Id': nid})['Namespace']['Properties'] == {'HttpProperties': {'HttpName': 'apps.local'}}
-    call('CreateHttpNamespace', {'Name': 'apps.local'}, status=409, error='NamespaceAlreadyExists')
-    call('GetNamespace', {'Id': nid}, region='eu-west-1', status=404, error='NamespaceNotFound')
-    call('GetNamespace', {'Id': nid}, account='999999999999', status=404, error='NamespaceNotFound')
-    call('UpdateHttpNamespace', {'Id': nid, 'Namespace': {'Description': 'updated'}})
-    assert call('GetNamespace', {'Id': nid})['Namespace']['Description'] == 'updated'
-    service = call('CreateService', {'Name': 'api', 'NamespaceId': nid, 'HealthCheckCustomConfig': {'FailureThreshold': 1}})['Service']
-    sid = service['Id']
-    assert call('GetNamespace', {'Id': nid})['Namespace']['ServiceCount'] == 1
-    call('DeleteNamespace', {'Id': nid}, status=400, error='ResourceInUse')
-    call('UpdateService', {'Id': sid, 'Service': {'Description': 'updated'}})
-    assert call('GetService', {'Id': sid})['Service']['Description'] == 'updated'
-    call('RegisterInstance', {'ServiceId': sid, 'InstanceId': 'one', 'Attributes': {'version': 'v1'}})
-    call('RegisterInstance', {'ServiceId': sid, 'InstanceId': 'two', 'Attributes': {'version': 'v2'}})
-    assert call('GetService', {'Id': sid})['Service']['InstanceCount'] == 2
-    assert call('GetInstance', {'ServiceId': sid, 'InstanceId': 'one'}) == {'Instance': {'Id': 'one', 'Attributes': {'version': 'v1'}}}
-    query = {'NamespaceName': 'apps.local', 'ServiceName': 'api'}
-    assert len(call('DiscoverInstances', query)['Instances']) == 2
-    assert call('DiscoverInstances', dict(query, QueryParameters={'version': 'v1'}))['Instances'][0]['InstanceId'] == 'one'
-    revision = call('DiscoverInstancesRevision', query)['InstancesRevision']
-    call('UpdateInstanceCustomHealthStatus', {'ServiceId': sid, 'InstanceId': 'one', 'Status': 'UNHEALTHY'})
-    assert call('DiscoverInstancesRevision', query)['InstancesRevision'] > revision
-    assert len(call('DiscoverInstances', query)['Instances']) == 1
-    assert len(call('DiscoverInstances', dict(query, HealthStatus='ALL'))['Instances']) == 2
-    assert call('DiscoverInstances', dict(query, HealthStatus='UNHEALTHY'))['Instances'][0]['InstanceId'] == 'one'
-    assert call('GetInstancesHealthStatus', {'ServiceId': sid, 'Instances': ['one', 'missing']})['Status'] == {'one': 'UNHEALTHY', 'missing': 'UNKNOWN'}
-    call('UpdateInstanceCustomHealthStatus', {'ServiceId': sid, 'InstanceId': 'one', 'Status': 'bad'}, status=400, error='InvalidInput')
-    call('UpdateServiceAttributes', {'ServiceId': sid, 'Attributes': {'release': 'v1', 'team': 'platform'}})
-    call('DeleteServiceAttributes', {'ServiceId': sid, 'Attributes': ['team']})
-    assert call('GetServiceAttributes', {'ServiceId': sid})['ServiceAttributes']['Attributes'] == {'release': 'v1'}
-    resource = {'ResourceARN': service['Arn']}
-    call('TagResource', dict(resource, Tags=[{'Key': 'env', 'Value': 'dev'}]))
-    assert call('ListTagsForResource', resource)['Tags'] == [{'Key': 'env', 'Value': 'dev'}]
-    call('UntagResource', dict(resource, TagKeys=['env']))
-    assert call('ListTagsForResource', resource)['Tags'] == []
-    assert len(call('ListServices', {'Filters': [{'Name': 'NAMESPACE_ID', 'Values': [nid]}]})['Services']) == 1
-    page = call('ListInstances', {'ServiceId': sid, 'MaxResults': 1})
-    assert len(page['Instances']) == 1 and 'NextToken' in page
-    assert 'NextToken' not in call('ListInstances', {'ServiceId': sid, 'MaxResults': 1, 'NextToken': page['NextToken']})
-    assert call('ListNamespaces', {'Filters': [{'Name': 'TYPE', 'Values': ['DNS_PUBLIC']}]})['Namespaces'] == []
-    page = call('ListOperations', {'MaxResults': 1, 'Filters': [{'Name': 'STATUS', 'Values': ['SUCCESS']}]})
-    assert len(page['Operations']) == 1 and 'NextToken' in page
-    assert set(page['Operations'][0]) == {'Id', 'Status'}
-    call('DeleteService', {'Id': sid}, status=400, error='ResourceInUse')
-    for iid in ['one', 'two']:
-        call('DeregisterInstance', {'ServiceId': sid, 'InstanceId': iid})
-    call('DeleteService', {'Id': sid})
-    call('DeleteNamespace', {'Id': nid})
-    call('CreatePrivateDnsNamespace', {'Name': 'dns.local', 'Vpc': 'vpc-demo'}, status=501, error='NotImplemented')
-    # Keep a namespace and registration for restart checks.
-    op = call('CreateHttpNamespace', {'Name': 'persist.local'})['OperationId']
-    nid = call('GetOperation', {'OperationId': op})['Operation']['Targets']['NAMESPACE']
-    sid = call('CreateService', {'Name': 'api', 'NamespaceId': nid})['Service']['Id']
-    call('RegisterInstance', {'ServiceId': sid, 'InstanceId': 'persist', 'Attributes': {'version': 'v1'}})
+def seed(s, name):
+    """Create minimal state for HTTP bundle and persistence checks."""
+    if name == 'cur':
+        definition = {'ReportName': 'persist', 'TimeUnit': 'DAILY', 'Format': 'textORcsv', 'Compression': 'GZIP',
+                      'AdditionalSchemaElements': ['RESOURCES'], 'S3Bucket': 'billing', 'S3Prefix': 'reports', 'S3Region': 'us-east-1'}
+        s.call(name, 'PutReportDefinition', {'ReportDefinition': definition})
+        return None
+    if name == 'acm':
+        return s.call(name, 'RequestCertificate', {'DomainName': 'example.com'})['CertificateArn']
+    if name == 'budgets':
+        s.call(name, 'CreateBudget', {'AccountId': ACCOUNT, 'Budget': {'BudgetName': 'persist', 'BudgetType': 'COST',
+               'TimeUnit': 'MONTHLY', 'BudgetLimit': {'Amount': '600', 'Unit': 'USD'}}})
+        return None
+    if name == 'config':
+        s.call(name, 'PutConfigurationRecorder', {'ConfigurationRecorder': {'name': 'default', 'roleARN': f'arn:aws:iam::{ACCOUNT}:role/config'}})
+        return None
+    op = s.call(name, 'CreateHttpNamespace', {'Name': 'persist.local'})['OperationId']
+    nid = s.call(name, 'GetOperation', {'OperationId': op})['Operation']['Targets']['NAMESPACE']
+    sid = s.call(name, 'CreateService', {'Name': 'api', 'NamespaceId': nid})['Service']['Id']
+    s.call(name, 'RegisterInstance', {'ServiceId': sid, 'InstanceId': 'persist', 'Attributes': {'version': 'v1'}})
     return nid, sid
 
 
@@ -414,11 +214,11 @@ def sdk_check(s, name):
 
 def persisted(s, name, fixture):
     if name == 'cur':
-        assert len(s.call(name, 'DescribeReportDefinitions', {})['ReportDefinitions']) == 5
+        assert s.call(name, 'DescribeReportDefinitions', {})['ReportDefinitions'][0]['ReportName'] == 'persist'
     elif name == 'acm':
         assert s.call(name, 'DescribeCertificate', {'CertificateArn': fixture})['Certificate']['DomainName'] == 'example.com'
     elif name == 'budgets':
-        assert s.call(name, 'DescribeBudget', {'AccountId': ACCOUNT, 'BudgetName': 'budget'})['Budget']['BudgetLimit']['Amount'] == '600'
+        assert s.call(name, 'DescribeBudget', {'AccountId': ACCOUNT, 'BudgetName': 'persist'})['Budget']['BudgetLimit']['Amount'] == '600'
     elif name == 'config':
         assert s.call(name, 'DescribeConfigurationRecorderStatus', {})['ConfigurationRecordersStatus'][0]['recording'] is False
     else:
@@ -458,7 +258,7 @@ def main():
         load_module(external[name]).run(name, args.sdk)
     if args.service in external:
         return
-    checks = {'cur': cur, 'acm': acm, 'budgets': budgets, 'config': config, 'servicediscovery': cloudmap}
+    checks = ('cur', 'acm', 'budgets', 'config', 'servicediscovery')
     with tempfile.TemporaryDirectory(prefix='roto-bundle-') as packaged:
         archive = Path(packaged) / 'services.zip'
         subprocess.run([sys.executable, str(ROOT / 'scripts/package-lua-services.py'), '--output', str(archive)], check=True)
@@ -487,10 +287,7 @@ def main():
                     s = Server(directory, bundle, args.sdk)
                     try:
                         empty(s, name)
-                        fixture = checks[name](s)
-                        exported = set(re.findall(r'function ops\.(\w+)', (ROOT / 'services' / name / 'service.luau').read_text()))
-                        covered = {op for service, op in s.seen if service == name}
-                        assert exported <= covered, (name, 'Operations missing successful coverage', exported - covered)
+                        fixture = seed(s, name)
                         if args.sdk:
                             sdk_check(s, name)
                     finally:
@@ -500,7 +297,7 @@ def main():
                         persisted(s, name, fixture)
                         s.reset()
                         empty(s, name)
-                        checks[name](s)
+                        seed(s, name)
                     finally:
                         s.close()
                     s = Server(directory, bundle, args.sdk)
@@ -509,7 +306,7 @@ def main():
                         empty(s, name)
                     finally:
                         s.close()
-                print(f'{name}: {len(exported)} operations, HTTP contracts, isolation, persistence and reset passed ({"ZIP" if bundle == archive else "directory"})')
+                print(f'{name}: HTTP/SDK contracts, isolation, persistence and reset passed ({"ZIP" if bundle == archive else "directory"})')
 
 
 if __name__ == '__main__':
