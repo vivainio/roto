@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static OFFSET_MS: AtomicI64 = AtomicI64::new(0);
+// A fixed clock is used by isolated test-driver processes. The ordinary server retains its
+// real-time-plus-offset behavior. Zero denotes the ordinary clock.
+static FIXED_MS: AtomicI64 = AtomicI64::new(0);
 
 fn real_ms() -> i64 {
     SystemTime::now()
@@ -18,7 +21,21 @@ fn real_ms() -> i64 {
 
 /// Milliseconds since the Unix epoch on the virtual clock.
 pub fn now_ms() -> i64 {
+    let fixed = FIXED_MS.load(Ordering::SeqCst);
+    if fixed != 0 {
+        return fixed;
+    }
     real_ms().saturating_add(OFFSET_MS.load(Ordering::SeqCst))
+}
+
+/// Freeze time at a positive Unix timestamp, for a process dedicated to running a test.
+pub fn freeze_ms(ms: i64) -> Result<(), &'static str> {
+    if ms <= 0 {
+        return Err("fixed clock must be a positive Unix timestamp");
+    }
+    OFFSET_MS.store(0, Ordering::SeqCst);
+    FIXED_MS.store(ms, Ordering::SeqCst);
+    Ok(())
 }
 
 /// Seconds since the Unix epoch on the virtual clock.
@@ -37,6 +54,14 @@ pub fn advance_ms(ms: i64) -> Result<i64, &'static str> {
     if ms < 0 {
         return Err("the clock can only move forward");
     }
+    if FIXED_MS.load(Ordering::SeqCst) != 0 {
+        FIXED_MS
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+                Some(now.saturating_add(ms))
+            })
+            .ok();
+        return Ok(OFFSET_MS.fetch_add(ms, Ordering::SeqCst).saturating_add(ms));
+    }
     Ok(OFFSET_MS.fetch_add(ms, Ordering::SeqCst).saturating_add(ms))
 }
 
@@ -44,12 +69,13 @@ pub fn advance_ms(ms: i64) -> Result<i64, &'static str> {
 pub fn advance_to_ms(ms: i64) {
     let now = now_ms();
     if ms > now {
-        OFFSET_MS.fetch_add(ms - now, Ordering::SeqCst);
+        let _ = advance_ms(ms - now);
     }
 }
 
 /// Returns the clock to real time.
 pub fn reset() {
+    FIXED_MS.store(0, Ordering::SeqCst);
     OFFSET_MS.store(0, Ordering::SeqCst);
 }
 

@@ -50,6 +50,25 @@ install the luau-lsp extension or plugin and point it at the same file:
 The definitions work with both Luau type solvers. The new solver (`LuauSolverV2`) gives
 better diagnostics and is the one to use.
 
+## Check test files
+
+The same definitions and checker work for test files. Start each test file with
+`--!strict`, then run:
+
+```sh
+roto-server --check tests/luau/*.luau
+```
+
+`types/roto.d.luau` also types the test assertions and clock APIs, as well as
+`test.aws.<service>.<Operation>` inputs
+and outputs. The typed clients include the operations available through `roto.aws`,
+implemented Step Functions operations from the bundled service, and implemented
+Scheduler and CloudWatch Logs operations. `test.call` and `test.try_call` stay dynamic
+for other operations and custom bundles. The definitions describe the bundled service;
+the bundle still has to be loaded at runtime. Normal setup runs accept `test.case` and
+`test.suite` declarations and skip their bodies; the other `test` APIs require the test driver.
+See [development.md](development.md#luau-service-tests).
+
 ## Install luau-lsp
 
 `luau-lsp` is a single binary. Homebrew and most Linux package managers do not carry it, so

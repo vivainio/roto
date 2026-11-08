@@ -118,6 +118,8 @@ pub async fn run(
                 output: task_output,
             }),
             trace: Some(sink),
+            test_jobs: None,
+            test_scheduler: None,
         };
         setup::run_source(
             source,

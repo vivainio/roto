@@ -24,6 +24,9 @@ const MODELS: &[&str] = &[
     "sqs",
     "ssm",
     "sts",
+    "states",
+    "scheduler",
+    "logs",
 ];
 
 fn strip(value: &mut Value) {
@@ -63,8 +66,21 @@ fn main() {
         } else {
             name
         };
+        if *name == "states" {
+            let path = models.join("../services/states/service.luau");
+            println!("cargo:rerun-if-changed={}", path.display());
+            let code = std::fs::read_to_string(path).expect("Step Functions service source");
+            let operations: Vec<String> = code
+                .lines()
+                .filter_map(|line| {
+                    let name = line.strip_prefix("function M.")?.split_once('(')?.0;
+                    (!name.starts_with("__")).then(|| name.to_owned())
+                })
+                .collect();
+            prune(&mut model, &operations);
+        }
         if !RUNTIME_MODELS.contains(name)
-            && let Some(list) = typed[service].as_array()
+            && let Some(list) = typed.get(service).and_then(Value::as_array)
         {
             let operations: Vec<String> = list
                 .iter()

@@ -1,0 +1,4531 @@
+{
+  "metadata": {
+    "apiVersion": "2016-11-23",
+    "auth": [
+      "aws.auth#sigv4"
+    ],
+    "endpointPrefix": "states",
+    "jsonVersion": "1.0",
+    "protocol": "json",
+    "protocols": [
+      "json"
+    ],
+    "serviceAbbreviation": "AWS SFN",
+    "serviceFullName": "AWS Step Functions",
+    "serviceId": "SFN",
+    "signatureVersion": "v4",
+    "targetPrefix": "AWSStepFunctions",
+    "uid": "states-2016-11-23"
+  },
+  "operations": {
+    "CreateActivity": {
+      "errors": [
+        {
+          "shape": "ActivityLimitExceeded"
+        },
+        {
+          "shape": "ActivityAlreadyExists"
+        },
+        {
+          "shape": "InvalidName"
+        },
+        {
+          "shape": "TooManyTags"
+        },
+        {
+          "shape": "InvalidEncryptionConfiguration"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "CreateActivityInput"
+      },
+      "name": "CreateActivity",
+      "output": {
+        "shape": "CreateActivityOutput"
+      }
+    },
+    "CreateStateMachine": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidDefinition"
+        },
+        {
+          "shape": "InvalidName"
+        },
+        {
+          "shape": "InvalidLoggingConfiguration"
+        },
+        {
+          "shape": "InvalidTracingConfiguration"
+        },
+        {
+          "shape": "StateMachineAlreadyExists"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "StateMachineLimitExceeded"
+        },
+        {
+          "shape": "StateMachineTypeNotSupported"
+        },
+        {
+          "shape": "TooManyTags"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "ConflictException"
+        },
+        {
+          "shape": "InvalidEncryptionConfiguration"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "CreateStateMachineInput"
+      },
+      "name": "CreateStateMachine",
+      "output": {
+        "shape": "CreateStateMachineOutput"
+      }
+    },
+    "CreateStateMachineAlias": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidName"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "ConflictException"
+        },
+        {
+          "shape": "ServiceQuotaExceededException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "CreateStateMachineAliasInput"
+      },
+      "name": "CreateStateMachineAlias",
+      "output": {
+        "shape": "CreateStateMachineAliasOutput"
+      }
+    },
+    "DeleteActivity": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DeleteActivityInput"
+      },
+      "name": "DeleteActivity",
+      "output": {
+        "shape": "DeleteActivityOutput"
+      }
+    },
+    "DeleteStateMachine": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ValidationException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DeleteStateMachineInput"
+      },
+      "name": "DeleteStateMachine",
+      "output": {
+        "shape": "DeleteStateMachineOutput"
+      }
+    },
+    "DeleteStateMachineAlias": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "ConflictException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DeleteStateMachineAliasInput"
+      },
+      "name": "DeleteStateMachineAlias",
+      "output": {
+        "shape": "DeleteStateMachineAliasOutput"
+      }
+    },
+    "DeleteStateMachineVersion": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ConflictException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DeleteStateMachineVersionInput"
+      },
+      "name": "DeleteStateMachineVersion",
+      "output": {
+        "shape": "DeleteStateMachineVersionOutput"
+      }
+    },
+    "DescribeActivity": {
+      "errors": [
+        {
+          "shape": "ActivityDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeActivityInput"
+      },
+      "name": "DescribeActivity",
+      "output": {
+        "shape": "DescribeActivityOutput"
+      }
+    },
+    "DescribeExecution": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeExecutionInput"
+      },
+      "name": "DescribeExecution",
+      "output": {
+        "shape": "DescribeExecutionOutput"
+      }
+    },
+    "DescribeMapRun": {
+      "errors": [
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "InvalidArn"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeMapRunInput"
+      },
+      "name": "DescribeMapRun",
+      "output": {
+        "shape": "DescribeMapRunOutput"
+      }
+    },
+    "DescribeStateMachine": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeStateMachineInput"
+      },
+      "name": "DescribeStateMachine",
+      "output": {
+        "shape": "DescribeStateMachineOutput"
+      }
+    },
+    "DescribeStateMachineAlias": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeStateMachineAliasInput"
+      },
+      "name": "DescribeStateMachineAlias",
+      "output": {
+        "shape": "DescribeStateMachineAliasOutput"
+      }
+    },
+    "DescribeStateMachineForExecution": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "DescribeStateMachineForExecutionInput"
+      },
+      "name": "DescribeStateMachineForExecution",
+      "output": {
+        "shape": "DescribeStateMachineForExecutionOutput"
+      }
+    },
+    "GetActivityTask": {
+      "errors": [
+        {
+          "shape": "ActivityDoesNotExist"
+        },
+        {
+          "shape": "ActivityWorkerLimitExceeded"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "GetActivityTaskInput"
+      },
+      "name": "GetActivityTask",
+      "output": {
+        "shape": "GetActivityTaskOutput"
+      }
+    },
+    "GetExecutionHistory": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "GetExecutionHistoryInput"
+      },
+      "name": "GetExecutionHistory",
+      "output": {
+        "shape": "GetExecutionHistoryOutput"
+      }
+    },
+    "ListActivities": {
+      "errors": [
+        {
+          "shape": "InvalidToken"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListActivitiesInput"
+      },
+      "name": "ListActivities",
+      "output": {
+        "shape": "ListActivitiesOutput"
+      }
+    },
+    "ListExecutions": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "StateMachineTypeNotSupported"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "ResourceNotFound"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListExecutionsInput"
+      },
+      "name": "ListExecutions",
+      "output": {
+        "shape": "ListExecutionsOutput"
+      }
+    },
+    "ListMapRuns": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidToken"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListMapRunsInput"
+      },
+      "name": "ListMapRuns",
+      "output": {
+        "shape": "ListMapRunsOutput"
+      }
+    },
+    "ListStateMachineAliases": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListStateMachineAliasesInput"
+      },
+      "name": "ListStateMachineAliases",
+      "output": {
+        "shape": "ListStateMachineAliasesOutput"
+      }
+    },
+    "ListStateMachineVersions": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidToken"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListStateMachineVersionsInput"
+      },
+      "name": "ListStateMachineVersions",
+      "output": {
+        "shape": "ListStateMachineVersionsOutput"
+      }
+    },
+    "ListStateMachines": {
+      "errors": [
+        {
+          "shape": "InvalidToken"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListStateMachinesInput"
+      },
+      "name": "ListStateMachines",
+      "output": {
+        "shape": "ListStateMachinesOutput"
+      }
+    },
+    "ListTagsForResource": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ListTagsForResourceInput"
+      },
+      "name": "ListTagsForResource",
+      "output": {
+        "shape": "ListTagsForResourceOutput"
+      }
+    },
+    "PublishStateMachineVersion": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "ServiceQuotaExceededException"
+        },
+        {
+          "shape": "ConflictException"
+        },
+        {
+          "shape": "InvalidArn"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "PublishStateMachineVersionInput"
+      },
+      "name": "PublishStateMachineVersion",
+      "output": {
+        "shape": "PublishStateMachineVersionOutput"
+      }
+    },
+    "RedriveExecution": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "ExecutionNotRedrivable"
+        },
+        {
+          "shape": "ExecutionLimitExceeded"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ValidationException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "RedriveExecutionInput"
+      },
+      "name": "RedriveExecution",
+      "output": {
+        "shape": "RedriveExecutionOutput"
+      }
+    },
+    "SendTaskFailure": {
+      "errors": [
+        {
+          "shape": "TaskDoesNotExist"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "TaskTimedOut"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "SendTaskFailureInput"
+      },
+      "name": "SendTaskFailure",
+      "output": {
+        "shape": "SendTaskFailureOutput"
+      }
+    },
+    "SendTaskHeartbeat": {
+      "errors": [
+        {
+          "shape": "TaskDoesNotExist"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "TaskTimedOut"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "SendTaskHeartbeatInput"
+      },
+      "name": "SendTaskHeartbeat",
+      "output": {
+        "shape": "SendTaskHeartbeatOutput"
+      }
+    },
+    "SendTaskSuccess": {
+      "errors": [
+        {
+          "shape": "TaskDoesNotExist"
+        },
+        {
+          "shape": "InvalidOutput"
+        },
+        {
+          "shape": "InvalidToken"
+        },
+        {
+          "shape": "TaskTimedOut"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "SendTaskSuccessInput"
+      },
+      "name": "SendTaskSuccess",
+      "output": {
+        "shape": "SendTaskSuccessOutput"
+      }
+    },
+    "StartExecution": {
+      "errors": [
+        {
+          "shape": "ExecutionLimitExceeded"
+        },
+        {
+          "shape": "ExecutionAlreadyExists"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidExecutionInput"
+        },
+        {
+          "shape": "InvalidName"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "StartExecutionInput"
+      },
+      "name": "StartExecution",
+      "output": {
+        "shape": "StartExecutionOutput"
+      }
+    },
+    "StartSyncExecution": {
+      "endpoint": {
+        "hostPrefix": "sync-"
+      },
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidExecutionInput"
+        },
+        {
+          "shape": "InvalidName"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "StateMachineTypeNotSupported"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "StartSyncExecutionInput"
+      },
+      "name": "StartSyncExecution",
+      "output": {
+        "shape": "StartSyncExecutionOutput"
+      }
+    },
+    "StopExecution": {
+      "errors": [
+        {
+          "shape": "ExecutionDoesNotExist"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsInvalidStateException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "StopExecutionInput"
+      },
+      "name": "StopExecution",
+      "output": {
+        "shape": "StopExecutionOutput"
+      }
+    },
+    "TagResource": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "TooManyTags"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "TagResourceInput"
+      },
+      "name": "TagResource",
+      "output": {
+        "shape": "TagResourceOutput"
+      }
+    },
+    "TestState": {
+      "endpoint": {
+        "hostPrefix": "sync-"
+      },
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidDefinition"
+        },
+        {
+          "shape": "InvalidExecutionInput"
+        },
+        {
+          "shape": "ValidationException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "TestStateInput"
+      },
+      "name": "TestState",
+      "output": {
+        "shape": "TestStateOutput"
+      }
+    },
+    "UntagResource": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "UntagResourceInput"
+      },
+      "name": "UntagResource",
+      "output": {
+        "shape": "UntagResourceOutput"
+      }
+    },
+    "UpdateMapRun": {
+      "errors": [
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ValidationException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "UpdateMapRunInput"
+      },
+      "name": "UpdateMapRun",
+      "output": {
+        "shape": "UpdateMapRunOutput"
+      }
+    },
+    "UpdateStateMachine": {
+      "errors": [
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "InvalidDefinition"
+        },
+        {
+          "shape": "InvalidLoggingConfiguration"
+        },
+        {
+          "shape": "InvalidTracingConfiguration"
+        },
+        {
+          "shape": "MissingRequiredParameter"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        },
+        {
+          "shape": "StateMachineDoesNotExist"
+        },
+        {
+          "shape": "ServiceQuotaExceededException"
+        },
+        {
+          "shape": "ConflictException"
+        },
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidEncryptionConfiguration"
+        },
+        {
+          "shape": "KmsAccessDeniedException"
+        },
+        {
+          "shape": "KmsThrottlingException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "idempotent": true,
+      "input": {
+        "shape": "UpdateStateMachineInput"
+      },
+      "name": "UpdateStateMachine",
+      "output": {
+        "shape": "UpdateStateMachineOutput"
+      }
+    },
+    "UpdateStateMachineAlias": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        },
+        {
+          "shape": "InvalidArn"
+        },
+        {
+          "shape": "ResourceNotFound"
+        },
+        {
+          "shape": "ConflictException"
+        },
+        {
+          "shape": "StateMachineDeleting"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "UpdateStateMachineAliasInput"
+      },
+      "name": "UpdateStateMachineAlias",
+      "output": {
+        "shape": "UpdateStateMachineAliasOutput"
+      }
+    },
+    "ValidateStateMachineDefinition": {
+      "errors": [
+        {
+          "shape": "ValidationException"
+        }
+      ],
+      "http": {
+        "method": "POST",
+        "requestUri": "/"
+      },
+      "input": {
+        "shape": "ValidateStateMachineDefinitionInput"
+      },
+      "name": "ValidateStateMachineDefinition",
+      "output": {
+        "shape": "ValidateStateMachineDefinitionOutput"
+      }
+    }
+  },
+  "shapes": {
+    "ActivityAlreadyExists": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityDoesNotExist": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityLimitExceeded": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityList": {
+      "member": {
+        "shape": "ActivityListItem"
+      },
+      "type": "list"
+    },
+    "ActivityListItem": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        },
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "name": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "activityArn",
+        "name",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "ActivityScheduleFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityScheduledEventDetails": {
+      "members": {
+        "heartbeatInSeconds": {
+          "box": true,
+          "shape": "TimeoutInSeconds"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "resource": {
+          "shape": "Arn"
+        },
+        "timeoutInSeconds": {
+          "box": true,
+          "shape": "TimeoutInSeconds"
+        }
+      },
+      "required": [
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "ActivityStartedEventDetails": {
+      "members": {
+        "workerName": {
+          "shape": "Identity"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivitySucceededEventDetails": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityTimedOutEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ActivityWorkerLimitExceeded": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "AliasDescription": {
+      "max": 256,
+      "sensitive": true,
+      "type": "string"
+    },
+    "Arn": {
+      "max": 256,
+      "min": 1,
+      "type": "string"
+    },
+    "AssignedVariables": {
+      "key": {
+        "shape": "VariableName"
+      },
+      "type": "map",
+      "value": {
+        "shape": "VariableValue"
+      }
+    },
+    "AssignedVariablesDetails": {
+      "members": {
+        "truncated": {
+          "shape": "truncated"
+        }
+      },
+      "type": "structure"
+    },
+    "BilledDuration": {
+      "min": 0,
+      "type": "long"
+    },
+    "BilledMemoryUsed": {
+      "min": 0,
+      "type": "long"
+    },
+    "BillingDetails": {
+      "members": {
+        "billedDurationInMilliseconds": {
+          "shape": "BilledDuration"
+        },
+        "billedMemoryUsedInMB": {
+          "shape": "BilledMemoryUsed"
+        }
+      },
+      "type": "structure"
+    },
+    "CharacterRestrictedName": {
+      "max": 80,
+      "min": 1,
+      "pattern": "^(?=.*[a-zA-Z_\\-\\.])[a-zA-Z0-9_\\-\\.]+$",
+      "type": "string"
+    },
+    "ClientToken": {
+      "max": 64,
+      "min": 1,
+      "pattern": "[!-~]+",
+      "type": "string"
+    },
+    "CloudWatchEventsExecutionDataDetails": {
+      "members": {
+        "included": {
+          "shape": "includedDetails"
+        }
+      },
+      "type": "structure"
+    },
+    "CloudWatchLogsLogGroup": {
+      "members": {
+        "logGroupArn": {
+          "shape": "Arn"
+        }
+      },
+      "type": "structure"
+    },
+    "ConflictException": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ConnectorParameters": {
+      "max": 262144,
+      "min": 0,
+      "sensitive": true,
+      "type": "string"
+    },
+    "CreateActivityInput": {
+      "members": {
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "tags": {
+          "shape": "TagList"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "structure"
+    },
+    "CreateActivityOutput": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        },
+        "creationDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "activityArn",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "CreateStateMachineAliasInput": {
+      "members": {
+        "description": {
+          "shape": "AliasDescription"
+        },
+        "name": {
+          "shape": "CharacterRestrictedName"
+        },
+        "routingConfiguration": {
+          "shape": "RoutingConfigurationList"
+        }
+      },
+      "required": [
+        "name",
+        "routingConfiguration"
+      ],
+      "type": "structure"
+    },
+    "CreateStateMachineAliasOutput": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineAliasArn",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "CreateStateMachineInput": {
+      "members": {
+        "definition": {
+          "shape": "Definition"
+        },
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "loggingConfiguration": {
+          "shape": "LoggingConfiguration"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "publish": {
+          "shape": "Publish"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "tags": {
+          "shape": "TagList"
+        },
+        "tracingConfiguration": {
+          "shape": "TracingConfiguration"
+        },
+        "type": {
+          "shape": "StateMachineType"
+        },
+        "versionDescription": {
+          "shape": "VersionDescription"
+        }
+      },
+      "required": [
+        "name",
+        "definition",
+        "roleArn"
+      ],
+      "type": "structure"
+    },
+    "CreateStateMachineOutput": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "Definition": {
+      "max": 1048576,
+      "min": 1,
+      "sensitive": true,
+      "type": "string"
+    },
+    "DeleteActivityInput": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "activityArn"
+      ],
+      "type": "structure"
+    },
+    "DeleteActivityOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "DeleteStateMachineAliasInput": {
+      "members": {
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineAliasArn"
+      ],
+      "type": "structure"
+    },
+    "DeleteStateMachineAliasOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "DeleteStateMachineInput": {
+      "members": {
+        "stateMachineArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "DeleteStateMachineOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "DeleteStateMachineVersionInput": {
+      "members": {
+        "stateMachineVersionArn": {
+          "shape": "LongArn"
+        }
+      },
+      "required": [
+        "stateMachineVersionArn"
+      ],
+      "type": "structure"
+    },
+    "DeleteStateMachineVersionOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "DescribeActivityInput": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "activityArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeActivityOutput": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        },
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "name": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "activityArn",
+        "name",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "DescribeExecutionInput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "includedData": {
+          "shape": "IncludedData"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeExecutionOutput": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "CloudWatchEventsExecutionDataDetails"
+        },
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "CloudWatchEventsExecutionDataDetails"
+        },
+        "redriveCount": {
+          "shape": "RedriveCount"
+        },
+        "redriveDate": {
+          "shape": "Timestamp"
+        },
+        "redriveStatus": {
+          "shape": "ExecutionRedriveStatus"
+        },
+        "redriveStatusReason": {
+          "shape": "SensitiveData"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        },
+        "status": {
+          "shape": "ExecutionStatus"
+        },
+        "stopDate": {
+          "shape": "Timestamp"
+        },
+        "traceHeader": {
+          "shape": "TraceHeader"
+        }
+      },
+      "required": [
+        "executionArn",
+        "stateMachineArn",
+        "status",
+        "startDate"
+      ],
+      "type": "structure"
+    },
+    "DescribeMapRunInput": {
+      "members": {
+        "mapRunArn": {
+          "shape": "LongArn"
+        }
+      },
+      "required": [
+        "mapRunArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeMapRunOutput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "executionCounts": {
+          "shape": "MapRunExecutionCounts"
+        },
+        "itemCounts": {
+          "shape": "MapRunItemCounts"
+        },
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "maxConcurrency": {
+          "shape": "MaxConcurrency"
+        },
+        "redriveCount": {
+          "shape": "RedriveCount"
+        },
+        "redriveDate": {
+          "shape": "Timestamp"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        },
+        "status": {
+          "shape": "MapRunStatus"
+        },
+        "stopDate": {
+          "shape": "Timestamp"
+        },
+        "toleratedFailureCount": {
+          "shape": "ToleratedFailureCount"
+        },
+        "toleratedFailurePercentage": {
+          "shape": "ToleratedFailurePercentage"
+        }
+      },
+      "required": [
+        "mapRunArn",
+        "executionArn",
+        "status",
+        "startDate",
+        "maxConcurrency",
+        "toleratedFailurePercentage",
+        "toleratedFailureCount",
+        "itemCounts",
+        "executionCounts"
+      ],
+      "type": "structure"
+    },
+    "DescribeStateMachineAliasInput": {
+      "members": {
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineAliasArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeStateMachineAliasOutput": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "description": {
+          "shape": "AliasDescription"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "routingConfiguration": {
+          "shape": "RoutingConfigurationList"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        },
+        "updateDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "type": "structure"
+    },
+    "DescribeStateMachineForExecutionInput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "includedData": {
+          "shape": "IncludedData"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeStateMachineForExecutionOutput": {
+      "members": {
+        "definition": {
+          "shape": "Definition"
+        },
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "label": {
+          "shape": "MapRunLabel"
+        },
+        "loggingConfiguration": {
+          "shape": "LoggingConfiguration"
+        },
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "revisionId": {
+          "shape": "RevisionId"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "tracingConfiguration": {
+          "shape": "TracingConfiguration"
+        },
+        "updateDate": {
+          "shape": "Timestamp"
+        },
+        "variableReferences": {
+          "shape": "VariableReferences"
+        }
+      },
+      "required": [
+        "stateMachineArn",
+        "name",
+        "definition",
+        "roleArn",
+        "updateDate"
+      ],
+      "type": "structure"
+    },
+    "DescribeStateMachineInput": {
+      "members": {
+        "includedData": {
+          "shape": "IncludedData"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "DescribeStateMachineOutput": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "definition": {
+          "shape": "Definition"
+        },
+        "description": {
+          "shape": "VersionDescription"
+        },
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "label": {
+          "shape": "MapRunLabel"
+        },
+        "loggingConfiguration": {
+          "shape": "LoggingConfiguration"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "revisionId": {
+          "shape": "RevisionId"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "status": {
+          "shape": "StateMachineStatus"
+        },
+        "tracingConfiguration": {
+          "shape": "TracingConfiguration"
+        },
+        "type": {
+          "shape": "StateMachineType"
+        },
+        "variableReferences": {
+          "shape": "VariableReferences"
+        }
+      },
+      "required": [
+        "stateMachineArn",
+        "name",
+        "definition",
+        "roleArn",
+        "type",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "Enabled": {
+      "type": "boolean"
+    },
+    "EncryptionConfiguration": {
+      "members": {
+        "kmsDataKeyReusePeriodSeconds": {
+          "box": true,
+          "shape": "KmsDataKeyReusePeriodSeconds"
+        },
+        "kmsKeyId": {
+          "shape": "KmsKeyId"
+        },
+        "type": {
+          "shape": "EncryptionType"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "structure"
+    },
+    "EncryptionType": {
+      "enum": [
+        "AWS_OWNED_KEY",
+        "CUSTOMER_MANAGED_KMS_KEY"
+      ],
+      "type": "string"
+    },
+    "ErrorMessage": {
+      "type": "string"
+    },
+    "EvaluationFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "location": {
+          "shape": "EvaluationFailureLocation"
+        },
+        "state": {
+          "shape": "StateName"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "structure"
+    },
+    "EvaluationFailureLocation": {
+      "max": 256,
+      "min": 0,
+      "sensitive": true,
+      "type": "string"
+    },
+    "EventId": {
+      "type": "long"
+    },
+    "ExceptionHandlerIndex": {
+      "box": true,
+      "min": 0,
+      "sensitive": true,
+      "type": "integer"
+    },
+    "ExecutionAbortedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionAlreadyExists": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionDoesNotExist": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionLimitExceeded": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionList": {
+      "member": {
+        "shape": "ExecutionListItem"
+      },
+      "type": "list"
+    },
+    "ExecutionListItem": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "itemCount": {
+          "box": true,
+          "shape": "UnsignedInteger"
+        },
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "redriveCount": {
+          "box": true,
+          "shape": "RedriveCount"
+        },
+        "redriveDate": {
+          "shape": "Timestamp"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        },
+        "status": {
+          "shape": "ExecutionStatus"
+        },
+        "stopDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "executionArn",
+        "stateMachineArn",
+        "name",
+        "status",
+        "startDate"
+      ],
+      "type": "structure"
+    },
+    "ExecutionNotRedrivable": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionRedriveFilter": {
+      "enum": [
+        "REDRIVEN",
+        "NOT_REDRIVEN"
+      ],
+      "type": "string"
+    },
+    "ExecutionRedriveStatus": {
+      "enum": [
+        "REDRIVABLE",
+        "NOT_REDRIVABLE",
+        "REDRIVABLE_BY_MAP_RUN"
+      ],
+      "type": "string"
+    },
+    "ExecutionRedrivenEventDetails": {
+      "members": {
+        "redriveCount": {
+          "shape": "RedriveCount"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionStartedEventDetails": {
+      "members": {
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionStatus": {
+      "enum": [
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "TIMED_OUT",
+        "ABORTED",
+        "PENDING_REDRIVE"
+      ],
+      "type": "string"
+    },
+    "ExecutionSucceededEventDetails": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        }
+      },
+      "type": "structure"
+    },
+    "ExecutionTimedOutEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "GetActivityTaskInput": {
+      "members": {
+        "activityArn": {
+          "shape": "Arn"
+        },
+        "workerName": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "activityArn"
+      ],
+      "type": "structure"
+    },
+    "GetActivityTaskOutput": {
+      "members": {
+        "input": {
+          "shape": "SensitiveDataJobInput"
+        },
+        "taskToken": {
+          "shape": "TaskToken"
+        }
+      },
+      "type": "structure"
+    },
+    "GetExecutionHistoryInput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "includeExecutionData": {
+          "shape": "IncludeExecutionDataGetExecutionHistory"
+        },
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "reverseOrder": {
+          "shape": "ReverseOrder"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "GetExecutionHistoryOutput": {
+      "members": {
+        "events": {
+          "shape": "HistoryEventList"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "type": "structure"
+    },
+    "HTTPBody": {
+      "type": "string"
+    },
+    "HTTPHeaders": {
+      "type": "string"
+    },
+    "HTTPMethod": {
+      "type": "string"
+    },
+    "HTTPProtocol": {
+      "type": "string"
+    },
+    "HTTPStatusCode": {
+      "type": "string"
+    },
+    "HTTPStatusMessage": {
+      "type": "string"
+    },
+    "HistoryEvent": {
+      "members": {
+        "activityFailedEventDetails": {
+          "shape": "ActivityFailedEventDetails"
+        },
+        "activityScheduleFailedEventDetails": {
+          "shape": "ActivityScheduleFailedEventDetails"
+        },
+        "activityScheduledEventDetails": {
+          "shape": "ActivityScheduledEventDetails"
+        },
+        "activityStartedEventDetails": {
+          "shape": "ActivityStartedEventDetails"
+        },
+        "activitySucceededEventDetails": {
+          "shape": "ActivitySucceededEventDetails"
+        },
+        "activityTimedOutEventDetails": {
+          "shape": "ActivityTimedOutEventDetails"
+        },
+        "evaluationFailedEventDetails": {
+          "shape": "EvaluationFailedEventDetails"
+        },
+        "executionAbortedEventDetails": {
+          "shape": "ExecutionAbortedEventDetails"
+        },
+        "executionFailedEventDetails": {
+          "shape": "ExecutionFailedEventDetails"
+        },
+        "executionRedrivenEventDetails": {
+          "shape": "ExecutionRedrivenEventDetails"
+        },
+        "executionStartedEventDetails": {
+          "shape": "ExecutionStartedEventDetails"
+        },
+        "executionSucceededEventDetails": {
+          "shape": "ExecutionSucceededEventDetails"
+        },
+        "executionTimedOutEventDetails": {
+          "shape": "ExecutionTimedOutEventDetails"
+        },
+        "id": {
+          "shape": "EventId"
+        },
+        "lambdaFunctionFailedEventDetails": {
+          "shape": "LambdaFunctionFailedEventDetails"
+        },
+        "lambdaFunctionScheduleFailedEventDetails": {
+          "shape": "LambdaFunctionScheduleFailedEventDetails"
+        },
+        "lambdaFunctionScheduledEventDetails": {
+          "shape": "LambdaFunctionScheduledEventDetails"
+        },
+        "lambdaFunctionStartFailedEventDetails": {
+          "shape": "LambdaFunctionStartFailedEventDetails"
+        },
+        "lambdaFunctionSucceededEventDetails": {
+          "shape": "LambdaFunctionSucceededEventDetails"
+        },
+        "lambdaFunctionTimedOutEventDetails": {
+          "shape": "LambdaFunctionTimedOutEventDetails"
+        },
+        "mapIterationAbortedEventDetails": {
+          "shape": "MapIterationEventDetails"
+        },
+        "mapIterationFailedEventDetails": {
+          "shape": "MapIterationEventDetails"
+        },
+        "mapIterationStartedEventDetails": {
+          "shape": "MapIterationEventDetails"
+        },
+        "mapIterationSucceededEventDetails": {
+          "shape": "MapIterationEventDetails"
+        },
+        "mapRunFailedEventDetails": {
+          "shape": "MapRunFailedEventDetails"
+        },
+        "mapRunRedrivenEventDetails": {
+          "shape": "MapRunRedrivenEventDetails"
+        },
+        "mapRunStartedEventDetails": {
+          "shape": "MapRunStartedEventDetails"
+        },
+        "mapStateStartedEventDetails": {
+          "shape": "MapStateStartedEventDetails"
+        },
+        "previousEventId": {
+          "shape": "EventId"
+        },
+        "stateEnteredEventDetails": {
+          "shape": "StateEnteredEventDetails"
+        },
+        "stateExitedEventDetails": {
+          "shape": "StateExitedEventDetails"
+        },
+        "taskFailedEventDetails": {
+          "shape": "TaskFailedEventDetails"
+        },
+        "taskScheduledEventDetails": {
+          "shape": "TaskScheduledEventDetails"
+        },
+        "taskStartFailedEventDetails": {
+          "shape": "TaskStartFailedEventDetails"
+        },
+        "taskStartedEventDetails": {
+          "shape": "TaskStartedEventDetails"
+        },
+        "taskSubmitFailedEventDetails": {
+          "shape": "TaskSubmitFailedEventDetails"
+        },
+        "taskSubmittedEventDetails": {
+          "shape": "TaskSubmittedEventDetails"
+        },
+        "taskSucceededEventDetails": {
+          "shape": "TaskSucceededEventDetails"
+        },
+        "taskTimedOutEventDetails": {
+          "shape": "TaskTimedOutEventDetails"
+        },
+        "timestamp": {
+          "shape": "Timestamp"
+        },
+        "type": {
+          "shape": "HistoryEventType"
+        }
+      },
+      "required": [
+        "timestamp",
+        "type",
+        "id"
+      ],
+      "type": "structure"
+    },
+    "HistoryEventExecutionDataDetails": {
+      "members": {
+        "truncated": {
+          "shape": "truncated"
+        }
+      },
+      "type": "structure"
+    },
+    "HistoryEventList": {
+      "member": {
+        "shape": "HistoryEvent"
+      },
+      "type": "list"
+    },
+    "HistoryEventType": {
+      "enum": [
+        "ActivityFailed",
+        "ActivityScheduled",
+        "ActivityScheduleFailed",
+        "ActivityStarted",
+        "ActivitySucceeded",
+        "ActivityTimedOut",
+        "ChoiceStateEntered",
+        "ChoiceStateExited",
+        "ExecutionAborted",
+        "ExecutionFailed",
+        "ExecutionStarted",
+        "ExecutionSucceeded",
+        "ExecutionTimedOut",
+        "FailStateEntered",
+        "LambdaFunctionFailed",
+        "LambdaFunctionScheduled",
+        "LambdaFunctionScheduleFailed",
+        "LambdaFunctionStarted",
+        "LambdaFunctionStartFailed",
+        "LambdaFunctionSucceeded",
+        "LambdaFunctionTimedOut",
+        "MapIterationAborted",
+        "MapIterationFailed",
+        "MapIterationStarted",
+        "MapIterationSucceeded",
+        "MapStateAborted",
+        "MapStateEntered",
+        "MapStateExited",
+        "MapStateFailed",
+        "MapStateStarted",
+        "MapStateSucceeded",
+        "ParallelStateAborted",
+        "ParallelStateEntered",
+        "ParallelStateExited",
+        "ParallelStateFailed",
+        "ParallelStateStarted",
+        "ParallelStateSucceeded",
+        "PassStateEntered",
+        "PassStateExited",
+        "SucceedStateEntered",
+        "SucceedStateExited",
+        "TaskFailed",
+        "TaskScheduled",
+        "TaskStarted",
+        "TaskStartFailed",
+        "TaskStateAborted",
+        "TaskStateEntered",
+        "TaskStateExited",
+        "TaskSubmitFailed",
+        "TaskSubmitted",
+        "TaskSucceeded",
+        "TaskTimedOut",
+        "WaitStateAborted",
+        "WaitStateEntered",
+        "WaitStateExited",
+        "MapRunAborted",
+        "MapRunFailed",
+        "MapRunStarted",
+        "MapRunSucceeded",
+        "ExecutionRedriven",
+        "MapRunRedriven",
+        "EvaluationFailed"
+      ],
+      "type": "string"
+    },
+    "Identity": {
+      "max": 256,
+      "type": "string"
+    },
+    "IncludeExecutionData": {
+      "type": "boolean"
+    },
+    "IncludeExecutionDataGetExecutionHistory": {
+      "box": true,
+      "type": "boolean"
+    },
+    "IncludedData": {
+      "enum": [
+        "ALL_DATA",
+        "METADATA_ONLY"
+      ],
+      "type": "string"
+    },
+    "InspectionData": {
+      "members": {
+        "afterArguments": {
+          "shape": "SensitiveData"
+        },
+        "afterInputPath": {
+          "shape": "SensitiveData"
+        },
+        "afterItemBatcher": {
+          "shape": "SensitiveData"
+        },
+        "afterItemSelector": {
+          "shape": "SensitiveData"
+        },
+        "afterItemsPath": {
+          "shape": "SensitiveData"
+        },
+        "afterItemsPointer": {
+          "shape": "SensitiveData"
+        },
+        "afterParameters": {
+          "shape": "SensitiveData"
+        },
+        "afterResultPath": {
+          "shape": "SensitiveData"
+        },
+        "afterResultSelector": {
+          "shape": "SensitiveData"
+        },
+        "errorDetails": {
+          "shape": "InspectionErrorDetails"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "maxConcurrency": {
+          "box": true,
+          "shape": "InspectionMaxConcurrency"
+        },
+        "request": {
+          "shape": "InspectionDataRequest"
+        },
+        "response": {
+          "shape": "InspectionDataResponse"
+        },
+        "result": {
+          "shape": "SensitiveData"
+        },
+        "toleratedFailureCount": {
+          "box": true,
+          "shape": "InspectionToleratedFailureCount"
+        },
+        "toleratedFailurePercentage": {
+          "box": true,
+          "shape": "InspectionToleratedFailurePercentage"
+        },
+        "variables": {
+          "shape": "SensitiveData"
+        }
+      },
+      "sensitive": true,
+      "type": "structure"
+    },
+    "InspectionDataRequest": {
+      "members": {
+        "body": {
+          "shape": "HTTPBody"
+        },
+        "headers": {
+          "shape": "HTTPHeaders"
+        },
+        "method": {
+          "shape": "HTTPMethod"
+        },
+        "protocol": {
+          "shape": "HTTPProtocol"
+        },
+        "url": {
+          "shape": "URL"
+        }
+      },
+      "type": "structure"
+    },
+    "InspectionDataResponse": {
+      "members": {
+        "body": {
+          "shape": "HTTPBody"
+        },
+        "headers": {
+          "shape": "HTTPHeaders"
+        },
+        "protocol": {
+          "shape": "HTTPProtocol"
+        },
+        "statusCode": {
+          "shape": "HTTPStatusCode"
+        },
+        "statusMessage": {
+          "shape": "HTTPStatusMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InspectionErrorDetails": {
+      "members": {
+        "catchIndex": {
+          "box": true,
+          "shape": "ExceptionHandlerIndex"
+        },
+        "retryBackoffIntervalSeconds": {
+          "box": true,
+          "shape": "RetryBackoffIntervalSeconds"
+        },
+        "retryIndex": {
+          "box": true,
+          "shape": "ExceptionHandlerIndex"
+        }
+      },
+      "type": "structure"
+    },
+    "InspectionLevel": {
+      "enum": [
+        "INFO",
+        "DEBUG",
+        "TRACE"
+      ],
+      "type": "string"
+    },
+    "InspectionMaxConcurrency": {
+      "box": true,
+      "min": 0,
+      "sensitive": true,
+      "type": "integer"
+    },
+    "InspectionToleratedFailureCount": {
+      "box": true,
+      "min": 0,
+      "sensitive": true,
+      "type": "integer"
+    },
+    "InspectionToleratedFailurePercentage": {
+      "box": true,
+      "max": 100,
+      "min": 0,
+      "sensitive": true,
+      "type": "float"
+    },
+    "InvalidArn": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidDefinition": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidEncryptionConfiguration": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidExecutionInput": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidLoggingConfiguration": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidName": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidOutput": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidToken": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "InvalidTracingConfiguration": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "KmsAccessDeniedException": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "KmsDataKeyReusePeriodSeconds": {
+      "box": true,
+      "max": 900,
+      "min": 60,
+      "type": "integer"
+    },
+    "KmsInvalidStateException": {
+      "exception": true,
+      "members": {
+        "kmsKeyState": {
+          "shape": "KmsKeyState"
+        },
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "KmsKeyId": {
+      "max": 2048,
+      "min": 1,
+      "type": "string"
+    },
+    "KmsKeyState": {
+      "enum": [
+        "DISABLED",
+        "PENDING_DELETION",
+        "PENDING_IMPORT",
+        "UNAVAILABLE",
+        "CREATING"
+      ],
+      "type": "string"
+    },
+    "KmsThrottlingException": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "LambdaFunctionFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "LambdaFunctionScheduleFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "LambdaFunctionScheduledEventDetails": {
+      "members": {
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "resource": {
+          "shape": "Arn"
+        },
+        "taskCredentials": {
+          "shape": "TaskCredentials"
+        },
+        "timeoutInSeconds": {
+          "box": true,
+          "shape": "TimeoutInSeconds"
+        }
+      },
+      "required": [
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "LambdaFunctionStartFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "LambdaFunctionSucceededEventDetails": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        }
+      },
+      "type": "structure"
+    },
+    "LambdaFunctionTimedOutEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "ListActivitiesInput": {
+      "members": {
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "type": "structure"
+    },
+    "ListActivitiesOutput": {
+      "members": {
+        "activities": {
+          "shape": "ActivityList"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "required": [
+        "activities"
+      ],
+      "type": "structure"
+    },
+    "ListExecutionsInput": {
+      "members": {
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "ListExecutionsPageToken"
+        },
+        "redriveFilter": {
+          "shape": "ExecutionRedriveFilter"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "statusFilter": {
+          "shape": "ExecutionStatus"
+        }
+      },
+      "type": "structure"
+    },
+    "ListExecutionsOutput": {
+      "members": {
+        "executions": {
+          "shape": "ExecutionList"
+        },
+        "nextToken": {
+          "shape": "ListExecutionsPageToken"
+        }
+      },
+      "required": [
+        "executions"
+      ],
+      "type": "structure"
+    },
+    "ListExecutionsPageToken": {
+      "max": 3096,
+      "min": 1,
+      "type": "string"
+    },
+    "ListMapRunsInput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "ListMapRunsOutput": {
+      "members": {
+        "mapRuns": {
+          "shape": "MapRunList"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "required": [
+        "mapRuns"
+      ],
+      "type": "structure"
+    },
+    "ListStateMachineAliasesInput": {
+      "members": {
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "ListStateMachineAliasesOutput": {
+      "members": {
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "stateMachineAliases": {
+          "shape": "StateMachineAliasList"
+        }
+      },
+      "required": [
+        "stateMachineAliases"
+      ],
+      "type": "structure"
+    },
+    "ListStateMachineVersionsInput": {
+      "members": {
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "ListStateMachineVersionsOutput": {
+      "members": {
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "stateMachineVersions": {
+          "shape": "StateMachineVersionList"
+        }
+      },
+      "required": [
+        "stateMachineVersions"
+      ],
+      "type": "structure"
+    },
+    "ListStateMachinesInput": {
+      "members": {
+        "maxResults": {
+          "shape": "PageSize"
+        },
+        "nextToken": {
+          "shape": "PageToken"
+        }
+      },
+      "type": "structure"
+    },
+    "ListStateMachinesOutput": {
+      "members": {
+        "nextToken": {
+          "shape": "PageToken"
+        },
+        "stateMachines": {
+          "shape": "StateMachineList"
+        }
+      },
+      "required": [
+        "stateMachines"
+      ],
+      "type": "structure"
+    },
+    "ListTagsForResourceInput": {
+      "members": {
+        "resourceArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "resourceArn"
+      ],
+      "type": "structure"
+    },
+    "ListTagsForResourceOutput": {
+      "members": {
+        "tags": {
+          "shape": "TagList"
+        }
+      },
+      "type": "structure"
+    },
+    "LogDestination": {
+      "members": {
+        "cloudWatchLogsLogGroup": {
+          "shape": "CloudWatchLogsLogGroup"
+        }
+      },
+      "type": "structure"
+    },
+    "LogDestinationList": {
+      "member": {
+        "shape": "LogDestination"
+      },
+      "type": "list"
+    },
+    "LogLevel": {
+      "enum": [
+        "ALL",
+        "ERROR",
+        "FATAL",
+        "OFF"
+      ],
+      "type": "string"
+    },
+    "LoggingConfiguration": {
+      "members": {
+        "destinations": {
+          "shape": "LogDestinationList"
+        },
+        "includeExecutionData": {
+          "shape": "IncludeExecutionData"
+        },
+        "level": {
+          "shape": "LogLevel"
+        }
+      },
+      "type": "structure"
+    },
+    "LongArn": {
+      "max": 2000,
+      "min": 1,
+      "type": "string"
+    },
+    "LongObject": {
+      "type": "long"
+    },
+    "MapIterationEventDetails": {
+      "members": {
+        "index": {
+          "shape": "UnsignedInteger"
+        },
+        "name": {
+          "shape": "Name"
+        }
+      },
+      "type": "structure"
+    },
+    "MapIterationFailureCount": {
+      "box": true,
+      "min": 0,
+      "type": "integer"
+    },
+    "MapRunExecutionCounts": {
+      "members": {
+        "aborted": {
+          "shape": "UnsignedLong"
+        },
+        "failed": {
+          "shape": "UnsignedLong"
+        },
+        "failuresNotRedrivable": {
+          "shape": "LongObject"
+        },
+        "pending": {
+          "shape": "UnsignedLong"
+        },
+        "pendingRedrive": {
+          "shape": "LongObject"
+        },
+        "resultsWritten": {
+          "shape": "UnsignedLong"
+        },
+        "running": {
+          "shape": "UnsignedLong"
+        },
+        "succeeded": {
+          "shape": "UnsignedLong"
+        },
+        "timedOut": {
+          "shape": "UnsignedLong"
+        },
+        "total": {
+          "shape": "UnsignedLong"
+        }
+      },
+      "required": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "timedOut",
+        "aborted",
+        "total",
+        "resultsWritten"
+      ],
+      "type": "structure"
+    },
+    "MapRunFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "MapRunItemCounts": {
+      "members": {
+        "aborted": {
+          "shape": "UnsignedLong"
+        },
+        "failed": {
+          "shape": "UnsignedLong"
+        },
+        "failuresNotRedrivable": {
+          "shape": "LongObject"
+        },
+        "pending": {
+          "shape": "UnsignedLong"
+        },
+        "pendingRedrive": {
+          "shape": "LongObject"
+        },
+        "resultsWritten": {
+          "shape": "UnsignedLong"
+        },
+        "running": {
+          "shape": "UnsignedLong"
+        },
+        "succeeded": {
+          "shape": "UnsignedLong"
+        },
+        "timedOut": {
+          "shape": "UnsignedLong"
+        },
+        "total": {
+          "shape": "UnsignedLong"
+        }
+      },
+      "required": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "timedOut",
+        "aborted",
+        "total",
+        "resultsWritten"
+      ],
+      "type": "structure"
+    },
+    "MapRunLabel": {
+      "type": "string"
+    },
+    "MapRunList": {
+      "member": {
+        "shape": "MapRunListItem"
+      },
+      "type": "list"
+    },
+    "MapRunListItem": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "stopDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "executionArn",
+        "mapRunArn",
+        "stateMachineArn",
+        "startDate"
+      ],
+      "type": "structure"
+    },
+    "MapRunRedrivenEventDetails": {
+      "members": {
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "redriveCount": {
+          "shape": "RedriveCount"
+        }
+      },
+      "type": "structure"
+    },
+    "MapRunStartedEventDetails": {
+      "members": {
+        "mapRunArn": {
+          "shape": "LongArn"
+        }
+      },
+      "type": "structure"
+    },
+    "MapRunStatus": {
+      "enum": [
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "ABORTED"
+      ],
+      "type": "string"
+    },
+    "MapStateStartedEventDetails": {
+      "members": {
+        "length": {
+          "shape": "UnsignedInteger"
+        }
+      },
+      "type": "structure"
+    },
+    "MaxConcurrency": {
+      "min": 0,
+      "type": "integer"
+    },
+    "MissingRequiredParameter": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "MockErrorOutput": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        }
+      },
+      "type": "structure"
+    },
+    "MockInput": {
+      "members": {
+        "errorOutput": {
+          "shape": "MockErrorOutput"
+        },
+        "fieldValidationMode": {
+          "shape": "MockResponseValidationMode"
+        },
+        "result": {
+          "shape": "SensitiveData"
+        }
+      },
+      "type": "structure"
+    },
+    "MockResponseValidationMode": {
+      "enum": [
+        "STRICT",
+        "PRESENT",
+        "NONE"
+      ],
+      "type": "string"
+    },
+    "Name": {
+      "max": 80,
+      "min": 1,
+      "type": "string"
+    },
+    "PageSize": {
+      "max": 1000,
+      "min": 0,
+      "type": "integer"
+    },
+    "PageToken": {
+      "max": 1024,
+      "min": 1,
+      "type": "string"
+    },
+    "Publish": {
+      "type": "boolean"
+    },
+    "PublishStateMachineVersionInput": {
+      "members": {
+        "description": {
+          "shape": "VersionDescription"
+        },
+        "revisionId": {
+          "shape": "RevisionId"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "PublishStateMachineVersionOutput": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "creationDate",
+        "stateMachineVersionArn"
+      ],
+      "type": "structure"
+    },
+    "RedriveCount": {
+      "box": true,
+      "type": "integer"
+    },
+    "RedriveExecutionInput": {
+      "members": {
+        "clientToken": {
+          "idempotencyToken": true,
+          "shape": "ClientToken"
+        },
+        "executionArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "RedriveExecutionOutput": {
+      "members": {
+        "redriveDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "redriveDate"
+      ],
+      "type": "structure"
+    },
+    "ResourceNotFound": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        },
+        "resourceName": {
+          "shape": "Arn"
+        }
+      },
+      "type": "structure"
+    },
+    "RetrierRetryCount": {
+      "box": true,
+      "min": 0,
+      "type": "integer"
+    },
+    "RetryBackoffIntervalSeconds": {
+      "box": true,
+      "min": 0,
+      "sensitive": true,
+      "type": "integer"
+    },
+    "RevealSecrets": {
+      "type": "boolean"
+    },
+    "ReverseOrder": {
+      "type": "boolean"
+    },
+    "RevisionId": {
+      "type": "string"
+    },
+    "RoutingConfigurationList": {
+      "max": 2,
+      "member": {
+        "shape": "RoutingConfigurationListItem"
+      },
+      "min": 1,
+      "type": "list"
+    },
+    "RoutingConfigurationListItem": {
+      "members": {
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        },
+        "weight": {
+          "shape": "VersionWeight"
+        }
+      },
+      "required": [
+        "stateMachineVersionArn",
+        "weight"
+      ],
+      "type": "structure"
+    },
+    "SendTaskFailureInput": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "taskToken": {
+          "shape": "TaskToken"
+        }
+      },
+      "required": [
+        "taskToken"
+      ],
+      "type": "structure"
+    },
+    "SendTaskFailureOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "SendTaskHeartbeatInput": {
+      "members": {
+        "taskToken": {
+          "shape": "TaskToken"
+        }
+      },
+      "required": [
+        "taskToken"
+      ],
+      "type": "structure"
+    },
+    "SendTaskHeartbeatOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "SendTaskSuccessInput": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "taskToken": {
+          "shape": "TaskToken"
+        }
+      },
+      "required": [
+        "taskToken",
+        "output"
+      ],
+      "type": "structure"
+    },
+    "SendTaskSuccessOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "SensitiveCause": {
+      "max": 32768,
+      "min": 0,
+      "sensitive": true,
+      "type": "string"
+    },
+    "SensitiveData": {
+      "max": 262144,
+      "sensitive": true,
+      "type": "string"
+    },
+    "SensitiveDataJobInput": {
+      "max": 1048576,
+      "sensitive": true,
+      "type": "string"
+    },
+    "SensitiveError": {
+      "max": 256,
+      "min": 0,
+      "sensitive": true,
+      "type": "string"
+    },
+    "ServiceQuotaExceededException": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StartExecutionInput": {
+      "members": {
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "traceHeader": {
+          "shape": "TraceHeader"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "StartExecutionOutput": {
+      "members": {
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "executionArn",
+        "startDate"
+      ],
+      "type": "structure"
+    },
+    "StartSyncExecutionInput": {
+      "members": {
+        "includedData": {
+          "shape": "IncludedData"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "traceHeader": {
+          "shape": "TraceHeader"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "StartSyncExecutionOutput": {
+      "members": {
+        "billingDetails": {
+          "shape": "BillingDetails"
+        },
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "executionArn": {
+          "shape": "Arn"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "CloudWatchEventsExecutionDataDetails"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "CloudWatchEventsExecutionDataDetails"
+        },
+        "startDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "status": {
+          "shape": "SyncExecutionStatus"
+        },
+        "stopDate": {
+          "shape": "Timestamp"
+        },
+        "traceHeader": {
+          "shape": "TraceHeader"
+        }
+      },
+      "required": [
+        "executionArn",
+        "startDate",
+        "stopDate",
+        "status"
+      ],
+      "type": "structure"
+    },
+    "StateEnteredEventDetails": {
+      "members": {
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "name": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "structure"
+    },
+    "StateExitedEventDetails": {
+      "members": {
+        "assignedVariables": {
+          "shape": "AssignedVariables"
+        },
+        "assignedVariablesDetails": {
+          "shape": "AssignedVariablesDetails"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "structure"
+    },
+    "StateMachineAliasList": {
+      "member": {
+        "shape": "StateMachineAliasListItem"
+      },
+      "type": "list"
+    },
+    "StateMachineAliasListItem": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineAliasArn": {
+          "shape": "LongArn"
+        }
+      },
+      "required": [
+        "stateMachineAliasArn",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "StateMachineAlreadyExists": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StateMachineDeleting": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StateMachineDoesNotExist": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StateMachineLimitExceeded": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StateMachineList": {
+      "member": {
+        "shape": "StateMachineListItem"
+      },
+      "type": "list"
+    },
+    "StateMachineListItem": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "name": {
+          "shape": "Name"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "type": {
+          "shape": "StateMachineType"
+        }
+      },
+      "required": [
+        "stateMachineArn",
+        "name",
+        "type",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "StateMachineStatus": {
+      "enum": [
+        "ACTIVE",
+        "DELETING"
+      ],
+      "type": "string"
+    },
+    "StateMachineType": {
+      "enum": [
+        "STANDARD",
+        "EXPRESS"
+      ],
+      "type": "string"
+    },
+    "StateMachineTypeNotSupported": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "StateMachineVersionList": {
+      "member": {
+        "shape": "StateMachineVersionListItem"
+      },
+      "type": "list"
+    },
+    "StateMachineVersionListItem": {
+      "members": {
+        "creationDate": {
+          "shape": "Timestamp"
+        },
+        "stateMachineVersionArn": {
+          "shape": "LongArn"
+        }
+      },
+      "required": [
+        "stateMachineVersionArn",
+        "creationDate"
+      ],
+      "type": "structure"
+    },
+    "StateName": {
+      "max": 80,
+      "min": 1,
+      "type": "string"
+    },
+    "StopExecutionInput": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "executionArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "executionArn"
+      ],
+      "type": "structure"
+    },
+    "StopExecutionOutput": {
+      "members": {
+        "stopDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "stopDate"
+      ],
+      "type": "structure"
+    },
+    "SyncExecutionStatus": {
+      "enum": [
+        "SUCCEEDED",
+        "FAILED",
+        "TIMED_OUT"
+      ],
+      "type": "string"
+    },
+    "Tag": {
+      "members": {
+        "key": {
+          "shape": "TagKey"
+        },
+        "value": {
+          "shape": "TagValue"
+        }
+      },
+      "type": "structure"
+    },
+    "TagKey": {
+      "max": 128,
+      "min": 1,
+      "type": "string"
+    },
+    "TagKeyList": {
+      "member": {
+        "shape": "TagKey"
+      },
+      "type": "list"
+    },
+    "TagList": {
+      "member": {
+        "shape": "Tag"
+      },
+      "type": "list"
+    },
+    "TagResourceInput": {
+      "members": {
+        "resourceArn": {
+          "shape": "Arn"
+        },
+        "tags": {
+          "shape": "TagList"
+        }
+      },
+      "required": [
+        "resourceArn",
+        "tags"
+      ],
+      "type": "structure"
+    },
+    "TagResourceOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "TagValue": {
+      "max": 256,
+      "min": 0,
+      "type": "string"
+    },
+    "TaskCredentials": {
+      "members": {
+        "roleArn": {
+          "shape": "LongArn"
+        }
+      },
+      "type": "structure"
+    },
+    "TaskDoesNotExist": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "TaskFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskScheduledEventDetails": {
+      "members": {
+        "heartbeatInSeconds": {
+          "box": true,
+          "shape": "TimeoutInSeconds"
+        },
+        "parameters": {
+          "shape": "ConnectorParameters"
+        },
+        "region": {
+          "shape": "Name"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        },
+        "taskCredentials": {
+          "shape": "TaskCredentials"
+        },
+        "timeoutInSeconds": {
+          "box": true,
+          "shape": "TimeoutInSeconds"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource",
+        "region",
+        "parameters"
+      ],
+      "type": "structure"
+    },
+    "TaskStartFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskStartedEventDetails": {
+      "members": {
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskSubmitFailedEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskSubmittedEventDetails": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskSucceededEventDetails": {
+      "members": {
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "outputDetails": {
+          "shape": "HistoryEventExecutionDataDetails"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskTimedOut": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        }
+      },
+      "type": "structure"
+    },
+    "TaskTimedOutEventDetails": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "resource": {
+          "shape": "Name"
+        },
+        "resourceType": {
+          "shape": "Name"
+        }
+      },
+      "required": [
+        "resourceType",
+        "resource"
+      ],
+      "type": "structure"
+    },
+    "TaskToken": {
+      "max": 2048,
+      "min": 1,
+      "sensitive": true,
+      "type": "string"
+    },
+    "TestExecutionStatus": {
+      "enum": [
+        "SUCCEEDED",
+        "FAILED",
+        "RETRIABLE",
+        "CAUGHT_ERROR"
+      ],
+      "type": "string"
+    },
+    "TestStateConfiguration": {
+      "members": {
+        "errorCausedByState": {
+          "shape": "TestStateStateName"
+        },
+        "mapItemReaderData": {
+          "shape": "SensitiveData"
+        },
+        "mapIterationFailureCount": {
+          "box": true,
+          "shape": "MapIterationFailureCount"
+        },
+        "retrierRetryCount": {
+          "box": true,
+          "shape": "RetrierRetryCount"
+        }
+      },
+      "type": "structure"
+    },
+    "TestStateInput": {
+      "members": {
+        "context": {
+          "shape": "SensitiveData"
+        },
+        "definition": {
+          "shape": "Definition"
+        },
+        "input": {
+          "shape": "SensitiveData"
+        },
+        "inspectionLevel": {
+          "shape": "InspectionLevel"
+        },
+        "mock": {
+          "shape": "MockInput"
+        },
+        "revealSecrets": {
+          "shape": "RevealSecrets"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "stateConfiguration": {
+          "shape": "TestStateConfiguration"
+        },
+        "stateName": {
+          "shape": "TestStateStateName"
+        },
+        "variables": {
+          "shape": "SensitiveData"
+        }
+      },
+      "required": [
+        "definition"
+      ],
+      "type": "structure"
+    },
+    "TestStateOutput": {
+      "members": {
+        "cause": {
+          "shape": "SensitiveCause"
+        },
+        "error": {
+          "shape": "SensitiveError"
+        },
+        "inspectionData": {
+          "shape": "InspectionData"
+        },
+        "nextState": {
+          "shape": "StateName"
+        },
+        "output": {
+          "shape": "SensitiveData"
+        },
+        "status": {
+          "shape": "TestExecutionStatus"
+        }
+      },
+      "type": "structure"
+    },
+    "TestStateStateName": {
+      "max": 80,
+      "min": 1,
+      "sensitive": true,
+      "type": "string"
+    },
+    "TimeoutInSeconds": {
+      "type": "long"
+    },
+    "Timestamp": {
+      "type": "timestamp"
+    },
+    "ToleratedFailureCount": {
+      "min": 0,
+      "type": "long"
+    },
+    "ToleratedFailurePercentage": {
+      "max": 100,
+      "min": 0,
+      "type": "float"
+    },
+    "TooManyTags": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        },
+        "resourceName": {
+          "shape": "Arn"
+        }
+      },
+      "type": "structure"
+    },
+    "TraceHeader": {
+      "max": 256,
+      "min": 0,
+      "pattern": "\\p{ASCII}*",
+      "type": "string"
+    },
+    "TracingConfiguration": {
+      "members": {
+        "enabled": {
+          "shape": "Enabled"
+        }
+      },
+      "type": "structure"
+    },
+    "URL": {
+      "type": "string"
+    },
+    "UnsignedInteger": {
+      "min": 0,
+      "type": "integer"
+    },
+    "UnsignedLong": {
+      "min": 0,
+      "type": "long"
+    },
+    "UntagResourceInput": {
+      "members": {
+        "resourceArn": {
+          "shape": "Arn"
+        },
+        "tagKeys": {
+          "shape": "TagKeyList"
+        }
+      },
+      "required": [
+        "resourceArn",
+        "tagKeys"
+      ],
+      "type": "structure"
+    },
+    "UntagResourceOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "UpdateMapRunInput": {
+      "members": {
+        "mapRunArn": {
+          "shape": "LongArn"
+        },
+        "maxConcurrency": {
+          "box": true,
+          "shape": "MaxConcurrency"
+        },
+        "toleratedFailureCount": {
+          "box": true,
+          "shape": "ToleratedFailureCount"
+        },
+        "toleratedFailurePercentage": {
+          "box": true,
+          "shape": "ToleratedFailurePercentage"
+        }
+      },
+      "required": [
+        "mapRunArn"
+      ],
+      "type": "structure"
+    },
+    "UpdateMapRunOutput": {
+      "members": {},
+      "type": "structure"
+    },
+    "UpdateStateMachineAliasInput": {
+      "members": {
+        "description": {
+          "shape": "AliasDescription"
+        },
+        "routingConfiguration": {
+          "shape": "RoutingConfigurationList"
+        },
+        "stateMachineAliasArn": {
+          "shape": "Arn"
+        }
+      },
+      "required": [
+        "stateMachineAliasArn"
+      ],
+      "type": "structure"
+    },
+    "UpdateStateMachineAliasOutput": {
+      "members": {
+        "updateDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "updateDate"
+      ],
+      "type": "structure"
+    },
+    "UpdateStateMachineInput": {
+      "members": {
+        "definition": {
+          "shape": "Definition"
+        },
+        "encryptionConfiguration": {
+          "shape": "EncryptionConfiguration"
+        },
+        "loggingConfiguration": {
+          "shape": "LoggingConfiguration"
+        },
+        "publish": {
+          "shape": "Publish"
+        },
+        "roleArn": {
+          "shape": "Arn"
+        },
+        "stateMachineArn": {
+          "shape": "Arn"
+        },
+        "tracingConfiguration": {
+          "shape": "TracingConfiguration"
+        },
+        "versionDescription": {
+          "shape": "VersionDescription"
+        }
+      },
+      "required": [
+        "stateMachineArn"
+      ],
+      "type": "structure"
+    },
+    "UpdateStateMachineOutput": {
+      "members": {
+        "revisionId": {
+          "shape": "RevisionId"
+        },
+        "stateMachineVersionArn": {
+          "shape": "Arn"
+        },
+        "updateDate": {
+          "shape": "Timestamp"
+        }
+      },
+      "required": [
+        "updateDate"
+      ],
+      "type": "structure"
+    },
+    "ValidateStateMachineDefinitionCode": {
+      "sensitive": true,
+      "type": "string"
+    },
+    "ValidateStateMachineDefinitionDiagnostic": {
+      "members": {
+        "code": {
+          "shape": "ValidateStateMachineDefinitionCode"
+        },
+        "location": {
+          "shape": "ValidateStateMachineDefinitionLocation"
+        },
+        "message": {
+          "shape": "ValidateStateMachineDefinitionMessage"
+        },
+        "severity": {
+          "shape": "ValidateStateMachineDefinitionSeverity"
+        }
+      },
+      "required": [
+        "severity",
+        "code",
+        "message"
+      ],
+      "type": "structure"
+    },
+    "ValidateStateMachineDefinitionDiagnosticList": {
+      "member": {
+        "shape": "ValidateStateMachineDefinitionDiagnostic"
+      },
+      "type": "list"
+    },
+    "ValidateStateMachineDefinitionInput": {
+      "members": {
+        "definition": {
+          "shape": "Definition"
+        },
+        "maxResults": {
+          "shape": "ValidateStateMachineDefinitionMaxResult"
+        },
+        "severity": {
+          "shape": "ValidateStateMachineDefinitionSeverity"
+        },
+        "type": {
+          "shape": "StateMachineType"
+        }
+      },
+      "required": [
+        "definition"
+      ],
+      "type": "structure"
+    },
+    "ValidateStateMachineDefinitionLocation": {
+      "sensitive": true,
+      "type": "string"
+    },
+    "ValidateStateMachineDefinitionMaxResult": {
+      "max": 100,
+      "min": 0,
+      "type": "integer"
+    },
+    "ValidateStateMachineDefinitionMessage": {
+      "sensitive": true,
+      "type": "string"
+    },
+    "ValidateStateMachineDefinitionOutput": {
+      "members": {
+        "diagnostics": {
+          "shape": "ValidateStateMachineDefinitionDiagnosticList"
+        },
+        "result": {
+          "shape": "ValidateStateMachineDefinitionResultCode"
+        },
+        "truncated": {
+          "shape": "ValidateStateMachineDefinitionTruncated"
+        }
+      },
+      "required": [
+        "result",
+        "diagnostics"
+      ],
+      "type": "structure"
+    },
+    "ValidateStateMachineDefinitionResultCode": {
+      "enum": [
+        "OK",
+        "FAIL"
+      ],
+      "type": "string"
+    },
+    "ValidateStateMachineDefinitionSeverity": {
+      "enum": [
+        "ERROR",
+        "WARNING"
+      ],
+      "type": "string"
+    },
+    "ValidateStateMachineDefinitionTruncated": {
+      "box": true,
+      "type": "boolean"
+    },
+    "ValidationException": {
+      "exception": true,
+      "members": {
+        "message": {
+          "shape": "ErrorMessage"
+        },
+        "reason": {
+          "shape": "ValidationExceptionReason"
+        }
+      },
+      "type": "structure"
+    },
+    "ValidationExceptionReason": {
+      "enum": [
+        "API_DOES_NOT_SUPPORT_LABELED_ARNS",
+        "MISSING_REQUIRED_PARAMETER",
+        "CANNOT_UPDATE_COMPLETED_MAP_RUN",
+        "INVALID_ROUTING_CONFIGURATION"
+      ],
+      "type": "string"
+    },
+    "VariableName": {
+      "sensitive": true,
+      "type": "string"
+    },
+    "VariableNameList": {
+      "member": {
+        "shape": "VariableName"
+      },
+      "type": "list"
+    },
+    "VariableReferences": {
+      "key": {
+        "shape": "StateName"
+      },
+      "sensitive": true,
+      "type": "map",
+      "value": {
+        "shape": "VariableNameList"
+      }
+    },
+    "VariableValue": {
+      "sensitive": true,
+      "type": "string"
+    },
+    "VersionDescription": {
+      "max": 256,
+      "sensitive": true,
+      "type": "string"
+    },
+    "VersionWeight": {
+      "max": 100,
+      "min": 0,
+      "type": "integer"
+    },
+    "includedDetails": {
+      "type": "boolean"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "version": "2.0"
+}

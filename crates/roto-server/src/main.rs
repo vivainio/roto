@@ -10,6 +10,7 @@ mod luau_stubs;
 mod prune;
 mod setup;
 mod supported;
+mod test_driver;
 mod trace;
 mod unsupported;
 mod websocket;
@@ -46,7 +47,7 @@ struct Args {
     /// Write the Luau type definitions (`roto.d.luau`) for editors into DIR and exit.
     #[arg(long, value_name = "DIR")]
     lua_stubs: Option<PathBuf>,
-    /// Type-check the given Luau setup scripts (needs luau-lsp on PATH) and exit.
+    /// Type-check Luau setup scripts or test files (needs luau-lsp on PATH) and exit.
     #[arg(long, value_name = "FILE", num_args = 1.., conflicts_with = "lua_stubs")]
     check: Vec<PathBuf>,
     /// Type-check Luau service modules (and their common.luau) and exit.
@@ -133,6 +134,18 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    let mut argv = std::env::args_os();
+    let executable = argv.next().unwrap_or_default();
+    let remaining: Vec<_> = argv.collect();
+    if remaining.first().is_some_and(|arg| arg == "test") {
+        let options = test_driver::Options::parse_from(
+            std::iter::once(executable).chain(remaining.iter().skip(1).cloned()),
+        );
+        let code = tokio::task::spawn_blocking(move || test_driver::run(&options))
+            .await
+            .expect("test driver task failed");
+        std::process::exit(code);
+    }
     let args = Args::parse();
     if !args.check.is_empty() {
         std::process::exit(luau_stubs::check(&args.check));
@@ -350,8 +363,6 @@ async fn main() {
         lua_api,
         jobs: lua_jobs.clone(),
     });
-    lua_jobs.start();
-
     {
         let app = Arc::downgrade(&app);
         rds_data_backend.set_resolver(Arc::new(move |request| {
@@ -370,6 +381,8 @@ async fn main() {
             )
         }));
     }
+
+    lua_jobs.start();
 
     if let Some(path) = args.setup {
         let set_vars = args.set;

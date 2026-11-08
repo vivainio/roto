@@ -17,6 +17,118 @@ inspect the diff when working in a modified tree. Generation covers STS, SQS,
 IAM, S3, DynamoDB, SSM, Secrets Manager, SNS, Lambda, EventBridge, CloudFormation,
 Kinesis, KMS, and CloudWatch Logs.
 
+## Luau service tests
+
+Use Luau tests for service behavior, validation, fixtures and virtual-time scenarios.
+Group cases in a shared suite when a common environment makes them cheaper or clearer;
+use standalone cases when they need a fresh environment. Moto server-mode tests provide
+AWS wire-protocol and SDK compatibility coverage. Keep focused HTTP smoke tests where
+they cover routing, protocols or integration behavior not exercised by Moto.
+
+Run Luau cases without an HTTP listener or boto3:
+
+```sh
+cargo build -p roto-server --locked
+./target/debug/roto-server test tests/luau
+./target/debug/roto-server test tests/luau/states.luau --filter "wait fires"
+cargo run -p roto-server -- test tests/luau
+```
+
+A directory is searched recursively for `.luau` files; explicit files are also
+accepted. The runner reports every selected case and returns a nonzero status on
+failure, discovery error, or no selected cases. By default it loads `./services`
+if present. Use `--lua-services PATH` or `ROTO_LUA_SERVICES` to select another
+bundle. Standalone cases run sequentially in one process, each with a fresh ephemeral store,
+service environment and frozen clock starting at 2025-01-01T00:00:00Z. The file is executed
+once for discovery and again for each selected case or suite, so keep fixture setup inside
+cases or suite hooks.
+
+Cases have a 30-second Luau instruction deadline. Since they share a process,
+a host crash or a blocking native call can stop the run; the driver runs cases
+sequentially because the virtual clock is process-wide. A Luau timeout interrupts
+the whole suite, so remaining cases and cleanup hooks in that suite cannot run;
+the runner reports the interrupted suite and proceeds to the next environment.
+
+```luau
+test.case("a queue starts empty", function()
+    local queue = test.call("sqs", "CreateQueue", {QueueName = "work"})
+    local ok, err = test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})
+    test.equal(ok, false)
+    assert(err.code)
+    test.equal(test.now(), 1735689600)
+    test.advance(60) -- runs due Luau service jobs, including chains of timers
+end)
+```
+
+Use a suite when cases should share a fixture, store, service runtimes and virtual clock:
+
+```luau
+test.suite("repositories", function(suite)
+    suite.before_all(function()
+        test.call("ecr", "CreateRepository", {repositoryName = "shared"})
+    end)
+    suite.before_each(function() -- optional per-case setup
+    end)
+    suite.case("describes the fixture", function()
+        local result = test.call("ecr", "DescribeRepositories", {repositoryNames = {"shared"}})
+        test.equal(result.repositories[1].repositoryName, "shared")
+    end)
+    suite.after_each(function() -- optional per-case cleanup
+    end)
+    suite.after_all(function() -- optional suite cleanup
+    end)
+end)
+```
+
+Each suite starts in a fresh environment; its selected cases run in registration order and
+share their changes. Hooks run in registration order. The runner runs `before_all` once,
+`before_each` and `after_each` around each selected case, and `after_all` once. If setup or
+a case fails, it reports the error, runs applicable cleanup hooks and continues with the
+other cases. A `before_all` failure fails every selected case; an `after_all` failure is
+reported separately. `--filter` matches the case name or its suite name, and `before_all`
+still runs when only one suite case is selected. A suite's state does not leak to another
+suite or standalone case. To avoid order-dependent cases, reset mutable state in the hooks.
+
+`test.call(service, operation, input)` returns a decoded response or raises an
+error. `test.try_call` returns `true, response` or `false, error`, where the error
+has `code`, `message`, and `status` when available. To assert a particular code:
+`test.expect_error("SomeCode", function() return test.try_call(...) end)`.
+`test.equal` compares nested values. `test.drain()` runs currently due jobs;
+`test.advance(seconds)` advances through each scheduled time and drains jobs.
+Both fail if the job execution budget is exhausted. The existing `roto` setup
+helpers, account/region controls, and fixture APIs are also available.
+
+For checked request and response shapes, use `test.aws.<service>.<Operation>`.
+It calls the same dispatcher as `test.call`:
+
+```luau
+--!strict
+test.case("typed queue", function()
+    local queue = test.aws.sqs.CreateQueue({QueueName = "work"})
+    local url = assert(queue.QueueUrl)
+    test.aws.sqs.SendMessage({QueueUrl = url, MessageBody = "hello"})
+end)
+```
+
+Run `roto-server --check tests/luau/*.luau` to check test files with
+`luau-lsp`. Typed clients cover the existing `roto.aws` operations plus Roto's
+implemented Step Functions, Scheduler and CloudWatch Logs operations. The
+string-based `test.call` and `test.try_call` accept dynamic services and remain
+untyped. Generate editor definitions with `roto-server --lua-stubs types` and
+use `types/roto.d.luau` for both setup scripts and tests. Setup scripts may also
+declare cases and suites: a normal setup run validates the names and callbacks and skips
+their bodies. The other `test` APIs are available while the test driver runs a file.
+
+The virtual clock affects services that use Roto's clock, including Luau service
+jobs. Native workers that use wall time are not advanced by this API. These tests
+supplement the HTTP smoke tests, which continue to cover protocol and SDK behavior.
+
+To compare ECR cases and the ported CUR, ACM, Config, Budgets and Cloud Map
+workflows with their HTTP equivalents, run `python3 tests/benchmark-luau-services.py 5` after
+building the server. It reports warm-run medians for the Luau driver, HTTP with a
+fresh server per workflow, and HTTP with one server reset between workflows. The
+shared-server mode retains service runtimes, unlike a fresh test environment.
+
 ## Moto compatibility tests
 
 The repository vendors moto tests unmodified and runs them in server mode against

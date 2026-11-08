@@ -38,6 +38,52 @@ fn decode(response: roto_core::RawResponse) -> mlua::Result<Value> {
         serde_json::from_slice(&response.body).map_err(mlua::Error::external)
     }
 }
+
+/// Preserve AWS error fields for test assertions when a setup client returns an error response.
+fn test_error(message: &str) -> Value {
+    let status = message
+        .split("AWS request failed (")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.parse::<u16>().ok());
+    let body = message
+        .split("AWS request failed (")
+        .nth(1)
+        .and_then(|s| s.split_once("): ").map(|(_, body)| body));
+    let parsed: Option<Value> = body.and_then(|body| serde_json::from_str(body).ok());
+    let xml_field = |name: &str| -> Option<String> {
+        let body = body?;
+        let start = format!("<{name}>");
+        let end = format!("</{name}>");
+        Some(body.split_once(&start)?.1.split_once(&end)?.0.to_owned())
+    };
+    let code = parsed
+        .as_ref()
+        .and_then(|p| {
+            p.get("__type")
+                .or_else(|| p.get("code"))
+                .or_else(|| p.get("Code"))
+        })
+        .and_then(Value::as_str)
+        .map(|s| s.rsplit(['#', ':']).next().unwrap_or(s).to_owned())
+        .or_else(|| xml_field("Code"))
+        .or_else(|| {
+            let (code, _) = message.split_once(": ")?;
+            (!code.is_empty()
+                && code
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_')))
+            .then(|| code.to_owned())
+        });
+    let detail = parsed
+        .as_ref()
+        .and_then(|p| p.get("message").or_else(|| p.get("Message")))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| xml_field("Message"))
+        .unwrap_or_else(|| message.to_owned());
+    json!({"code": code, "message": detail, "status": status})
+}
 fn sqs_call(
     sqs: &roto_svc_sqs::Sqs,
     ctx: &RequestContext,
@@ -773,6 +819,9 @@ pub struct Source {
     pub posted: Option<Posted>,
     /// Records every setup API call when set.
     pub trace: Option<TraceSink>,
+    /// Driver-only APIs, absent from normal setup and posted scripts.
+    pub test_jobs: Option<Arc<crate::lua_service::Jobs>>,
+    pub test_scheduler: Option<Arc<roto_svc_scheduler::Scheduler>>,
 }
 
 #[cfg(test)]
@@ -806,6 +855,8 @@ pub fn run_traced(
         dir: path.parent().unwrap().to_path_buf(),
         posted: None,
         trace,
+        test_jobs: None,
+        test_scheduler: None,
     };
     run_source(source, ctx, vars, sqs, lambda, s3, services).map(|(hooks, _)| hooks)
 }
@@ -834,6 +885,13 @@ impl Scope {
             ..self.base.clone()
         }
     }
+
+    /// A test operation represents a new AWS request, while retaining the script's scope.
+    fn test_request(&self) -> RequestContext {
+        let mut context = self.get();
+        context.request_id = roto_core::ids::request_id();
+        context
+    }
 }
 
 /// Runs `source`; returns the hooks it registered and, for posted scripts, its return value.
@@ -849,6 +907,42 @@ pub fn run_source(
     let parent = source.dir.clone();
     let request_id = ctx.request_id.clone();
     let lua = Lua::new();
+    if source.test_jobs.is_none() {
+        // Test cases can live next to setup code. Normal runs validate their declarations but
+        // never call their bodies; the test driver installs its own case registry instead.
+        let test = lua.create_table()?;
+        let names = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let case_names = names.clone();
+        test.set(
+            "case",
+            lua.create_function(move |_, (name, _body): (String, mlua::Function)| {
+                if name.is_empty() {
+                    return Err(mlua::Error::external("case name must be a nonempty string"));
+                }
+                if !case_names.lock().unwrap().insert(name.clone()) {
+                    return Err(mlua::Error::external(format!("duplicate case: {name}")));
+                }
+                Ok(())
+            })?,
+        )?;
+        test.set(
+            "suite",
+            lua.create_function(move |_, (name, _define): (String, mlua::Function)| {
+                if name.is_empty() {
+                    return Err(mlua::Error::external(
+                        "suite name must be a nonempty string",
+                    ));
+                }
+                if !names.lock().unwrap().insert(name.clone()) {
+                    return Err(mlua::Error::external(format!(
+                        "duplicate case or suite: {name}"
+                    )));
+                }
+                Ok(())
+            })?,
+        )?;
+        lua.globals().set("test", test)?;
+    }
     let hooks = Hooks::default();
     let runtime_lock = Arc::new(std::sync::Mutex::new(()));
     let roto = lua.create_table()?;
@@ -856,6 +950,145 @@ pub fn run_source(
     roto.set("api_version", LUA_API_VERSION)?;
     // The script is the authority for account and region: these re-scope every later setup call.
     let scope = Scope::new(ctx.clone());
+    if let Some(jobs) = &source.test_jobs {
+        let api = lua.create_table()?;
+        let test_limit = source
+            .posted
+            .as_ref()
+            .map(|p| p.limit)
+            .unwrap_or(std::time::Duration::from_secs(30));
+        api.set(
+            "reset_deadline",
+            lua.create_function(move |lua, ()| {
+                set_deadline(
+                    lua,
+                    std::time::Instant::now() + test_limit,
+                    "Lua script timed out",
+                );
+                Ok(())
+            })?,
+        )?;
+        let clock_jobs = jobs.clone();
+        api.set(
+            "advance",
+            lua.create_function(move |_, seconds: f64| {
+                if !seconds.is_finite() || seconds < 0.0 || seconds > (i64::MAX as f64 / 1000.0) {
+                    return Err(mlua::Error::external(
+                        "advance requires a finite non-negative number of seconds",
+                    ));
+                }
+                let (count, finished) = clock_jobs
+                    .advance((seconds * 1000.0).round() as i64)
+                    .map_err(mlua::Error::external)?;
+                if !finished {
+                    return Err(mlua::Error::external("scheduled job budget exhausted"));
+                }
+                Ok(count)
+            })?,
+        )?;
+        let drain_jobs = jobs.clone();
+        api.set(
+            "drain",
+            lua.create_function(move |_, ()| {
+                let (count, finished) = drain_jobs.drain();
+                if !finished {
+                    return Err(mlua::Error::external("scheduled job budget exhausted"));
+                }
+                Ok(count)
+            })?,
+        )?;
+        api.set(
+            "now",
+            lua.create_function(|_, ()| Ok(roto_core::clock::now_ms() as f64 / 1000.0))?,
+        )?;
+        let call_jobs = jobs.clone();
+        let lookup_jobs = jobs.clone();
+        api.set(
+            "is_bundle",
+            lua.create_function(move |_, service: String| Ok(lookup_jobs.has_service(&service)))?,
+        )?;
+        let call_scope = scope.clone();
+        api.set("try_bundle_call", lua.create_function(move |lua, (service, operation, input): (String, String, LuaValue)| {
+            let input = if input.is_nil() { json!({}) } else { lua.from_value(input)? };
+            let result = call_jobs.call_decoded(&service, &call_scope.test_request(), &operation, input)
+                .ok_or_else(|| mlua::Error::external(format!("Unknown bundle service: {service}")))?;
+            match result {
+                Ok(value) => Ok((true, lua.to_value(&value)?)),
+                Err(error) => Ok((false, lua.to_value(&json!({"code": error.code, "message": error.message, "status": error.status}))?)),
+            }
+        })?)?;
+        let builtin_services = services.clone();
+        let builtin_scheduler = source.test_scheduler.clone();
+        let (builtin_sqs, builtin_lambda, builtin_scope) =
+            (sqs.clone(), lambda.clone(), scope.clone());
+        api.set(
+            "try_builtin_call",
+            lua.create_function(
+                move |lua, (service, operation, input): (String, String, LuaValue)| {
+                    let input = if input.is_nil() {
+                        json!({})
+                    } else {
+                        lua.from_value(input)?
+                    };
+                    let direct = match service.as_str() {
+                        "sqs" => Some(roto_svc_sqs::dispatch(builtin_sqs.as_ref(), &builtin_scope.test_request(), &operation, &input)),
+                        "lambda" => Some(roto_svc_lambda::dispatch(&builtin_lambda, &builtin_scope.test_request(), &operation, &input)),
+                        "scheduler" => builtin_scheduler.as_ref().map(|scheduler| roto_svc_scheduler::dispatch(scheduler.as_ref(), &builtin_scope.test_request(), &operation, &input)),
+                        _ => None,
+                    };
+                    if let Some(result) = direct {
+                        return match result {
+                            Err(error) => Ok((false, lua.to_value(&json!({"code": error.code, "message": error.message, "status": error.status}))?)),
+                            Ok(response) if response.status >= 400 => {
+                                let message = format!("AWS request failed ({}): {}", response.status, String::from_utf8_lossy(&response.body));
+                                Ok((false, lua.to_value(&test_error(&message))?))
+                            }
+                            Ok(response) => Ok((true, lua.to_value(&decode(response)?)?)),
+                        };
+                    }
+                    if service == "rds-data" {
+                        let path = match operation.as_str() {
+                            "ExecuteStatement" => "/Execute",
+                            "BatchExecuteStatement" => "/BatchExecute",
+                            "BeginTransaction" => "/BeginTransaction",
+                            "CommitTransaction" => "/CommitTransaction",
+                            "RollbackTransaction" => "/RollbackTransaction",
+                            _ => return Ok((false, lua.to_value(&json!({"code":"UnknownOperationException","message":format!("Unknown operation: {operation}"),"status":404}))?)),
+                        };
+                        let handler = builtin_services.get("rds-data").ok_or_else(|| mlua::Error::external("RDS Data service unavailable"))?;
+                        let response = handler.handle(&builtin_scope.test_request(), &RawRequest {
+                            method: "POST".into(), path: path.into(), body: serde_json::to_vec(&input).map_err(mlua::Error::external)?, ..Default::default()
+                        }).map_err(mlua::Error::external)?;
+                        let body: Value = serde_json::from_slice(&response.body).map_err(mlua::Error::external)?;
+                        return if response.status >= 400 {
+                            let code = response.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("x-amzn-errortype")).map(|(_, value)| value);
+                            Ok((false, lua.to_value(&json!({"code":code,"message":body["message"],"status":response.status}))?))
+                        } else { Ok((true, lua.to_value(&body)?)) };
+                    }
+                    let result = match service.as_str() {
+                        other if aws_client::supports(other) => builtin_services
+                            .get(other)
+                            .ok_or_else(|| format!("Service unavailable: {other}"))
+                            .and_then(|handler| {
+                                aws_client::call(
+                                    handler.as_ref(),
+                                    &builtin_scope.test_request(),
+                                    other,
+                                    &operation,
+                                    &input,
+                                )
+                            }),
+                        other => Err(format!("Unknown service: {other}")),
+                    };
+                    match result {
+                        Ok(value) => Ok((true, lua.to_value(&value)?)),
+                        Err(error) => Ok((false, lua.to_value(&test_error(&error))?)),
+                    }
+                },
+            )?,
+        )?;
+        lua.globals().set("__roto_test", api)?;
+    }
     roto.set("account_id", ctx.account_id.clone())?;
     roto.set("region", ctx.region.clone())?;
     let region_scope = scope.clone();
@@ -916,8 +1149,9 @@ pub fn run_source(
     roto.set(
         "hash",
         lua.create_function(|_, (text, algorithm): (String, String)| {
-            crate::lua_service::hash_text(&text, &algorithm)
-                .ok_or_else(|| mlua::Error::external(format!("unsupported hash algorithm {algorithm}")))
+            crate::lua_service::hash_text(&text, &algorithm).ok_or_else(|| {
+                mlua::Error::external(format!("unsupported hash algorithm {algorithm}"))
+            })
         })?,
     )?;
     // Compact JSON text of a value; whole numbers print as integers.
@@ -1694,6 +1928,94 @@ roto.sqs.queue(roto.vars.mode .. "-queue")
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[test]
+    fn setup_registers_cases_without_executing_them() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        let path = script(
+            r#"
+roto.sqs.queue('outside')
+test.case('not run', function()
+    roto.sqs.queue('inside')
+    error('the case should not run during setup')
+end)
+test.suite('not defined during setup', function(_suite)
+    error('suite declarations should not run during setup')
+end)
+"#,
+        );
+        run(
+            &path,
+            context(),
+            &[],
+            sqs.clone(),
+            lambda,
+            s3,
+            Default::default(),
+        )
+        .unwrap();
+        assert!(
+            sqs_call(
+                &sqs,
+                &context(),
+                "GetQueueUrl",
+                json!({"QueueName":"outside"})
+            )
+            .is_ok()
+        );
+        assert!(
+            sqs_call(
+                &sqs,
+                &context(),
+                "GetQueueUrl",
+                json!({"QueueName":"inside"})
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn setup_rejects_invalid_and_duplicate_case_declarations() {
+        let store = Store::ephemeral();
+        let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
+        let lambda = Arc::new(
+            roto_svc_lambda::Lambda::new(&store, Default::default())
+                .unwrap()
+                .with_sqs(sqs.clone()),
+        );
+        let s3 = Arc::new(roto_svc_s3::S3::new(&store).unwrap());
+        for code in [
+            "test.case('', function() end)",
+            "test.case('x', 42)",
+            "test.case('x', function() end); test.case('x', function() end)",
+            "test.suite('', function() end)",
+            "test.suite('x', 42)",
+            "test.case('x', function() end); test.suite('x', function() end)",
+        ] {
+            let path = script(code);
+            assert!(
+                run(
+                    &path,
+                    context(),
+                    &[],
+                    sqs.clone(),
+                    lambda.clone(),
+                    s3.clone(),
+                    Default::default()
+                )
+                .is_err()
+            );
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn setup_errors_have_source_locations_and_do_not_start_workers() {
         let store = Store::ephemeral();
         let sqs = Arc::new(roto_svc_sqs::Sqs::new(&store).unwrap());
@@ -2236,6 +2558,8 @@ assert(roto.s3.link_dir("filtered", "g/", "data", {include = {"*.nope"}}).count 
                 output: output.clone(),
             }),
             trace: None,
+            test_jobs: None,
+            test_scheduler: None,
         };
         let call = |source| {
             run_source(

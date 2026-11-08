@@ -32,6 +32,27 @@ fn invalid(message: impl Into<String>) -> AwsError {
     AwsError::sender(400, "InvalidParameterValue", message)
 }
 impl Wire {
+    /// Validate already-decoded arguments using the same model as the wire decoder.
+    pub fn validate_decoded(&self, operation: &str, input: &Value) -> Result<(), AwsError> {
+        let op = self.model["operations"].get(operation).ok_or_else(|| {
+            AwsError::sender(
+                400,
+                "UnknownOperationException",
+                format!("Unknown operation: {operation}"),
+            )
+        })?;
+        self.validate(&op["input"], input).map_err(|mut error| {
+            if self.protocol == "rest-json"
+                && matches!(
+                    error.code.as_str(),
+                    "MissingParameter" | "InvalidParameterValue"
+                )
+            {
+                error.code = "ValidationException".into();
+            }
+            error
+        })
+    }
     /// Query and EC2 requests are form-encoded `Action` calls; only the naming rules differ.
     fn form(&self) -> bool {
         matches!(self.protocol.as_str(), "query" | "ec2")

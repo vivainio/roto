@@ -3310,14 +3310,16 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
     local scope: Scope = { data = data, context = context_object(fake, "TestState", data) }
     if input.mock ~= nil then
         local mock = roto.object(input.mock, "ValidationException", "mock")
-        if state.Type ~= "Task" then roto.error("ValidationException", "Mock results currently require a Task state") end
+        if state.Type ~= "Task" and state.Type ~= "Parallel" and state.Type ~= "Map" then
+            roto.error("ValidationException", "Mock results require a Task, Parallel, or Map state")
+        end
+        if mock.fieldValidationMode ~= nil and mock.fieldValidationMode ~= "NONE" and mock.fieldValidationMode ~= "STRICT" and mock.fieldValidationMode ~= "PRESENT" then
+            roto.error("ValidationException", "Invalid mock.fieldValidationMode")
+        end
         if mock.result ~= nil and mock.errorOutput ~= nil then
             roto.error("ValidationException", "mock.result and mock.errorOutput are mutually exclusive")
         end
         if mock.errorOutput ~= nil then
-            if mock.fieldValidationMode ~= nil and mock.fieldValidationMode ~= "NONE" and mock.fieldValidationMode ~= "STRICT" and mock.fieldValidationMode ~= "PRESENT" then
-                roto.error("ValidationException", "Invalid mock.fieldValidationMode")
-            end
             local error_output = roto.object(mock.errorOutput, "ValidationException", "mock.errorOutput")
             local error_length = if type(error_output.error) == "string" then utf8.len(error_output.error) else nil
             local cause_length = if type(error_output.cause) == "string" then utf8.len(error_output.cause) else nil
@@ -3336,6 +3338,8 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             local code: string = error_output.error
             local cause: string = error_output.cause or ""
             local prepared, preparation_error = pcall(function()
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope); return end
+                if state.Type == "Map" then spawn_map(state, data, scope); return end
                 local effective = apply_input_path(state, data, scope.context)
                 local context = scope.context
                 if type(state.Resource) == "string" and waits_for_token(state.Resource) then
@@ -3374,7 +3378,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             end
             return { status = "FAILED", error = code, cause = cause }
         end
-        if mock.fieldValidationMode ~= "NONE" then
+        if state.Type == "Task" and mock.fieldValidationMode ~= "NONE" then
             roto.error("ValidationException", "Only fieldValidationMode NONE is supported for TestState mocks")
         end
         if type(mock.result) ~= "string" or #mock.result > MAX_PAYLOAD_BYTES then
@@ -3382,6 +3386,23 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         end
         local decoded, mock_result = pcall(roto.json_decode, mock.result)
         if not decoded then roto.error("ValidationException", "mock.result must be valid JSON") end
+        if state.Type == "Parallel" or state.Type == "Map" then
+            if not is_array(mock_result) then
+                roto.error("ValidationException", "mock.result must be a JSON array for an inline Map or Parallel state")
+            end
+            if state.Type == "Parallel" and (not is_array(state.Branches) or #mock_result ~= #state.Branches) then
+                roto.error("ValidationException", "mock.result must contain one element for each Parallel branch")
+            end
+            local ok, result = pcall(function()
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope) else spawn_map(state, data, scope) end
+                return finish_fanout(state, data, scope, mock_result)
+            end)
+            if not ok then
+                local code, cause = failure_of(result)
+                return { status = "FAILED", error = code, cause = cause }
+            end
+            return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next }
+        end
         local ok, result = pcall(function()
             local effective = apply_input_path(state, data, scope.context)
             local context = scope.context

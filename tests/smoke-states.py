@@ -790,6 +790,14 @@ def check_update_tags_and_test_state(s):
     assert len(s.sf.list_executions(stateMachineArn=machine)["executions"]) == before
     assert code(lambda: s.sf.test_state(definition=json.dumps(callback), roleArn=ROLE,
                                        mock={"result": "{}"})) == "ValidationException"
+    mocked_parallel = {"Type": "Parallel", "Branches": [
+        {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}},
+        {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}}],
+        "ResultPath": "$.results", "End": True}
+    mock_result = s.sf.test_state(definition=json.dumps(mocked_parallel), input='{"keep":true}',
+                                  mock={"result": '[1,2]'})
+    assert mock_result["status"] == "SUCCEEDED" and json.loads(mock_result["output"]) == {"keep": True, "results": [1, 2]}, mock_result
+    assert code(lambda: s.sf.test_state(definition=json.dumps(mocked_parallel), mock={"result": '[1]'})) == "ValidationException"
     mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
     mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
                              mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})

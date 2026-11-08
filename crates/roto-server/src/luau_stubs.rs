@@ -56,7 +56,7 @@ pub(crate) const MODELS: &[(&str, &str)] = &[
     ("sts", include_str!(concat!(env!("OUT_DIR"), "/sts.json"))),
 ];
 
-pub(crate) fn render() -> String {
+fn render_setup() -> String {
     let mut clients = String::new();
     let mut shapes = String::new();
     for (service, text) in MODELS {
@@ -67,6 +67,75 @@ pub(crate) fn render() -> String {
     TEMPLATE
         .replace("--@@AWS_CLIENTS@@\n", &clients)
         .replace("--@@AWS_SHAPES@@\n", &shapes)
+}
+
+/// Shared definitions for setup scripts and test files.
+pub(crate) fn render() -> String {
+    let mut clients = String::new();
+    let mut shapes = String::new();
+    for (service, text) in MODELS {
+        let mut model: Value = serde_json::from_str(text).expect("embedded model");
+        crate::prune::prune(&mut model, &typed_operations(service));
+        let mut ignored = String::new();
+        write_service(service, &model, &mut clients, &mut ignored);
+    }
+    for (service, text) in [
+        (
+            "states",
+            include_str!(concat!(env!("OUT_DIR"), "/states.json")),
+        ),
+        (
+            "scheduler",
+            include_str!(concat!(env!("OUT_DIR"), "/scheduler.json")),
+        ),
+        ("logs", include_str!(concat!(env!("OUT_DIR"), "/logs.json"))),
+    ] {
+        let mut model: Value = serde_json::from_str(text).expect("embedded model");
+        if service != "states" {
+            let operations: Vec<String> = crate::supported::operations(service)
+                .into_iter()
+                .flatten()
+                .map(str::to_owned)
+                .collect();
+            crate::prune::prune(&mut model, &operations);
+        }
+        write_service(service, &model, &mut clients, &mut shapes);
+    }
+    format!(
+        r#"{}
+-- Standalone cases and suites each have a fresh ephemeral environment.
+declare extern type RotoTestError with
+    code: string?
+    message: string
+    status: number?
+end
+type RotoTestSuite = {{
+    case: (name: string, run: () -> ()) -> (),
+    before_all: (run: () -> ()) -> (),
+    before_each: (run: () -> ()) -> (),
+    after_each: (run: () -> ()) -> (),
+    after_all: (run: () -> ()) -> (),
+}}
+declare test: {{
+    case: (name: string, run: () -> ()) -> (),
+    suite: (name: string, define: (suite: RotoTestSuite) -> ()) -> (),
+    equal: (actual: any, expected: any) -> (),
+    call: (service: string, operation: string, input: any?) -> any,
+    try_call: (service: string, operation: string, input: any?) -> (boolean, any),
+    expect_error: (code: string, call: () -> (boolean, any)) -> RotoTestError,
+    now: () -> number,
+    advance: (seconds: number) -> number,
+    drain: () -> number,
+    aws: {{
+{}
+    }},
+}}
+{}
+"#,
+        render_setup(),
+        clients,
+        shapes
+    )
 }
 
 /// The operations `service` gets typed clients for: all it implements, or a chosen list.
@@ -319,10 +388,10 @@ error: `luau-lsp` was not found, and `roto-server --check` needs it to type-chec
 Install it from https://github.com/JohnnyMorganz/luau-lsp/releases and put the binary on your PATH,
 or set ROTO_LUAU_LSP to its full path. Steps per platform are in docs/lua-types.md (Install luau-lsp).";
 
-/// `roto-server --check`: type-checks setup scripts against the definitions of this build by
+/// `roto-server --check`: type-checks setup scripts and tests against this build by
 /// running `luau-lsp analyze`. Returns the process exit code.
 pub(crate) fn check(files: &[PathBuf]) -> i32 {
-    analyze(files, &render(), "setup scripts")
+    analyze(files, &render(), "setup scripts and test files")
 }
 
 /// `roto-server --check-services`: the same for service modules and their `common.luau`.

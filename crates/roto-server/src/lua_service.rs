@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use base64::Engine;
 use md5::Md5;
@@ -63,7 +63,7 @@ const DRAIN_BUDGET: usize = 10_000;
 
 /// Every service handler, filled in once the server has built them all. Luau services reach
 /// other services through it (`roto.call`, `roto.wire`).
-pub type Peers = Arc<OnceLock<HashMap<&'static str, Arc<dyn ServiceHandler>>>>;
+pub type Peers = Arc<OnceLock<HashMap<&'static str, Weak<dyn ServiceHandler>>>>;
 
 /// Deepest chain of service-to-service calls (a service calling a service calling ...).
 const MAX_CALL_DEPTH: usize = 8;
@@ -558,10 +558,54 @@ pub struct Jobs {
 }
 
 impl Jobs {
+    pub fn has_service(&self, service: &str) -> bool {
+        self.services
+            .iter()
+            .any(|s| s.definition.service == service)
+    }
+    /// Invoke a decoded bundle operation through the service's transactional dispatcher.
+    pub fn call_decoded(
+        &self,
+        service: &str,
+        ctx: &RequestContext,
+        operation: &str,
+        input: Value,
+    ) -> Option<Result<Value, AwsError>> {
+        self.services
+            .iter()
+            .find(|s| s.definition.service == service)
+            .map(|s| {
+                if let Some(wire) = &s.definition.wire {
+                    wire.validate_decoded(operation, &input)?;
+                    s.invoke(ctx, operation, input)
+                } else {
+                    let body = serde_json::to_vec(&input)
+                        .map_err(|e| AwsError::internal(e.to_string()))?;
+                    s.dispatch(
+                        ctx,
+                        &RawRequest {
+                            method: "POST".into(),
+                            path: "/".into(),
+                            headers: vec![(
+                                "x-amz-target".into(),
+                                format!("{}{operation}", s.definition.target),
+                            )],
+                            body,
+                            ..Default::default()
+                        },
+                    )
+                }
+            })
+    }
+
     /// Gives the Lua services the handlers of every service, so they can call each other.
     pub fn connect(&self, handlers: HashMap<&'static str, Arc<dyn ServiceHandler>>) {
         if let Some(service) = self.services.first() {
-            let _ = service.peers.set(handlers);
+            let weak = handlers
+                .into_iter()
+                .map(|(name, handler)| (name, Arc::downgrade(&handler)))
+                .collect();
+            let _ = service.peers.set(weak);
         }
     }
 
@@ -585,7 +629,6 @@ impl Jobs {
     /// Runs due jobs until none are left, including jobs that earlier ones scheduled for a time
     /// that has already arrived. Returns how many ran and whether it finished (`false` means the
     /// budget ran out, for example a job that reschedules itself with no delay).
-    #[cfg(test)]
     pub fn drain(&self) -> (usize, bool) {
         let _gate = self.gate.lock().unwrap();
         self.drain_locked(&mut { DRAIN_BUDGET })
@@ -786,8 +829,9 @@ impl LuaService {
         api.set(
             "hash",
             lua.create_function(|_, (text, algorithm): (String, String)| {
-                crate::lua_service::hash_text(&text, &algorithm)
-                    .ok_or_else(|| mlua::Error::external(format!("unsupported hash algorithm {algorithm}")))
+                crate::lua_service::hash_text(&text, &algorithm).ok_or_else(|| {
+                    mlua::Error::external(format!("unsupported hash algorithm {algorithm}"))
+                })
             })
             .map_err(lua_error)?,
         )
@@ -1027,7 +1071,7 @@ impl LuaService {
             let handler = peers
                 .get()
                 .and_then(|map| map.get(service))
-                .cloned()
+                .and_then(Weak::upgrade)
                 .ok_or_else(|| {
                     PeerError::local(
                         "ServiceUnavailable",

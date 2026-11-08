@@ -622,11 +622,12 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
       `MaxDelaySeconds` and `JitterStrategy: FULL`, and concurrent inline Parallel/Map.
 - [x] Activities/task tokens and nested execution sync patterns.
 - [x] Published state-machine definition versions and aliases with weighted StartExecution routing.
-- [x] `TestState` Task mock results with `fieldValidationMode: NONE` and mock errors with Retry/
-      Catch selection, including callback and synchronous resources without invoking the target.
+- [x] `TestState` Task mock results with `fieldValidationMode: NONE`, inline Map/Parallel
+      mock results, and mock errors with Retry/Catch selection, without invoking the target or
+      executing fan-out branches. Parallel result arrays must match the branch count.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
       execution, activity long polling, plain Task timeout enforcement, `TestState` mock result
-      model validation and Map/Parallel mocks, and verification of history predecessor links for
+      model validation and Distributed Map mocks, and verification of history predecessor links for
       fan-out joins and failures against AWS.
 
 ### S48 — Athena (`athena`) · MiniStack: `athena.py`, `test_athena.py`
