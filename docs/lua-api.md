@@ -723,6 +723,7 @@ Durable state belongs in `db`, since mutable module globals are not rolled back.
 | `roto.id(prefix)` | Prefix plus 12 hexadecimal characters from a generated request ID |
 | `roto.uuid()` | Generated UUID string |
 | `roto.sha256(text)` | Lowercase hexadecimal SHA-256 digest |
+| `roto.hash(text, algorithm)` | Lowercase hexadecimal MD5, SHA-1, SHA-256, SHA-384 or SHA-512 digest |
 | `roto.decode_base64(text)` | Standard base64 decoded to UTF-8; invalid UTF-8 is replaced; invalid base64 raises an error |
 | `roto.json_decode(text, error_code?)` | Decoded JSON; malformed JSON raises `error_code` or `InvalidParameterException` |
 | `roto.json_encode(value)` | Compact JSON text of a value; whole numbers print as integers, `roto.null` as `null` |

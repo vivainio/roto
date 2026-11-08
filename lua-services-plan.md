@@ -588,15 +588,46 @@ JSON; requires R02/R04 for a useful DirectPut slice, R05 for buffering.
 
 MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 
-- [x] State-machine CRUD, definition validation and execution/history storage (tags remain).
-- [x] Bounded ASL interpreter: Pass/Choice/Succeed/Fail/Wait with Input/Parameters/Result/ResultPath/
-      OutputPath, JSONPath subset, `$$` context, intrinsics, Choice operators, history events
-      (`GetExecutionHistory`), 25 000-event limit. Task/Parallel/Map are not interpreted: the execution
-      stays `RUNNING` there (`tests/smoke-states.py`).
-- [ ] R04 Lambda/SQS task integrations and modeled failures.
-- [x] R05 timers (Luau `db.schedule`, virtual clock): Wait, machine `TimeoutSeconds`, stop cancels timers.
-- [ ] Retry/Catch, Parallel/Map, restart verification.
-- [ ] Activities/task tokens, versions/aliases and sync execution as later slices.
+- [x] State-machine CRUD (including logging/tracing configuration validation), definition
+      validation, execution/history storage and tags. List APIs use request-bound opaque
+      pagination tokens with 24-hour expiry.
+- [x] `ValidateStateMachineDefinition` diagnostics across independent states, with structural
+      locations, AWS-style `INVALID_RESOURCE`/`MISSING_TRANSITION_TARGET`/`MISSING_END_STATE` errors, `NO_DOLLAR`,
+      `NO_PATH` and `PASS_RESULT_IS_STATIC` warnings, Choice rule structure/path/operand validation,
+      Wait field exclusivity/range/timestamp validation and whole-second timestamp truncation,
+      Fail field/path validation, path-field
+      syntax/type and template-object validation, Retry/Catch field and catcher-path validation,
+      inline Map/Parallel processor schema validation, state-specific field allowlists and
+      Next/End constraints, severity filtering and truncation.
+- [x] Bounded ASL interpreter: Pass/Choice/Succeed/Fail/Wait/Task/Parallel/Map with Input/Parameters/
+      Result/ResultPath/OutputPath, JSONPath subset, `$$` context (including state entry time across
+      retries), intrinsics (including AWS-compatible rounding/ranges for `States.MathAdd`,
+      `States.MathRandom`, `States.ArrayRange` and `States.ArrayPartition`, plus seeded `MathRandom`
+      structural JSON equality for `States.ArrayContains`/`States.ArrayUnique`, intrinsic argument
+      arity checks, exact `States.Format` placeholder
+      counts, UTF-8 character-aware `States.StringSplit`, escaped literal braces and supported string
+      escape sequences, and the ten-call
+      intrinsic nesting limit), Choice operators (including literal-safe `StringMatches` wildcard
+      matching with escaped `*`),
+      inline Map item context (`$$.Map.Item.Index/Value/Source` propagates through nested branches), Map/Parallel state events and Map iteration lifecycle events, dynamic `MaxConcurrencyPath` (40-iteration inline ceiling), history events
+      (`GetExecutionHistory`, including Lambda Request Response events, distinct Task/Activity timeout
+      events, branch-specific predecessor links across waits and callbacks, version/alias start details,
+      `includeExecutionData=false`, reverse order and request-bound opaque pagination tokens with
+      24-hour expiry), the 256 KiB execution/state/
+      connector payload ceiling with `States.DataLimitExceeded`, and the 25 000-event limit.
+- [x] Lambda and SDK Task integrations, callback tokens and activities, modeled failures, Retry/Catch,
+      nested executions, ECS `runTask.sync`, and concurrent inline Parallel/Map branches and items.
+- [x] R05 timers (Luau `db.schedule`, virtual clock): Wait, machine `TimeoutSeconds`, Task timeout/heartbeat paths for parked Tasks (Activity clocks start at `ActivityStarted`/`GetActivityTask`), stop cancels timers.
+- [x] Retry/Catch semantics, including `States.ALL` exclusions and list constraints,
+      `MaxDelaySeconds` and `JitterStrategy: FULL`, and concurrent inline Parallel/Map.
+- [x] Activities/task tokens and nested execution sync patterns.
+- [x] Published state-machine definition versions and aliases with weighted StartExecution routing.
+- [x] `TestState` Task mock results with `fieldValidationMode: NONE` and mock errors with Retry/
+      Catch selection, including callback and synchronous resources without invoking the target.
+- [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
+      execution, activity long polling, plain Task timeout enforcement, `TestState` mock result
+      model validation and Map/Parallel mocks, and verification of history predecessor links for
+      fan-out joins and failures against AWS.
 
 ### S48 — Athena (`athena`) · MiniStack: `athena.py`, `test_athena.py`
 

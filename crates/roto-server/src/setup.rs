@@ -913,6 +913,13 @@ pub fn run_source(
             lua.to_value(&value)
         })?,
     )?;
+    roto.set(
+        "hash",
+        lua.create_function(|_, (text, algorithm): (String, String)| {
+            crate::lua_service::hash_text(&text, &algorithm)
+                .ok_or_else(|| mlua::Error::external(format!("unsupported hash algorithm {algorithm}")))
+        })?,
+    )?;
     // Compact JSON text of a value; whole numbers print as integers.
     roto.set(
         "json_encode",

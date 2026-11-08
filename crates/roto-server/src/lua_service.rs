@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
+use md5::Md5;
+use sha1::Digest as Sha1Digest;
 use sha2::{Digest, Sha256};
 
 use mlua::{Lua, LuaSerdeExt, Table, Value as LuaValue};
@@ -39,6 +41,18 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
             CREATE INDEX jobs_due ON jobs(run_at)",
     },
 ];
+
+pub(crate) fn hash_text(text: &str, algorithm: &str) -> Option<String> {
+    let digest = match algorithm {
+        "MD5" => Md5::digest(text.as_bytes()).to_vec(),
+        "SHA-1" => sha1::Sha1::digest(text.as_bytes()).to_vec(),
+        "SHA-256" => Sha256::digest(text.as_bytes()).to_vec(),
+        "SHA-384" => sha2::Sha384::digest(text.as_bytes()).to_vec(),
+        "SHA-512" => sha2::Sha512::digest(text.as_bytes()).to_vec(),
+        _ => return None,
+    };
+    Some(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
 
 /// A claimed job is invisible to other claimers for this long; a crash mid-job retries after it.
 const JOB_LEASE_MS: i64 = 30_000;
@@ -765,6 +779,15 @@ impl LuaService {
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>())
+            })
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        api.set(
+            "hash",
+            lua.create_function(|_, (text, algorithm): (String, String)| {
+                crate::lua_service::hash_text(&text, &algorithm)
+                    .ok_or_else(|| mlua::Error::external(format!("unsupported hash algorithm {algorithm}")))
             })
             .map_err(lua_error)?,
         )

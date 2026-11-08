@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -301,6 +302,13 @@ def check_branches_run_concurrently(s):
     s.sf.send_task_success(taskToken=token, output='"asked"')
     done = s.status(arn)
     assert (done["status"], json.loads(done["output"])) == ("SUCCEEDED", ["slept", "asked"]), done
+    history = s.sf.get_execution_history(executionArn=arn)["events"]
+    events = {event["type"]: event for event in history}
+    assert events["WaitStateEntered"]["previousEventId"] == events["ParallelStateStarted"]["id"]
+    assert events["TaskStateEntered"]["previousEventId"] == events["ParallelStateStarted"]["id"]
+    assert events["WaitStateExited"]["previousEventId"] == events["WaitStateEntered"]["id"]
+    assert events["PassStateEntered"]["previousEventId"] == events["WaitStateExited"]["id"]
+    assert events["TaskSucceeded"]["previousEventId"] == events["TaskStarted"]["id"]
 
     # A Map whose items each wait for a token; the results keep the item order whichever finishes first.
     s.sqs.purge_queue(QueueUrl=queue_url)
@@ -324,6 +332,15 @@ def check_branches_run_concurrently(s):
         s.sf.send_task_success(taskToken=tokens[item], output=json.dumps(item.upper()))
     done = s.status(arn)
     assert json.loads(done["output"]) == [{"answer": "X"}, {"answer": "Y"}, {"answer": "Z"}], done
+    history = s.sf.get_execution_history(executionArn=arn)["events"]
+    map_started = next(event for event in history if event["type"] == "MapStateStarted")
+    iterations = {event["mapIterationStartedEventDetails"]["index"]: event for event in history
+                  if event["type"] == "MapIterationStarted"}
+    assert all(event["previousEventId"] == map_started["id"] for event in iterations.values())
+    for event in history:
+        if event["type"] == "TaskStateEntered":
+            item = json.loads(event["stateEnteredEventDetails"]["input"])["item"]
+            assert event["previousEventId"] == iterations[["x", "y", "z"].index(item)]["id"]
 
     # One branch failing aborts its siblings: their tokens stop working and their timers are gone.
     s.sqs.purge_queue(QueueUrl=queue_url)
@@ -336,8 +353,16 @@ def check_branches_run_concurrently(s):
     arn = s.run(machine, {})
     failed = s.status(arn)
     assert (failed["status"], failed["error"]) == ("FAILED", "Nope"), failed
+    history = s.sf.get_execution_history(executionArn=arn)["events"]
+    by_id = {event["id"]: event for event in history}
+    current = next(event for event in history if event["type"] == "ExecutionFailed")
+    predecessors = []
+    while current["previousEventId"]:
+        current = by_id[current["previousEventId"]]
+        predecessors.append(current["type"])
+    assert "ParallelStateFailed" in predecessors and "ParallelStateEntered" in predecessors, predecessors
     orphan = s.sqs.receive_message(QueueUrl=queue_url)["Messages"][0]["Body"]
-    assert code(lambda: s.sf.send_task_success(taskToken=orphan, output="{}")) == "TaskDoesNotExist"
+    assert code(lambda: s.sf.send_task_success(taskToken=orphan, output="{}")) == "TaskTimedOut"
     s.advance(10_000)  # nothing left to fire
     assert s.status(arn)["status"] == "FAILED"
 
@@ -515,7 +540,8 @@ def check_task_states_call_other_services(s):
     assert out["lambda"] == {"echoed": {"n": 1}}, out
     assert out["sqs"]["sent"], out
     types = s.events(arn)
-    assert types.count("TaskSucceeded") == 3 and "TaskScheduled" in types, types
+    assert types.count("LambdaFunctionSucceeded") == 2 and types.count("TaskSucceeded") == 1, types
+    assert "TaskScheduled" in types, types
     messages = s.sqs.receive_message(QueueUrl=queue_url)["Messages"]
     assert json.loads(messages[0]["Body"]) == {"echoed": {"n": 1}}, messages
 
@@ -540,14 +566,19 @@ def check_callback_tasks(s):
     assert s.status(arn)["status"] == "RUNNING"
     first = token()
     s.sf.send_task_heartbeat(taskToken=first)
+    assert code(lambda: s.sf.send_task_success(taskToken=first, output="{")) == "InvalidOutput"
+    assert s.status(arn)["status"] == "RUNNING"
     s.sf.send_task_success(taskToken=first, output='{"ok": true}')
     out = json.loads(s.status(arn)["output"])
     assert out == {"id": 1, "answer": {"ok": True}}, out
-    assert code(lambda: s.sf.send_task_success(taskToken=first, output="{}")) == "TaskDoesNotExist"
+    assert code(lambda: s.sf.send_task_success(taskToken=first, output="{}")) == "TaskTimedOut"
     assert code(lambda: s.sf.send_task_success(taskToken="x" * 1100, output="{}")) == "InvalidToken"
 
     arn = s.run(machine, {})
-    s.sf.send_task_failure(taskToken=token(), error="Denied", cause="no")
+    failure_token = token()
+    assert code(lambda: s.sf.send_task_failure(taskToken=failure_token, error="x" * 257)) == "ValidationException"
+    assert s.status(arn)["status"] == "RUNNING"
+    s.sf.send_task_failure(taskToken=failure_token, error="Denied", cause="no")
     done = s.status(arn)
     assert json.loads(done["output"])["err"] == {"Error": "Denied", "Cause": "no"}, done
 
@@ -555,12 +586,17 @@ def check_callback_tasks(s):
     stale = token()
     s.advance(101)
     assert json.loads(s.status(arn)["output"])["err"]["Error"] == "States.Timeout"
-    assert code(lambda: s.sf.send_task_success(taskToken=stale, output="{}")) == "TaskDoesNotExist"
+    assert code(lambda: s.sf.send_task_success(taskToken=stale, output="{}")) == "TaskTimedOut"
 
 
 def check_activities_and_heartbeats(s):
-    activity = s.sf.create_activity(name="worker")["activityArn"]
+    activity = s.sf.create_activity(name="worker", tags=[{"key": "team", "value": "a"}])["activityArn"]
     assert s.sf.create_activity(name="worker")["activityArn"] == activity
+    tags = lambda: {t["key"]: t["value"] for t in s.sf.list_tags_for_resource(resourceArn=activity)["tags"]}
+    assert tags() == {"team": "a"}
+    s.sf.tag_resource(resourceArn=activity, tags=[{"key": "env", "value": "dev"}])
+    s.sf.untag_resource(resourceArn=activity, tagKeys=["team"])
+    assert tags() == {"env": "dev"}
     assert [a["name"] for a in s.sf.list_activities()["activities"]] == ["worker"]
     assert s.sf.describe_activity(activityArn=activity)["name"] == "worker"
     machine = s.machine("activity-flow", {"StartAt": "Work", "States": {
@@ -582,12 +618,23 @@ def check_activities_and_heartbeats(s):
     assert json.loads(s.status(first)["output"])["result"] == "done"
     types = s.events(first)
     assert {"ActivityScheduled", "ActivityStarted", "ActivitySucceeded"} <= set(types), types
-    # The second job is never fetched, so it misses its heartbeat.
+    history = {event["type"]: event for event in s.sf.get_execution_history(executionArn=first)["events"]}
+    assert history["ActivityStarted"]["previousEventId"] == history["ActivityScheduled"]["id"]
+    assert history["ActivitySucceeded"]["previousEventId"] == history["ActivityStarted"]["id"]
+    # Its heartbeat clock starts when a worker fetches it, not while it is queued.
     s.advance(100)
+    assert s.status(second)["status"] == "RUNNING"
+    second_task = s.sf.get_activity_task(activityArn=activity)
+    assert json.loads(second_task["input"]) == {"job": 2}
+    s.advance(31)
     out = json.loads(s.status(second)["output"])
     assert out["err"]["Error"] == "States.Timeout", out
     assert not s.sf.get_activity_task(activityArn=activity).get("taskToken")
+    third = s.run(machine, {"job": 3})
+    third_task = s.sf.get_activity_task(activityArn=activity)
     s.sf.delete_activity(activityArn=activity)
+    assert code(lambda: s.sf.send_task_heartbeat(taskToken=third_task["taskToken"])) == "TaskDoesNotExist"
+    s.sf.stop_execution(executionArn=third)
     assert code(lambda: s.sf.describe_activity(activityArn=activity)) == "ActivityDoesNotExist"
 
 
@@ -611,7 +658,7 @@ def check_retry_and_catch(s):
     assert out["keep"] is True and out["caught"]["Error"], out
     types = s.events(arn)
     # Three attempts, but the state is entered and exited once: a retry does not re-enter it.
-    assert types.count("TaskFailed") == 3, types
+    assert types.count("LambdaFunctionFailed") == 3, types
     assert types.count("TaskStateEntered") == 1 and types.count("TaskStateExited") == 1, types
 
     # Without a Catch the failure settles the execution, and a missing service fails cleanly.
@@ -630,11 +677,32 @@ def check_history_pages_and_validation(s):
     machine = s.machine("pages", {"StartAt": "A", "States": {
         "A": {"Type": "Pass", "Next": "B"}, "B": {"Type": "Pass", "Next": "C"}, "C": {"Type": "Succeed"}}})
     arn = s.run(machine)
+    def invalid_request(operation, body):
+        request = urllib.request.Request(
+            s.url + "/", data=json.dumps(body).encode(), method="POST",
+            headers={"x-amz-target": "AWSStepFunctions." + operation,
+                     "content-type": "application/x-amz-json-1.0"})
+        try:
+            urllib.request.urlopen(request)
+        except urllib.error.HTTPError as error:
+            assert error.code == 400 and "ValidationException" in error.read().decode()
+            return
+        raise AssertionError("expected ValidationException")
+
+    for value in (-1, 1001, 1.5, True):
+        invalid_request("GetExecutionHistory", {"executionArn": arn, "maxResults": value})
+        invalid_request("ListActivities", {"maxResults": value})
+    for field in ("reverseOrder", "includeExecutionData"):
+        invalid_request("GetExecutionHistory", {"executionArn": arn, field: "false"})
     first = s.sf.get_execution_history(executionArn=arn, maxResults=3)
     assert len(first["events"]) == 3 and "nextToken" in first
-    rest = s.sf.get_execution_history(executionArn=arn, maxResults=100, nextToken=first["nextToken"])
-    ids = [e["id"] for e in first["events"] + rest["events"]]
-    assert ids == list(range(1, len(ids) + 1)) and "nextToken" not in rest
+    events = list(first["events"])
+    page = first
+    while "nextToken" in page:
+        page = s.sf.get_execution_history(executionArn=arn, maxResults=3, nextToken=page["nextToken"])
+        events.extend(page["events"])
+    ids = [e["id"] for e in events]
+    assert ids == list(range(1, len(ids) + 1))
     reverse = s.sf.get_execution_history(executionArn=arn, reverseOrder=True)["events"]
     assert [e["id"] for e in reverse] == ids[::-1]
     assert [e["previousEventId"] for e in reverse][-1] == 0
@@ -655,7 +723,9 @@ def check_history_pages_and_validation(s):
 
 def check_loops_fail_instead_of_hanging(s):
     machine = s.machine("loop", {"StartAt": "A", "States": {
-        "A": {"Type": "Pass", "Next": "B"}, "B": {"Type": "Pass", "Next": "A"}}})
+        "A": {"Type": "Pass", "Next": "B"},
+        "B": {"Type": "Choice", "Choices": [{"Variable": "$.done", "IsPresent": True, "Next": "Done"}], "Default": "A"},
+        "Done": {"Type": "Succeed"}}})
     started = time.monotonic()
     arn = s.run(machine)
     s.advance(0)
@@ -682,7 +752,7 @@ def check_update_tags_and_test_state(s):
     assert json.loads(s.status(running)["output"]) == "old"
     assert json.loads(s.status(s.run(machine))["output"]) == "new"
     described = s.sf.describe_state_machine_for_execution(executionArn=running)
-    assert json.loads(described["definition"]) == new and described["name"] == "evolving"
+    assert json.loads(described["definition"]) == old and described["name"] == "evolving"
 
     tags = lambda: {t["key"]: t["value"] for t in s.sf.list_tags_for_resource(resourceArn=machine)["tags"]}
     assert tags() == {"team": "a"}
@@ -698,6 +768,49 @@ def check_update_tags_and_test_state(s):
 
     done = test_state({"Type": "Pass", "Parameters": {"x.$": "$.a"}, "Next": "After"}, {"a": 5})
     assert (done["status"], json.loads(done["output"]), done["nextState"]) == ("SUCCEEDED", {"x": 5}, "After")
+    invoked = test_state({"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke",
+                          "Parameters": {"FunctionName": "echo", "Payload.$": "$"},
+                          "ResultSelector": {"result.$": "$.Payload"}, "End": True}, {"a": 5})
+    assert invoked["status"] == "SUCCEEDED" and json.loads(invoked["output"]) == {"result": {"a": 5}}, invoked
+    nested = test_state({"Type": "Task", "Resource": "arn:aws:states:::states:startExecution",
+                         "Parameters": {"StateMachineArn": machine}, "End": True})
+    assert nested["status"] == "SUCCEEDED" and json.loads(nested["output"])["ExecutionArn"], nested
+    queue_url = s.sqs.get_queue_url(QueueName="jobs")["QueueUrl"]
+    s.sqs.purge_queue(QueueUrl=queue_url)
+    callback = {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+                "Parameters": {"QueueUrl": queue_url, "MessageBody.$": "$$.Task.Token"}, "End": True}
+    assert test_state(callback)["status"] == "FAILED"
+    callback_branch = {"StartAt": "Ask", "States": {"Ask": callback}}
+    assert test_state({"Type": "Parallel", "Branches": [callback_branch], "End": True})["status"] == "FAILED"
+    assert not s.sqs.receive_message(QueueUrl=queue_url, WaitTimeSeconds=0).get("Messages")
+    before = len(s.sf.list_executions(stateMachineArn=machine)["executions"])
+    synchronous = {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.sync",
+                   "Parameters": {"StateMachineArn": machine}, "End": True}
+    assert test_state(synchronous)["status"] == "FAILED"
+    assert len(s.sf.list_executions(stateMachineArn=machine)["executions"]) == before
+    assert code(lambda: s.sf.test_state(definition=json.dumps(callback), roleArn=ROLE,
+                                       mock={"result": "{}"})) == "ValidationException"
+    mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
+    mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
+                             mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})
+    assert mocked["status"] == "SUCCEEDED" and json.loads(mocked["output"]) == {"before": 1, "result": {"answer": 42}}, mocked
+    assert not s.sqs.receive_message(QueueUrl=queue_url, WaitTimeSeconds=0).get("Messages")
+    assert code(lambda: s.sf.test_state(definition=json.dumps(callback), mock={"fieldValidationMode": "NONE", "result": "{"})) == "ValidationException"
+    retrying = {**callback, "Retry": [{"ErrorEquals": ["Denied"], "IntervalSeconds": 2, "BackoffRate": 2, "MaxAttempts": 2}],
+                "Catch": [{"ErrorEquals": ["Denied"], "ResultPath": "$.failure", "Next": "Recover"}]}
+    mock_error = {"errorOutput": {"error": "Denied", "cause": "no"}}
+    retried = s.sf.test_state(definition=json.dumps(retrying), input='{"x":1}', mock=mock_error,
+                              stateConfiguration={"retrierRetryCount": 1}, inspectionLevel="DEBUG")
+    assert retried["status"] == "RETRIABLE" and retried["inspectionData"]["errorDetails"] == {"retryIndex": 0, "retryBackoffIntervalSeconds": 4}, retried
+    caught = s.sf.test_state(definition=json.dumps(retrying), input='{"x":1}', mock=mock_error,
+                             stateConfiguration={"retrierRetryCount": 2}, inspectionLevel="DEBUG")
+    assert caught["status"] == "CAUGHT_ERROR" and caught["nextState"] == "Recover", caught
+    assert json.loads(caught["output"]) == {"x": 1, "failure": {"Error": "Denied", "Cause": "no"}}
+    assert caught["inspectionData"]["errorDetails"]["catchIndex"] == 0
+    failed_mock = s.sf.test_state(definition=json.dumps(callback), mock={"errorOutput": {"error": "Other"}})
+    assert failed_mock["status"] == "FAILED" and failed_mock["error"] == "Other"
+    assert code(lambda: s.sf.test_state(definition=json.dumps(callback), mock={"result": "{}", **mock_error})) == "ValidationException"
+    assert not s.sqs.receive_message(QueueUrl=queue_url, WaitTimeSeconds=0).get("Messages")
     chosen = test_state({"Type": "Choice", "Choices": [{"Variable": "$.n", "NumericEquals": 1, "Next": "One"}],
                          "Default": "Many"}, {"n": 1})
     assert (chosen["status"], chosen["nextState"]) == ("SUCCEEDED", "One")
@@ -705,12 +818,59 @@ def check_update_tags_and_test_state(s):
     assert (waited["status"], json.loads(waited["output"])) == ("SUCCEEDED", {"k": 1}) and "nextState" not in waited
     failed = test_state({"Type": "Fail", "Error": "Bad", "Cause": "because"})
     assert (failed["status"], failed["error"], failed["cause"]) == ("FAILED", "Bad", "because")
-    for fan_out in ({"Type": "Parallel", "Branches": [], "End": True},
-                    {"Type": "Map", "ItemProcessor": {"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}},
-                     "End": True}):
-        assert code(lambda: test_state(fan_out)) == "ValidationException"
+    branch = {"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}
+    parallel = test_state({"Type": "Parallel", "Branches": [branch], "End": True}, {"n": 1})
+    assert parallel["status"] == "SUCCEEDED" and json.loads(parallel["output"]) == [{"n": 1}]
+    mapped = test_state({"Type": "Map", "ItemsPath": "$.items", "ItemProcessor": branch, "End": True}, {"items": [1, 2]})
+    assert mapped["status"] == "SUCCEEDED" and json.loads(mapped["output"]) == [1, 2]
     broken = test_state({"Type": "Pass", "InputPath": "$.missing", "End": True})
     assert (broken["status"], broken["error"]) == ("FAILED", "States.Runtime")
+
+
+def check_list_pagination_tokens(s):
+    first_activity = s.sf.create_activity(name="page-worker-a")["activityArn"]
+    second_activity = s.sf.create_activity(name="page-worker-b")["activityArn"]
+    page = s.sf.list_activities(maxResults=1)
+    token = page["nextToken"]
+    assert len(page["activities"]) == 1
+    following = s.sf.list_activities(maxResults=1, nextToken=token)
+    assert len(following["activities"]) == 1
+    assert {page["activities"][0]["activityArn"], following["activities"][0]["activityArn"]} == {first_activity, second_activity}
+    assert code(lambda: s.sf.list_activities(maxResults=2, nextToken=token)) == "InvalidToken"
+    assert code(lambda: s.sf.list_state_machines(maxResults=1, nextToken=token)) == "InvalidToken"
+    assert len(s.sf.list_activities(maxResults=0)["activities"]) == 2
+    s.advance(86401)
+    assert code(lambda: s.sf.list_activities(maxResults=1, nextToken=token)) == "InvalidToken"
+    s.sf.delete_activity(activityArn=first_activity)
+    s.sf.delete_activity(activityArn=second_activity)
+
+
+def check_list_execution_filters(s):
+    machine = s.machine("list-filters", {"StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}})
+    execution = s.run(machine)
+    assert [item["executionArn"] for item in s.sf.list_executions(stateMachineArn=machine, statusFilter="SUCCEEDED")["executions"]] == [execution]
+    assert s.sf.list_executions(stateMachineArn=machine, statusFilter="RUNNING")["executions"] == []
+    for extra in ({"statusFilter": "UNKNOWN"}, {"statusFilter": "PENDING_REDRIVE"}, {"redriveFilter": "REDRIVEN"}):
+        assert code(lambda: s.sf.list_executions(stateMachineArn=machine, **extra)) == "ValidationException"
+    map_run = "arn:aws:states:us-east-1:123456789012:mapRun:example/run"
+    assert code(lambda: s.sf.list_executions(stateMachineArn=machine, mapRunArn=map_run)) == "ValidationException"
+    assert code(lambda: s.sf.list_executions(mapRunArn=map_run)) == "ResourceNotFound"
+    express = s.sf.create_state_machine(name="list-express", roleArn=ROLE, type="EXPRESS",
+                                        definition=json.dumps({"StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}}))["stateMachineArn"]
+    assert code(lambda: s.sf.list_executions(stateMachineArn=express)) == "StateMachineTypeNotSupported"
+
+    ordered = s.machine("list-order", {"StartAt": "Choose", "States": {
+        "Choose": {"Type": "Choice", "Choices": [{"Variable": "$.slow", "BooleanEquals": True, "Next": "Wait"}], "Default": "Done"},
+        "Wait": {"Type": "Wait", "Seconds": 10, "Next": "Done"},
+        "Done": {"Type": "Succeed"}}})
+    older = s.run(ordered, {"slow": True})
+    s.advance(2)
+    newer = s.run(ordered, {"slow": False})
+    s.advance(9)
+    results = s.sf.list_executions(stateMachineArn=ordered)["executions"]
+    assert [item["executionArn"] for item in results] == [older, newer], results
+    assert results[0]["startDate"] < results[1]["startDate"]
+    assert results[0]["stopDate"] > results[1]["stopDate"]
 
 
 def check_rust_services_follow_the_clock(s):
@@ -742,6 +902,7 @@ def main():
                       check_callback_tasks, check_activities_and_heartbeats,
                       check_retry_and_catch, check_history_pages_and_validation,
                       check_loops_fail_instead_of_hanging, check_update_tags_and_test_state,
+                      check_list_pagination_tokens, check_list_execution_filters,
                       check_rust_services_follow_the_clock):
             started = time.monotonic()
             check(server)

@@ -50,6 +50,7 @@ declare roto: {
 	-- Seconds since the Unix epoch on the virtual clock (fractional); `os.time()` uses it too.
 	now: () -> number,
 	sha256: (text: string) -> string,
+	hash: (text: string, algorithm: "MD5" | "SHA-1" | "SHA-256" | "SHA-384" | "SHA-512") -> string,
 	decode_base64: (text: string) -> string,
 	encode_base64: (text: string) -> string,
 	-- Compact JSON text of a value; whole numbers print as integers.

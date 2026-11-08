@@ -37,6 +37,8 @@ roto-svc-kinesis = { version = "0.0.0-dev", path = "../roto-svc-kinesis" }
 roto-svc-kms = { version = "0.0.0-dev", path = "../roto-svc-kms" }
 
 base64 = "0.22.1"
+md-5 = "0.11.0"
+sha1 = "0.10.7"
 sha2 = "0.11.0"
 
 zip = { version = "9.0.1", default-features = false, features = ["deflate-flate2"] }
