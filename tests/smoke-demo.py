@@ -64,6 +64,12 @@ def smoke():
                         ('iam', 'users', 1), ('iam', 'roles', 1), ('sns', 'topics', 2), ('sns', 'subscriptions', 2), ('cloudformation', 'stacks', 2)]
             for service, collection, count in expected:
                 assert resources(service, collection)['total'] == count, (service, collection)
+            summary = get('/roto-api/summary')['services']
+            for service, collection, count in expected:
+                assert summary[service]['collections'][collection]['count'] == count, (service, collection)
+            assert any(item['name'] == 'demo-assets' for item in summary['s3']['collections']['buckets']['identifiers'])
+            encoded = json.dumps(summary)
+            assert 'fake-demo-token' not in encoded and 'not-a-real-password' not in encoded and 'rotated-demo-password' not in encoded
             stacks = {row['name']: row['body'] for row in resources('cloudformation', 'stacks')['records']}
             assert set(stacks) == {'demo-messaging', 'demo-storage'}
             assert all(stack['status'] == 'CREATE_COMPLETE' and len(stack['resources']) == 2 for stack in stacks.values())

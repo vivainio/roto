@@ -423,6 +423,7 @@ async fn main() {
         .route("/roto-api", get(inspection_ui))
         .route("/roto-api/", get(inspection_ui))
         .route("/roto-api/resources", get(inspection::catalog))
+        .route("/roto-api/summary", get(inspection::summary))
         .route("/roto-api/sqs/messages", get(inspection::sqs_messages))
         .route(
             "/roto-api/sns/sms-messages",

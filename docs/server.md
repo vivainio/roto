@@ -40,6 +40,7 @@ RUST_LOG=debug roto-server --ephemeral
 | --- | --- | --- |
 | `GET` | `/roto-api/` | HTML resource and history browser (also `/roto-api`) |
 | `GET` | `/roto-api/resources` | Resource collection catalog |
+| `GET` | `/roto-api/summary` | Summary of stored built-in and Luau-service collections |
 | `GET` | `/roto-api/resources/{service}/{collection}` | Resource records, 50 per page |
 | `GET` | `/roto-api/sqs/messages` | Read-only SQS message peek, grouped by account, region, and queue URL |
 | `GET`, `HEAD` | `/s3/{bucket}/{key}` | Inline S3 objects, index pages, and folder listings |
@@ -156,6 +157,23 @@ Responses contain `records`, `total`, `offset`, and `limit`. The object endpoint
 accepts `bucket`, `key`, an optional `version`, and `preview=true` for the first
 64 KiB. Downloads are served as attachments. These inspection endpoints only
 read resources; they do not modify service state.
+
+`GET /roto-api/summary` returns one JSON object covering all accounts and regions.
+It groups nonempty collections under each service, with a `count` and identifying
+fields or document IDs. For example:
+
+```sh
+curl -s http://localhost:5070/roto-api/summary | jq .
+```
+
+Native collection names correspond to the inspection tables; Luau collections use
+their stored namespaces (normally `account/region/collection`). Counts are stored
+rows, so versions, messages, internal Luau documents and similar records can appear
+alongside AWS resources; they are not a count of distinct AWS resources. The summary
+omits record bodies and secret values and suppresses Step Functions task and paging
+token identifiers. It reads existing Luau databases without initializing services or
+creating database files. Counts from different services are gathered sequentially,
+so concurrent changes may appear between collections. The response is not paginated.
 
 The local WebSocket endpoints accept topic subscriptions for IoT publishes and
 also expose connection IDs for API Gateway Management API `PostToConnection`.

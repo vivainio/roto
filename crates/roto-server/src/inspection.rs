@@ -53,6 +53,141 @@ pub async fn catalog() -> Json<Value> {
     )
 }
 
+/// A single read-only inventory of stored records across built-in and Luau services.
+pub async fn summary(State(app): State<Arc<App>>) -> Response {
+    match tokio::task::spawn_blocking(move || resource_summary(&app)).await {
+        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e.message),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "Resource summary failed"),
+    }
+}
+
+fn resource_summary(app: &App) -> Result<Value, AwsError> {
+    let mut services = Map::new();
+    let extra: &[(&str, &[&str])] = &[
+        ("kms", &["keys", "aliases"]),
+        ("logs", &["log_groups", "log_events"]),
+        ("lambda", &["aliases", "durable_executions"]),
+        ("events", &["deliveries"]),
+        ("scheduler", &["deliveries"]),
+        ("iam", &["access_keys"]),
+    ];
+    for (service, tables) in COLLECTIONS.iter().chain(extra.iter()) {
+        let Some(db) = app.store.existing_db(service) else {
+            continue;
+        };
+        let collections = db.read(|c| {
+            let mut values = Vec::new();
+            for table in *tables {
+                let item = summarize_table(c, table)?;
+                if item["count"].as_i64().unwrap_or(0) > 0 {
+                    values.push(((*table).to_owned(), item));
+                }
+            }
+            Ok(values)
+        })?;
+        for (name, value) in collections {
+            let service_entry = services
+                .entry((*service).to_owned())
+                .or_insert_with(|| json!({"kind":"native","collections":{}}));
+            service_entry["collections"][name] = value;
+        }
+    }
+    for (service, namespace, ids) in app.jobs.document_summary()? {
+        let entry = services
+            .entry(service.clone())
+            .or_insert_with(|| json!({"kind":"luau","collections":{}}));
+        let sensitive = service == "states"
+            && namespace
+                .split('/')
+                .any(|part| matches!(part, "token" | "history-token" | "list-token"));
+        let count = ids.len();
+        entry["collections"][namespace] = if sensitive {
+            json!({"count": count})
+        } else {
+            json!({"count": count, "identifiers": ids})
+        };
+    }
+    Ok(json!({"services":services}))
+}
+
+/// Select identifying fields only; resource bodies, credentials and message contents stay out.
+fn summarize_table(c: &Connection, table: &str) -> Result<Value, AwsError> {
+    const FIELDS: &[&str] = &[
+        "account_id",
+        "account",
+        "region",
+        "name",
+        "arn",
+        "id",
+        "uuid",
+        "key",
+        "key_id",
+        "bucket",
+        "table_id",
+        "table_name",
+        "group_name",
+        "user_name",
+        "policy_arn",
+        "topic_arn",
+        "secret_name",
+        "version_id",
+        "log_group_name",
+        "log_stream_name",
+        "message_id",
+        "queue_id",
+        "upload_id",
+        "part_number",
+        "bus",
+        "rule",
+        "grp",
+        "stack_id",
+        "function_arn",
+        "kind",
+        "entity",
+    ];
+    let mut schema = c.prepare(&format!("PRAGMA table_info({})", quote(table)))?;
+    let columns = schema
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let fields: Vec<_> = columns
+        .iter()
+        .filter(|c| FIELDS.contains(&c.as_str()))
+        .collect();
+    let count: i64 = c.query_row(&format!("SELECT COUNT(*) FROM {}", quote(table)), [], |r| {
+        r.get(0)
+    })?;
+    if fields.is_empty() {
+        return Ok(json!({"count": count}));
+    }
+    let selected = fields
+        .iter()
+        .map(|s| quote(s))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = c.prepare(&format!(
+        "SELECT {selected} FROM {} ORDER BY {selected}",
+        quote(table)
+    ))?;
+    let rows = statement
+        .query_map([], |row| {
+            let mut item = Map::new();
+            for (index, field) in fields.iter().enumerate() {
+                let value = match row.get_ref(index)? {
+                    ValueRef::Null => Value::Null,
+                    ValueRef::Integer(value) => json!(value),
+                    ValueRef::Real(value) => json!(value),
+                    ValueRef::Text(value) => json!(String::from_utf8_lossy(value)),
+                    ValueRef::Blob(_) => continue,
+                };
+                item.insert((*field).clone(), value);
+            }
+            Ok(Value::Object(item))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({"count": count, "identifiers": rows}))
+}
+
 fn error(status: StatusCode, message: impl ToString) -> Response {
     (status, Json(json!({"message":message.to_string()}))).into_response()
 }
@@ -615,6 +750,19 @@ pub async fn object(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_exposes_only_identifying_fields() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE secrets (account_id TEXT, region TEXT, name TEXT, arn TEXT, secret_string TEXT); INSERT INTO secrets VALUES ('123456789012', 'us-east-1', 'demo', 'arn:demo', 'do-not-expose');").unwrap();
+        let summary = summarize_table(&c, "secrets").unwrap();
+        assert_eq!(summary["count"], 1);
+        assert_eq!(
+            summary["identifiers"][0],
+            json!({"account_id":"123456789012", "region":"us-east-1", "name":"demo", "arn":"arn:demo"})
+        );
+        assert!(!summary.to_string().contains("do-not-expose"));
+    }
 
     #[test]
     fn browse_pages_filters_and_json_without_mutating_resources() {

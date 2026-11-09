@@ -64,6 +64,16 @@ aws sqs list-queues
 ```
 
 Open `http://localhost:5070/roto-api/` to inspect resources and request history.
+For a single JSON summary of stored collections across accounts and regions:
+
+```sh
+curl --fail http://localhost:5070/roto-api/summary
+```
+
+The summary includes counts and identifying fields for built-in and installed
+Luau-service collections. Counts are stored rows and can include versions and
+internal documents; resource bodies and secret values are omitted.
+
 For debugging, query recent calls and unsupported operations:
 
 ```sh

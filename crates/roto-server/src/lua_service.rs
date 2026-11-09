@@ -558,6 +558,47 @@ pub struct Jobs {
 }
 
 impl Jobs {
+    /// Summarize persisted bundle documents without starting a service or creating a database.
+    pub fn document_summary(&self) -> Result<Vec<(String, String, Vec<String>)>, AwsError> {
+        fn rows(c: &roto_core::rusqlite::Connection) -> Result<Vec<(String, String)>, AwsError> {
+            let mut statement =
+                c.prepare("SELECT namespace, id FROM documents ORDER BY namespace, id")?;
+            Ok(statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?)
+        }
+        let mut result = Vec::new();
+        for service in &self.services {
+            let name = service.definition.service;
+            let records = if let Some(db) = service.store.existing_db(name) {
+                db.read(rows)?
+            } else if let Some(path) = service
+                .store
+                .data_dir()
+                .map(|dir| dir.join(format!("{name}.db")))
+                .filter(|path| path.is_file())
+            {
+                let connection = roto_core::rusqlite::Connection::open_with_flags(
+                    path,
+                    roto_core::rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | roto_core::rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                rows(&connection)?
+            } else {
+                Vec::new()
+            };
+            let mut grouped = std::collections::BTreeMap::<String, Vec<String>>::new();
+            for (namespace, id) in records {
+                grouped.entry(namespace).or_default().push(id);
+            }
+            result.extend(
+                grouped
+                    .into_iter()
+                    .map(|(namespace, ids)| (name.to_owned(), namespace, ids)),
+            );
+        }
+        Ok(result)
+    }
     pub fn has_service(&self, service: &str) -> bool {
         self.services
             .iter()
@@ -1432,6 +1473,43 @@ pub(crate) fn test_service(store: Arc<Store>, name: &str, path: Option<PathBuf>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_summary_reads_existing_persistent_stores_without_initializing_services() {
+        let dir =
+            std::env::temp_dir().join(format!("roto-summary-{}", roto_core::ids::request_id()));
+        let bundle = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/lua-services");
+        {
+            let store = Store::open(&dir, Default::default()).unwrap();
+            let db = store.db("widgets", MIGRATIONS).unwrap();
+            db.transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO documents(namespace,id,body) VALUES (?1,?2,?3)",
+                    params![
+                        "123456789012/us-east-1/widgets",
+                        "widget-1",
+                        r#"{"secret":"not-in-summary"}"#
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        }
+        let store = Arc::new(Store::open(&dir, Default::default()).unwrap());
+        let (_, jobs) = into_handlers(discover(store.clone(), Some(bundle)).unwrap());
+        assert!(store.existing_db("widgets").is_none());
+        let summary = jobs.document_summary().unwrap();
+        assert_eq!(
+            summary,
+            vec![(
+                "widgets".into(),
+                "123456789012/us-east-1/widgets".into(),
+                vec!["widget-1".into()]
+            )]
+        );
+        assert!(store.existing_db("widgets").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn services_are_optional_and_directory_manifest_is_lazy() {

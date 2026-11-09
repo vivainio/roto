@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('smoke', Path(__file__).with_name('smoke-lua-services.py'))
@@ -123,6 +124,12 @@ def run(name,sdk=False):
                 finally:s.close()
                 s=Server(directory,bundle,sdk)
                 try:
+                    if name == 'ecr':
+                        # Summary must see persisted Luau data before an ECR request loads it.
+                        with urllib.request.urlopen(s.url + '/roto-api/summary', timeout=10) as response:
+                            summary = json.load(response)
+                        repositories = summary['services']['ecr']['collections'][f'{ACCOUNT}/us-east-1/repositories']
+                        assert repositories['count'] == 1 and repositories['identifiers'] == ['persist']
                     persisted(s,name,fixture);s.reset();empty(s,name)
                     seed(s,name)
                 finally:s.close()
