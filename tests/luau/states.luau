@@ -294,3 +294,16 @@ test.case("TestState checks modeled patterns in task mocks", function()
     end)
     test.equal(test.call("states", "TestState", request('{"LastEvaluatedTableName":"!!!"}', "NONE")).status, "SUCCEEDED")
 end)
+
+test.case("TestState ignores unknown fields for operations without modeled output", function()
+    local definition = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::aws-sdk:sqs:deleteMessage", End = true})
+    for _, mode in {"STRICT", "PRESENT"} do
+        local result = test.call("states", "TestState", {definition = definition,
+            mock = {result = '{"extra":{"value":1}}', fieldValidationMode = mode}})
+        test.equal(result.status, "SUCCEEDED")
+        test.expect_error("ValidationException", function()
+            return test.try_call("states", "TestState", {definition = definition,
+                mock = {result = '42', fieldValidationMode = mode}})
+        end)
+    end
+end)

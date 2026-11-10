@@ -128,10 +128,12 @@ pub(crate) fn validate_model_operation(
         .ok_or_else(|| format!("No response model for {service}.{operation}"))?;
     let output = &operation_model["output"];
     if output.is_null() {
-        return if value.as_object().is_some_and(|o| o.is_empty()) {
+        // An output with no modeled members has no known fields to validate. TestState
+        // ignores unknown fields in both STRICT and PRESENT mode.
+        return if value.is_object() {
             Ok(())
         } else {
-            Err("$: expected empty response object".into())
+            Err("$: expected response object".into())
         };
     }
     // Optimized Lambda Payload and nested execution .sync:2 Output are decoded JSON,
