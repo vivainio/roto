@@ -367,3 +367,31 @@ test.case("TestState selects named states from complete definitions", function()
         return test.try_call("states", "TestState", {definition = ambiguous, stateName = "Same"})
     end)
 end)
+
+test.case("TestState inspects mocked task and map transformations", function()
+    local task = {Type = "Task", Resource = "arn:aws:states:::lambda:invoke", InputPath = "$.payload",
+        Parameters = { ["number.$"] = "$.n" }, ResultSelector = { ["answer.$"] = "$.answer" },
+        ResultPath = "$.result", OutputPath = "$.result", End = true}
+    local request = {definition = roto.json_encode(task), input = '{"payload":{"n":2},"keep":true}',
+        mock = {result = '{"answer":3}', fieldValidationMode = "NONE"}, inspectionLevel = "DEBUG"}
+    local response = test.call("states", "TestState", request)
+    local inspection = response.inspectionData
+    test.equal(roto.json_decode(inspection.input), {payload = {n = 2}, keep = true})
+    test.equal(roto.json_decode(inspection.afterInputPath), {n = 2})
+    test.equal(roto.json_decode(inspection.afterParameters), {number = 2})
+    test.equal(roto.json_decode(inspection.result), {answer = 3})
+    test.equal(roto.json_decode(inspection.afterResultSelector), {answer = 3})
+    test.equal(roto.json_decode(inspection.afterResultPath), {payload = {n = 2}, keep = true, result = {answer = 3}})
+    test.equal(roto.json_decode(response.output), {answer = 3})
+    request.inspectionLevel = "INFO"
+    test.equal(test.call("states", "TestState", request).inspectionData, nil)
+    request.inspectionLevel = "INVALID"
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    local map = {Type = "Map", ItemsPath = "$.items", ItemSelector = { ["value.$"] = "$$.Map.Item.Value" },
+        ItemProcessor = {StartAt = "Done", States = {Done = {Type = "Succeed"}}}, End = true}
+    local mapped = test.call("states", "TestState", {definition = roto.json_encode(map), input = '{"items":[1,2]}',
+        mock = {result = '[3,4]'}, inspectionLevel = "TRACE"})
+    test.equal(roto.json_decode(mapped.inspectionData.afterItemsPath), {1, 2})
+    test.equal(roto.json_decode(mapped.inspectionData.afterItemSelector), {{value = 1}, {value = 2}})
+    test.equal(roto.json_decode(mapped.inspectionData.result), {3, 4})
+end)

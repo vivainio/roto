@@ -1803,11 +1803,15 @@ local function emit_task_event(execution_arn: string, history: History, resource
 end
 
 -- Applies ResultSelector, ResultPath and OutputPath to a task's raw result.
-local function finish_task(state: Doc, data: any, scope: Scope, result: any): any
+local function finish_task(state: Doc, data: any, scope: Scope, result: any, inspection: Doc?): any
+    if inspection then inspection.result = roto.json_encode(result) end
     if state.ResultSelector ~= nil then
         result = apply_template(state.ResultSelector, { data = result, context = scope.context })
     end
-    return apply_output_path(state, apply_result_path(state, data, result), scope.context)
+    if inspection then inspection.afterResultSelector = roto.json_encode(result) end
+    local merged = apply_result_path(state, data, result)
+    if inspection then inspection.afterResultPath = roto.json_encode(merged) end
+    return apply_output_path(state, merged, scope.context)
 end
 
 -- Returns the state's output, or (input, token) when the task is a callback (`.waitForTaskToken`)
@@ -2017,16 +2021,21 @@ end
 type MapItem = { Index: number, Value: any, Source: string }
 type Spawn = { key: { any }, data: any, map: MapItem? }
 
-local function finish_fanout(state: Doc, data: any, scope: Scope, results: { any }): any
+local function finish_fanout(state: Doc, data: any, scope: Scope, results: { any }, inspection: Doc?): any
     local result: any = roto.array(results)
+    if inspection then inspection.result = roto.json_encode(result) end
     if state.ResultSelector ~= nil then
         result = apply_template(state.ResultSelector, { data = result, context = scope.context })
     end
-    return apply_output_path(state, apply_result_path(state, data, result), scope.context)
+    if inspection then inspection.afterResultSelector = roto.json_encode(result) end
+    local merged = apply_result_path(state, data, result)
+    if inspection then inspection.afterResultPath = roto.json_encode(merged) end
+    return apply_output_path(state, merged, scope.context)
 end
 
-local function spawn_parallel(state: Doc, data: any, scope: Scope): { Spawn }
+local function spawn_parallel(state: Doc, data: any, scope: Scope, inspection: Doc?): { Spawn }
     local effective = apply_input_path(state, data, scope.context)
+    if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local spawns: { Spawn } = {}
     for index = 1, #state.Branches do
         table.insert(spawns, { key = { "Branches", index }, data = effective })
@@ -2034,8 +2043,9 @@ local function spawn_parallel(state: Doc, data: any, scope: Scope): { Spawn }
     return spawns
 end
 
-local function spawn_map(state: Doc, data: any, scope: Scope): ({ Spawn }, number?)
+local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?): ({ Spawn }, number?)
     local effective = apply_input_path(state, data, scope.context)
+    if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local inner: Scope = { data = effective, context = scope.context }
     local max_concurrency = state.MaxConcurrency
     if state.MaxConcurrencyPath ~= nil then max_concurrency = resolve(state.MaxConcurrencyPath, inner) end
@@ -2045,6 +2055,7 @@ local function spawn_map(state: Doc, data: any, scope: Scope): ({ Spawn }, numbe
     local items: any = effective
     if state.ItemsPath ~= nil then items = resolve(state.ItemsPath, inner) end
     if not is_array(items) then fail("States.Runtime", "The Map state's items must be an array") end
+    if inspection then inspection.afterItemsPath = roto.json_encode(items); inspection.maxConcurrency = max_concurrency end
     local key = if state.ItemProcessor ~= nil then "ItemProcessor" else "Iterator"
     local selector = state.ItemSelector or state.Parameters
     local spawns: { Spawn } = {}
@@ -2055,6 +2066,11 @@ local function spawn_map(state: Doc, data: any, scope: Scope): ({ Spawn }, numbe
         local input = item
         if selector ~= nil then input = apply_template(selector, { data = effective, context = context }) end
         table.insert(spawns, { key = { key }, data = input, map = map })
+    end
+    if inspection then
+        local inputs = {}
+        for _, spawn in ipairs(spawns) do table.insert(inputs, spawn.data) end
+        inspection.afterItemSelector = roto.json_encode(roto.array(inputs))
     end
     return spawns, max_concurrency
 end
@@ -3291,6 +3307,9 @@ end
 
 -- Runs one state definition against an input, without creating an execution. Wait does not wait.
 function M.TestState(ctx: Ctx, input: any, db: Db)
+    if input.inspectionLevel ~= nil and input.inspectionLevel ~= "INFO" and input.inspectionLevel ~= "DEBUG" and input.inspectionLevel ~= "TRACE" then
+        roto.error("ValidationException", "Invalid inspectionLevel")
+    end
     valid_json(input.definition, "definition")
     local state = roto.json_decode(input.definition)
     local selected_name = "TestState"
@@ -3364,6 +3383,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
     end
     local scope: Scope = { data = data, context = context }
     if input.mock ~= nil then
+        local inspection: Doc? = if input.inspectionLevel == "DEBUG" or input.inspectionLevel == "TRACE" then { input = payload } else nil
         local mock = roto.object(input.mock, "ValidationException", "mock")
         if state.Type ~= "Task" and state.Type ~= "Parallel" and state.Type ~= "Map" then
             roto.error("ValidationException", "Mock results require a Task, Parallel, or Map state")
@@ -3400,7 +3420,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 if type(state.Resource) == "string" and waits_for_token(state.Resource) then
                     context = table.clone(context)
                     if not is_object(context.Task) or context.Task.Token == nil then
-                        local task = if is_object(context.Task) then table.clone(context.Task) else {}
+                        local task: any = if is_object(context.Task) then table.clone(context.Task) else {}
                         task.Token = roto.uuid() .. roto.uuid()
                         context.Task = task
                     end
@@ -3471,34 +3491,36 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 roto.error("ValidationException", "mock.result must contain one element for each Parallel branch")
             end
             local ok, result = pcall(function()
-                if state.Type == "Parallel" then spawn_parallel(state, data, scope) else spawn_map(state, data, scope) end
-                return finish_fanout(state, data, scope, mock_result)
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection) else spawn_map(state, data, scope, inspection) end
+                return finish_fanout(state, data, scope, mock_result, inspection)
             end)
             if not ok then
                 local code, cause = failure_of(result)
-                return { status = "FAILED", error = code, cause = cause }
+                return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
             end
-            return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next }
+            return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next, inspectionData = inspection }
         end
         local ok, result = pcall(function()
             local effective = apply_input_path(state, data, scope.context)
+            if inspection then inspection.afterInputPath = roto.json_encode(effective) end
             local context = scope.context
             if type(state.Resource) == "string" and waits_for_token(state.Resource) then
                 context = table.clone(context)
                 if not is_object(context.Task) or context.Task.Token == nil then
-                    local task = if is_object(context.Task) then table.clone(context.Task) else {}
+                    local task: any = if is_object(context.Task) then table.clone(context.Task) else {}
                     task.Token = roto.uuid() .. roto.uuid()
                     context.Task = task
                 end
             end
-            if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) end
-            return finish_task(state, data, { data = data, context = context }, mock_result)
+            local parameters = if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) else effective
+            if inspection then inspection.afterParameters = roto.json_encode(parameters) end
+            return finish_task(state, data, { data = data, context = context }, mock_result, inspection)
         end)
         if not ok then
             local code, cause = failure_of(result)
-            return { status = "FAILED", error = code, cause = cause }
+            return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
         end
-        return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next }
+        return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next, inspectionData = inspection }
     end
     local previous = active
     active = { ctx = ctx, db = db }
