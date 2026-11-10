@@ -52,6 +52,15 @@ test.case("parallel and map execute branches", function()
     test.equal(output.mapped, {{n = 2}, {n = 4}})
 end)
 
+test.case("empty map execution returns a JSON array", function()
+    local arn = machine("empty-map", {StartAt = "Each", States = {
+        Each = {Type = "Map", ItemProcessor = {StartAt = "Done", States = {Done = {Type = "Succeed"}}}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = arn, input = "[]"})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.output, "[]")
+end)
+
 test.case("retry and catch record execution history", function()
     local arn = machine("recover", {StartAt = "Boom", States = {
         Boom = {Type = "Task", Resource = "arn:aws:lambda:us-east-1:123456789012:function:missing",

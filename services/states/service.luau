@@ -2032,7 +2032,11 @@ type MapItem = { Index: number, Value: any, Source: string }
 type Spawn = { key: { any }, data: any, map: MapItem? }
 
 local function finish_fanout(state: Doc, data: any, scope: Scope, results: any, inspection: Doc?): any
-    local result: any = if is_array(results) then roto.array(results) else results
+    -- Child execution results are collected in ordinary Luau tables, including an
+    -- empty table for zero iterations. Only an exported Map mock is an object.
+    local exported = state.Type == "Map" and is_object(state.ResultWriter)
+        and state.ResultWriter.Resource ~= nil and not is_array(results)
+    local result: any = if exported then results else roto.array(results)
     if inspection then inspection.result = roto.json_encode(result) end
     if state.ResultSelector ~= nil then
         result = apply_template(state.ResultSelector, { data = result, context = scope.context })
