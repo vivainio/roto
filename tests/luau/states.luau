@@ -307,3 +307,33 @@ test.case("TestState ignores unknown fields for operations without modeled outpu
         end)
     end
 end)
+
+test.case("TestState uses supplied context for mocked tasks", function()
+    local state = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+        Parameters = { ["MessageBody.$"] = "$$.Task.Token" },
+        ResultSelector = { ["id.$"] = "$$.Execution.Id", ["name.$"] = "$$.State.Name",
+            ["token.$"] = "$$.Task.Token", ["value.$"] = "$.value" }, End = true}
+    local definition = roto.json_encode(state)
+    local result = test.call("states", "TestState", {definition = definition,
+        context = '{"Execution":{"Id":"custom-execution"},"State":{"Name":"custom-state"},"Task":{"Token":"custom-token"}}',
+        mock = {result = '{"value":7}', fieldValidationMode = "NONE"}})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output), {id = "custom-execution", name = "custom-state", token = "custom-token", value = 7})
+    local failed = test.call("states", "TestState", {definition = definition,
+        context = '{"Task":{"Token":"custom-token"}}', mock = {errorOutput = {error = "Oops"}}})
+    test.equal(failed.error, "Oops")
+    local map = {Type = "Map", ItemsPath = "$.items", ItemSelector = { ["id.$"] = "$$.Execution.Id" },
+        ItemProcessor = {StartAt = "Done", States = {Done = {Type = "Succeed"}}},
+        ResultSelector = { ["id.$"] = "$$.Execution.Id", ["first.$"] = "$[0]" }, End = true}
+    local mapped = test.call("states", "TestState", {definition = roto.json_encode(map), input = '{"items":[1]}',
+        context = '{"Execution":{"Id":"map-execution"}}', mock = {result = '[3]'}})
+    test.equal(roto.json_decode(mapped.output), {id = "map-execution", first = 3})
+    for _, context in {"[1]", "null", "not-json"} do
+        test.expect_error("ValidationException", function()
+            return test.try_call("states", "TestState", {definition = definition, context = context, mock = {result = '{}', fieldValidationMode = "NONE"}})
+        end)
+    end
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = definition, context = '{}'})
+    end)
+end)

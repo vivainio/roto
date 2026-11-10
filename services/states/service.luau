@@ -3296,6 +3296,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
     if not is_object(state) or not STATE_TYPES[state.Type] then
         roto.error("ValidationException", "Invalid State Machine Definition: the state needs a known Type")
     end
+    if input.context ~= nil and input.mock == nil then roto.error("ValidationException", "context requires a mock") end
     if input.mock == nil and state.Type == "Task" and type(state.Resource) == "string" and waits_for_token(state.Resource) then
         return { status = "FAILED", error = "States.Runtime", cause = "TestState cannot wait for callback, activity, or synchronous Tasks" }
     end
@@ -3307,7 +3308,28 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         stateMachineArn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":stateMachine:TestState",
         name = "TestState", roleArn = input.roleArn, startDate = os.time(),
     }
-    local scope: Scope = { data = data, context = context_object(fake, "TestState", data) }
+    local context = context_object(fake, "TestState", data)
+    if input.context ~= nil then
+        if type(input.context) ~= "string" or #input.context > MAX_PAYLOAD_BYTES then
+            roto.error("ValidationException", "context must be a JSON object no larger than 256 KiB")
+        end
+        local valid, supplied = pcall(roto.json_decode, input.context)
+        if not valid or not is_object(supplied) then
+            roto.error("ValidationException", "context must be a JSON object")
+        end
+        -- Keep generated defaults for omitted context fields, while allowing callers to
+        -- replace individual Execution, State, StateMachine, Task, and Map values.
+        for key, value in pairs(supplied) do
+            if is_object(value) and is_object(context[key]) then
+                local merged = table.clone(context[key])
+                for field, item in pairs(value) do merged[field] = item end
+                context[key] = merged
+            else
+                context[key] = value
+            end
+        end
+    end
+    local scope: Scope = { data = data, context = context }
     if input.mock ~= nil then
         local mock = roto.object(input.mock, "ValidationException", "mock")
         if state.Type ~= "Task" and state.Type ~= "Parallel" and state.Type ~= "Map" then
@@ -3344,7 +3366,11 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 local context = scope.context
                 if type(state.Resource) == "string" and waits_for_token(state.Resource) then
                     context = table.clone(context)
-                    context.Task = { Token = roto.uuid() .. roto.uuid() }
+                    if not is_object(context.Task) or context.Task.Token == nil then
+                        local task = if is_object(context.Task) then table.clone(context.Task) else {}
+                        task.Token = roto.uuid() .. roto.uuid()
+                        context.Task = task
+                    end
                 end
                 if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) end
             end)
@@ -3426,7 +3452,11 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             local context = scope.context
             if type(state.Resource) == "string" and waits_for_token(state.Resource) then
                 context = table.clone(context)
-                context.Task = { Token = roto.uuid() .. roto.uuid() }
+                if not is_object(context.Task) or context.Task.Token == nil then
+                    local task = if is_object(context.Task) then table.clone(context.Task) else {}
+                    task.Token = roto.uuid() .. roto.uuid()
+                    context.Task = task
+                end
             end
             if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) end
             return finish_task(state, data, { data = data, context = context }, mock_result)
