@@ -2,7 +2,23 @@
 use serde_json::Value;
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+/// Bound the cache because models supplied by service bundles can contain arbitrary patterns.
+fn matches_pattern(pattern: &str, value: &str) -> Result<bool, String> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Result<regex::Regex, String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(compiled) = cache.lock().unwrap().get(pattern).cloned() {
+        return compiled.map(|re| re.is_match(value));
+    }
+    let compiled = regex::Regex::new(pattern).map_err(|_| "unsupported model pattern".to_owned());
+    let mut cache = cache.lock().unwrap();
+    if cache.len() < 256 {
+        cache.insert(pattern.to_owned(), compiled.clone());
+    }
+    drop(cache);
+    compiled.map(|re| re.is_match(value))
+}
 
 /// Validate an operation result using the complete vendored model, not the pruned editor model.
 pub(crate) fn validate_operation(
@@ -175,6 +191,15 @@ pub(crate) fn validate(
         {
             return Err(format!("{path}: value is not in the modeled enum"));
         }
+        if let (Some(text), Some(pattern)) = (value.as_str(), shape["pattern"].as_str()) {
+            match matches_pattern(pattern, text) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(format!("{path}: value does not match the modeled pattern"));
+                }
+                Err(error) => return Err(format!("{path}: {error}; use fieldValidationMode NONE")),
+            }
+        }
         if let Some(object) = value.as_object() {
             if kind == "structure" {
                 if strict && let Some(required) = shape["required"].as_array() {
@@ -293,6 +318,23 @@ mod tests {
                 true
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn validates_patterns_without_implicitly_anchoring() {
+        let model = json!({"shapes": {
+            "Value": {"type":"string", "pattern":"[a-z]+"},
+            "Anchored": {"type":"string", "pattern":"^[a-z]+$"},
+            "Unsupported": {"type":"string", "pattern":"^(?!x).+"}
+        }});
+        assert!(validate(&model, &json!({"shape":"Value"}), &json!("!abc!"), true).is_ok());
+        assert!(validate(&model, &json!({"shape":"Value"}), &json!("!!!"), false).is_err());
+        assert!(validate(&model, &json!({"shape":"Anchored"}), &json!("!abc!"), true).is_err());
+        assert!(
+            validate(&model, &json!({"shape":"Unsupported"}), &json!("abc"), true)
+                .unwrap_err()
+                .contains("unsupported model pattern")
         );
     }
 }

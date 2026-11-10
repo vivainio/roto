@@ -282,3 +282,15 @@ test.case("TestState validates nested execution response mocks", function()
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request(".sync", decoded)) end)
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request("", '{}')) end)
 end)
+
+test.case("TestState checks modeled patterns in task mocks", function()
+    local definition = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::aws-sdk:dynamodb:listTables", End = true})
+    local function request(result: string, mode: string)
+        return {definition = definition, mock = {result = result, fieldValidationMode = mode}}
+    end
+    test.equal(test.call("states", "TestState", request('{"LastEvaluatedTableName":"abc"}', "STRICT")).status, "SUCCEEDED")
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", request('{"LastEvaluatedTableName":"!!!"}', "PRESENT"))
+    end)
+    test.equal(test.call("states", "TestState", request('{"LastEvaluatedTableName":"!!!"}', "NONE")).status, "SUCCEEDED")
+end)
