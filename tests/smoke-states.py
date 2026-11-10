@@ -805,6 +805,19 @@ def check_update_tags_and_test_state(s):
                                   mock={"result": '[1,2]'})
     assert mock_result["status"] == "SUCCEEDED" and json.loads(mock_result["output"]) == {"keep": True, "results": [1, 2]}, mock_result
     assert code(lambda: s.sf.test_state(definition=json.dumps(mocked_parallel), mock={"result": '[1]'})) == "ValidationException"
+    distributed = {"Type": "Map", "ItemsPath": "$.items", "ItemProcessor": {
+        "ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": "STANDARD"},
+        "StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}},
+        "ToleratedFailureCount": 1, "ResultWriter": {"Resource": "arn:aws:states:::s3:putObject",
+        "Parameters": {"Bucket": "unused"}}, "End": True}
+    args = {"definition": json.dumps(distributed), "input": '{"items":[1,2]}',
+            "mock": {"result": '{"MapRunArn":"test","ResultWriterDetails":{"Bucket":"b","Key":"k"}}'},
+            "stateConfiguration": {"mapIterationFailureCount": 1}, "inspectionLevel": "DEBUG"}
+    result = s.sf.test_state(**args)
+    assert result["status"] == "SUCCEEDED" and json.loads(result["output"])["ResultWriterDetails"]["Key"] == "k", result
+    args["stateConfiguration"]["mapIterationFailureCount"] = 2
+    result = s.sf.test_state(**args)
+    assert result["status"] == "FAILED" and result["error"] == "States.ExceedToleratedFailureThreshold", result
     mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
     mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
                              mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})

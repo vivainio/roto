@@ -413,3 +413,40 @@ test.case("TestState inspects unmocked pass and task transformations", function(
     test.equal(roto.json_decode(task_result.inspectionData.result).QueueUrl, queue)
     test.equal(roto.json_decode(task_result.output).QueueUrl, queue)
 end)
+
+test.case("TestState mocks Distributed Map exports and failure thresholds", function()
+    local map: any = {Type = "Map", ItemsPath = "$.items", ItemProcessor = {
+        ProcessorConfig = {Mode = "DISTRIBUTED", ExecutionType = "STANDARD"},
+        StartAt = "Never", States = {Never = {Type = "Fail", Error = "must not run"}}},
+        ToleratedFailureCountPath = "$.allowed", ToleratedFailurePercentage = 50,
+        ResultWriter = {Resource = "arn:aws:states:::s3:putObject", Parameters = {Bucket = "unused"}},
+        ResultPath = "$.export", End = true}
+    local definition = roto.json_encode(map)
+    local request = {definition = definition, input = '{"items":[1,2,3,4],"allowed":2}',
+        mock = {result = '{"MapRunArn":"arn:map","ResultWriterDetails":{"Bucket":"b","Key":"manifest"}}'},
+        stateConfiguration = {mapIterationFailureCount = 2}, inspectionLevel = "DEBUG"}
+    local success = test.call("states", "TestState", request)
+    test.equal(success.status, "SUCCEEDED")
+    test.equal(roto.json_decode(success.output).export.ResultWriterDetails.Key, "manifest")
+    test.equal(success.inspectionData.toleratedFailureCount, 2)
+    test.equal(success.inspectionData.toleratedFailurePercentage, 50)
+    request.stateConfiguration.mapIterationFailureCount = 3
+    local failed = test.call("states", "TestState", request)
+    test.equal(failed.status, "FAILED")
+    test.equal(failed.error, "States.ExceedToleratedFailureThreshold")
+    map.Catch = {{ErrorEquals = {"States.ExceedToleratedFailureThreshold"}, ResultPath = "$.error", Next = "Recover"}}
+    request.definition = roto.json_encode(map)
+    local caught = test.call("states", "TestState", request)
+    test.equal(caught.status, "CAUGHT_ERROR")
+    test.equal(caught.nextState, "Recover")
+    request.stateConfiguration.mapIterationFailureCount = 5
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    request.stateConfiguration.mapIterationFailureCount = 0
+    request.mock.result = '[]'
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    map.ResultWriter = nil
+    request.definition = roto.json_encode(map)
+    local array = test.call("states", "TestState", request)
+    test.equal(array.status, "SUCCEEDED")
+    test.equal(roto.json_decode(array.output).export, {})
+end)

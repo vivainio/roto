@@ -2031,8 +2031,8 @@ end
 type MapItem = { Index: number, Value: any, Source: string }
 type Spawn = { key: { any }, data: any, map: MapItem? }
 
-local function finish_fanout(state: Doc, data: any, scope: Scope, results: { any }, inspection: Doc?): any
-    local result: any = roto.array(results)
+local function finish_fanout(state: Doc, data: any, scope: Scope, results: any, inspection: Doc?): any
+    local result: any = if is_array(results) then roto.array(results) else results
     if inspection then inspection.result = roto.json_encode(result) end
     if state.ResultSelector ~= nil then
         result = apply_template(state.ResultSelector, { data = result, context = scope.context })
@@ -3404,6 +3404,48 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         if mock.result ~= nil and mock.errorOutput ~= nil then
             roto.error("ValidationException", "mock.result and mock.errorOutput are mutually exclusive")
         end
+        local config = if input.stateConfiguration == nil then {} else roto.object(input.stateConfiguration, "ValidationException", "stateConfiguration")
+        local distributed = state.Type == "Map" and is_object(state.ItemProcessor)
+            and is_object(state.ItemProcessor.ProcessorConfig) and state.ItemProcessor.ProcessorConfig.Mode == "DISTRIBUTED"
+        if config.mapItemReaderData ~= nil then
+            roto.error("ValidationException", "mapItemReaderData is not supported; provide the read items in input")
+        end
+        if distributed and state.ItemBatcher ~= nil then
+            roto.error("ValidationException", "TestState Distributed Map ItemBatcher is not supported")
+        end
+        if config.mapIterationFailureCount ~= nil then
+            local count = config.mapIterationFailureCount
+            if not distributed or type(count) ~= "number" or count < 0 or count % 1 ~= 0 then
+                roto.error("ValidationException", "mapIterationFailureCount requires a Distributed Map and a nonnegative integer")
+            end
+            local ok, spawns = pcall(spawn_map, state, data, scope, inspection)
+            if not ok then
+                local code, cause = failure_of(spawns)
+                return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
+            end
+            if count > #spawns then roto.error("ValidationException", "mapIterationFailureCount exceeds the item count") end
+            local effective = apply_input_path(state, data, scope.context)
+            local inner = { data = effective, context = scope.context }
+            local limit_count = if state.ToleratedFailureCountPath ~= nil then resolve(state.ToleratedFailureCountPath, inner) else state.ToleratedFailureCount
+            local limit_percent = if state.ToleratedFailurePercentagePath ~= nil then resolve(state.ToleratedFailurePercentagePath, inner) else state.ToleratedFailurePercentage
+            if limit_count ~= nil and (type(limit_count) ~= "number" or limit_count < 0 or limit_count % 1 ~= 0) then
+                roto.error("ValidationException", "ToleratedFailureCount must resolve to a nonnegative integer")
+            end
+            if limit_percent ~= nil and (type(limit_percent) ~= "number" or limit_percent < 0 or limit_percent > 100) then
+                roto.error("ValidationException", "ToleratedFailurePercentage must resolve to a number between 0 and 100")
+            end
+            if inspection then inspection.toleratedFailureCount = limit_count; inspection.toleratedFailurePercentage = limit_percent end
+            local exceeded = (limit_count ~= nil and count > limit_count)
+                or (limit_percent ~= nil and #spawns > 0 and count * 100 / #spawns > limit_percent)
+                or (limit_count == nil and limit_percent == nil and count > 0)
+            if exceeded and mock.result ~= nil then
+                if type(mock.result) ~= "string" or #mock.result > MAX_PAYLOAD_BYTES or not pcall(roto.json_decode, mock.result) then
+                    roto.error("ValidationException", "mock.result must be valid JSON no larger than 256 KiB")
+                end
+                mock.result = nil
+                mock.errorOutput = { error = "States.ExceedToleratedFailureThreshold", cause = "The Map state exceeded its tolerated failure threshold" }
+            end
+        end
         if mock.errorOutput ~= nil then
             local error_output = roto.object(mock.errorOutput, "ValidationException", "mock.errorOutput")
             local error_length = if type(error_output.error) == "string" then utf8.len(error_output.error) else nil
@@ -3412,9 +3454,8 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 or (error_output.cause ~= nil and (cause_length == nil or cause_length > 32768)) then
                 roto.error("ValidationException", "mock.errorOutput requires an error of at most 256 characters and an optional cause of at most 32768 characters")
             end
-            local config = if input.stateConfiguration == nil then {} else roto.object(input.stateConfiguration, "ValidationException", "stateConfiguration")
             for key in pairs(config) do
-                if key ~= "retrierRetryCount" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
+                if key ~= "retrierRetryCount" and key ~= "mapIterationFailureCount" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
             end
             local used = config.retrierRetryCount or 0
             if type(used) ~= "number" or used < 0 or used % 1 ~= 0 then
@@ -3494,8 +3535,12 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             end
         end
         if state.Type == "Parallel" or state.Type == "Map" then
-            if not is_array(mock_result) then
+            local exported = distributed and is_object(state.ResultWriter) and state.ResultWriter.Resource ~= nil
+            if not is_array(mock_result) and not (exported and is_object(mock_result)) then
                 roto.error("ValidationException", "mock.result must be a JSON array for an inline Map or Parallel state")
+            end
+            if exported and not is_object(mock_result) then
+                roto.error("ValidationException", "mock.result must be a JSON object for an exporting ResultWriter")
             end
             if state.Type == "Parallel" and (not is_array(state.Branches) or #mock_result ~= #state.Branches) then
                 roto.error("ValidationException", "mock.result must contain one element for each Parallel branch")
