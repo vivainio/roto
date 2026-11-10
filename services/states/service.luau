@@ -1527,8 +1527,9 @@ end
 
 type Outcome = { output: any, next: string?, wait: number?, error: string?, cause: string?, waiting: string?, queued: any, spawn: { Spawn }?, maxConcurrency: number? }
 
-local function step_pass(state: Doc, data: any, scope: Scope): any
+local function step_pass(state: Doc, data: any, scope: Scope, inspection: Doc?): any
     local effective = apply_input_path(state, data, scope.context)
+    if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local result: any
     if state.Result ~= nil then
         result = copy(state.Result)
@@ -1537,7 +1538,14 @@ local function step_pass(state: Doc, data: any, scope: Scope): any
     else
         result = effective
     end
-    return apply_output_path(state, apply_result_path(state, data, result), scope.context)
+    if inspection then
+        inspection.afterParameters = roto.json_encode(if state.Parameters ~= nil then result else effective)
+        inspection.result = roto.json_encode(result)
+        inspection.afterResultSelector = roto.json_encode(result)
+    end
+    local merged = apply_result_path(state, data, result)
+    if inspection then inspection.afterResultPath = roto.json_encode(merged) end
+    return apply_output_path(state, merged, scope.context)
 end
 
 local function step_wait(state: Doc, data: any, scope: Scope): (any, number)
@@ -1816,8 +1824,9 @@ end
 
 -- Returns the state's output, or (input, token) when the task is a callback (`.waitForTaskToken`)
 -- that now waits for SendTaskSuccess/SendTaskFailure.
-local function step_task(state: Doc, data: any, scope: Scope, history: History, execution_arn: string): (any, string?, any)
+local function step_task(state: Doc, data: any, scope: Scope, history: History, execution_arn: string, inspection: Doc?): (any, string?, any)
     local effective = apply_input_path(state, data, scope.context)
+    if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local resource: string = state.Resource
     local token: string? = nil
     local context = scope.context
@@ -1843,6 +1852,7 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
     end
     local parameters: any = effective
     if state.Parameters ~= nil then parameters = apply_template(state.Parameters, inner) end
+    if inspection then inspection.afterParameters = roto.json_encode(parameters) end
     if is_activity(resource) then
         -- The worker fetches the input with GetActivityTask; nothing is called here.
         emit(history, "ActivityScheduled", "activityScheduledEventDetails", {
@@ -1890,7 +1900,7 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
         output = roto.json_encode(result), lambdaOutput = if string.find(resource, ":states:::lambda:invoke", 1, true) and type(result) == "table" then roto.json_encode(result.Payload) else roto.json_encode(result),
         outputDetails = { truncated = false },
     })
-    return finish_task(state, data, scope, result), nil, nil
+    return finish_task(state, data, scope, result, inspection), nil, nil
 end
 
 local function step_choice(name: string, state: Doc, data: any, scope: Scope): (any, string)
@@ -2076,18 +2086,18 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?):
 end
 
 -- One state's effect on its input, without touching storage.
-local function evaluate_state(name: string, state: Doc, data: any, scope: Scope, history: History, execution_arn: string): Outcome
+local function evaluate_state(name: string, state: Doc, data: any, scope: Scope, history: History, execution_arn: string, inspection: Doc?): Outcome
     local kind: string = state.Type
     if kind == "Parallel" then
-        return { output = data, spawn = spawn_parallel(state, data, scope) }
+        return { output = data, spawn = spawn_parallel(state, data, scope, inspection) }
     elseif kind == "Map" then
-        local spawns, max_concurrency = spawn_map(state, data, scope)
+        local spawns, max_concurrency = spawn_map(state, data, scope, inspection)
         return { output = data, spawn = spawns, maxConcurrency = max_concurrency }
     elseif kind == "Task" then
-        local output, token, queued = step_task(state, data, scope, history, execution_arn)
+        local output, token, queued = step_task(state, data, scope, history, execution_arn, inspection)
         return { output = output, next = state.Next, waiting = token, queued = queued }
     elseif kind == "Pass" then
-        return { output = step_pass(state, data, scope), next = state.Next }
+        return { output = step_pass(state, data, scope, inspection), next = state.Next }
     elseif kind == "Wait" then
         local output, seconds = step_wait(state, data, scope)
         return { output = output, next = state.Next, wait = seconds }
@@ -3522,13 +3532,14 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         end
         return { status = "SUCCEEDED", output = roto.json_encode(result), nextState = state.Next, inspectionData = inspection }
     end
+    local inspection: Doc? = if input.inspectionLevel == "DEBUG" or input.inspectionLevel == "TRACE" then { input = payload } else nil
     local previous = active
     active = { ctx = ctx, db = db }
-    local ok, outcome = pcall(evaluate_state, selected_name, state, data, scope, { events = {}, count = 0 }, fake.executionArn)
+    local ok, outcome = pcall(evaluate_state, selected_name, state, data, scope, { events = {}, count = 0 }, fake.executionArn, inspection)
     active = previous
     if not ok then
         local code, cause = failure_of(outcome)
-        return { status = "FAILED", error = code, cause = cause }
+        return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
     end
     local result: Outcome = outcome :: Outcome
     if result.spawn ~= nil then
@@ -3543,18 +3554,18 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             active = previous
             if not branch_ok then
                 local code, cause = failure_of(value)
-                return { status = "FAILED", error = code, cause = cause }
+                return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
             end
             table.insert(result_values, value)
         end
-        result.output = finish_fanout(state, data, scope, result_values)
+        result.output = finish_fanout(state, data, scope, result_values, inspection)
     elseif result.waiting ~= nil then
         return { status = "FAILED", error = "States.Runtime", cause = "TestState cannot wait for callback or activity Tasks" }
     end
     if state.Type == "Fail" then
-        return { status = "FAILED", error = result.error, cause = result.cause }
+        return { status = "FAILED", error = result.error, cause = result.cause, inspectionData = inspection }
     end
-    return { status = "SUCCEEDED", output = roto.json_encode(result.output), nextState = result.next }
+    return { status = "SUCCEEDED", output = roto.json_encode(result.output), nextState = result.next, inspectionData = inspection }
 end
 
 function M.GetExecutionHistory(ctx: Ctx, input: any, db: Db)

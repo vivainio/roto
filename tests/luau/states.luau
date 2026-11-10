@@ -395,3 +395,21 @@ test.case("TestState inspects mocked task and map transformations", function()
     test.equal(roto.json_decode(mapped.inspectionData.afterItemSelector), {{value = 1}, {value = 2}})
     test.equal(roto.json_decode(mapped.inspectionData.result), {3, 4})
 end)
+
+test.case("TestState inspects unmocked pass and task transformations", function()
+    local pass = {Type = "Pass", InputPath = "$.payload", Parameters = { ["n.$"] = "$.number" },
+        ResultPath = "$.result", OutputPath = "$.result", End = true}
+    local response = test.call("states", "TestState", {definition = roto.json_encode(pass),
+        input = '{"payload":{"number":2},"keep":true}', inspectionLevel = "DEBUG"})
+    test.equal(roto.json_decode(response.inspectionData.afterInputPath), {number = 2})
+    test.equal(roto.json_decode(response.inspectionData.afterParameters), {n = 2})
+    test.equal(roto.json_decode(response.inspectionData.afterResultPath), {payload = {number = 2}, keep = true, result = {n = 2}})
+    test.equal(roto.json_decode(response.output), {n = 2})
+    local queue = test.call("sqs", "CreateQueue", {QueueName = "inspect"}).QueueUrl
+    local task = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sqs:getQueueUrl",
+        Parameters = {QueueName = "inspect"}, End = true}
+    local task_result = test.call("states", "TestState", {definition = roto.json_encode(task), inspectionLevel = "TRACE"})
+    test.equal(roto.json_decode(task_result.inspectionData.afterParameters), {QueueName = "inspect"})
+    test.equal(roto.json_decode(task_result.inspectionData.result).QueueUrl, queue)
+    test.equal(roto.json_decode(task_result.output).QueueUrl, queue)
+end)
