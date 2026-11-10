@@ -788,8 +788,12 @@ def check_update_tags_and_test_state(s):
                    "Parameters": {"StateMachineArn": machine}, "End": True}
     assert test_state(synchronous)["status"] == "FAILED"
     assert len(s.sf.list_executions(stateMachineArn=machine)["executions"]) == before
-    assert code(lambda: s.sf.test_state(definition=json.dumps(callback), roleArn=ROLE,
-                                       mock={"result": "{}"})) == "ValidationException"
+    assert s.sf.test_state(definition=json.dumps(callback), roleArn=ROLE,
+                           mock={"result": "{}"})["status"] == "SUCCEEDED"
+    validation = {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sqs:changeMessageVisibilityBatch", "End": True}
+    assert code(lambda: s.sf.test_state(definition=json.dumps(validation), mock={"result": "{}"})) == "ValidationException"
+    assert s.sf.test_state(definition=json.dumps(validation), mock={"result": "{}", "fieldValidationMode": "PRESENT"})["status"] == "SUCCEEDED"
+    assert code(lambda: s.sf.test_state(definition=json.dumps(validation), mock={"result": '{"Successful":"bad"}', "fieldValidationMode": "PRESENT"})) == "ValidationException"
     mocked_parallel = {"Type": "Parallel", "Branches": [
         {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}},
         {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}}],

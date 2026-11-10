@@ -3378,14 +3378,25 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             end
             return { status = "FAILED", error = code, cause = cause }
         end
-        if state.Type == "Task" and mock.fieldValidationMode ~= "NONE" then
-            roto.error("ValidationException", "Only fieldValidationMode NONE is supported for TestState mocks")
-        end
         if type(mock.result) ~= "string" or #mock.result > MAX_PAYLOAD_BYTES then
             roto.error("ValidationException", "mock.result must be a JSON string no larger than 256 KiB")
         end
         local decoded, mock_result = pcall(roto.json_decode, mock.result)
         if not decoded then roto.error("ValidationException", "mock.result must be valid JSON") end
+        if state.Type == "Task" and mock.fieldValidationMode ~= "NONE" then
+            local target_ok, service, operation = pcall(task_target, state.Resource)
+            if not target_ok then roto.error("ValidationException", "Cannot resolve the mocked Task resource") end
+            if service == "activity" then
+                roto.error("ValidationException", "Response model validation is unavailable for activity tasks; use fieldValidationMode NONE")
+            end
+            -- Direct Lambda ARNs return the function's arbitrary JSON payload rather than
+            -- the Invoke response envelope, so there is no service response shape to check.
+            if not (service == "lambda" and operation ~= "") then
+                if service == "lambda" then operation = "Invoke" end
+                local validation_error = roto.validate_mock_result(service, operation, mock_result, mock.fieldValidationMode ~= "PRESENT")
+                if validation_error ~= nil then roto.error("ValidationException", validation_error) end
+            end
+        end
         if state.Type == "Parallel" or state.Type == "Map" then
             if not is_array(mock_result) then
                 roto.error("ValidationException", "mock.result must be a JSON array for an inline Map or Parallel state")

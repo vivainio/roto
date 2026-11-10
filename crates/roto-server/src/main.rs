@@ -7,6 +7,7 @@ mod lua_api;
 mod lua_service;
 mod lua_wire;
 mod luau_stubs;
+mod mock_validation;
 mod prune;
 mod setup;
 mod supported;

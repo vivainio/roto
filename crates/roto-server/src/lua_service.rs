@@ -799,6 +799,20 @@ impl LuaService {
         .map_err(lua_error)?;
         api.set("null", lua.null()).map_err(lua_error)?;
         api.set(
+            "validate_mock_result",
+            lua.create_function(
+                |lua, (service, operation, value, strict): (String, String, LuaValue, bool)| {
+                    let value: Value = lua.from_value(value)?;
+                    Ok(crate::mock_validation::validate_operation(
+                        &service, &operation, &value, strict,
+                    )
+                    .err())
+                },
+            )
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        api.set(
             "id",
             lua.create_function(|_, prefix: String| {
                 Ok(format!(

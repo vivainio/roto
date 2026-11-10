@@ -56,6 +56,7 @@ declare roto: {
 	-- Compact JSON text of a value; whole numbers print as integers.
 	json_encode: (value: any) -> string,
 	json_decode: (text: string, code: string?) -> any,
+	validate_mock_result: (service: string, operation: string, value: any, strict: boolean) -> string?,
 	-- Marks a table as a JSON array, so an empty one encodes as `[]` rather than `{}`.
 	array: (items: { any }?) -> { any },
 

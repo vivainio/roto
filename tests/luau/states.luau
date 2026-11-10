@@ -179,3 +179,63 @@ test.case("TestState handles mocked Parallel errors with retry and catch", funct
     test.equal(caught.nextState, "Recover")
     test.equal(roto.json_decode(caught.output), {x = 1, caught = {Error = "Oops", Cause = "bad"}})
 end)
+
+test.case("TestState mock errors respect retry limits and catch ordering", function()
+    local state = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage",
+        Retry = {{ErrorEquals = {"Transient"}, IntervalSeconds = 4, BackoffRate = 2, MaxAttempts = 3, MaxDelaySeconds = 5}},
+        Catch = {{ErrorEquals = {"Transient"}, ResultPath = "$.failure", Next = "Recover"},
+            {ErrorEquals = {"States.ALL"}, Next = "Fallback"}}, End = true}
+    local function run(count)
+        return test.call("states", "TestState", {definition = roto.json_encode(state), input = '{"keep":true}',
+            mock = {errorOutput = {error = "Transient", cause = "retry me"}},
+            stateConfiguration = {retrierRetryCount = count}, inspectionLevel = "DEBUG"})
+    end
+    local first, second, caught = run(0), run(1), run(3)
+    test.equal(first.status, "RETRIABLE")
+    test.equal(first.inspectionData.errorDetails.retryBackoffIntervalSeconds, 4)
+    test.equal(second.inspectionData.errorDetails.retryBackoffIntervalSeconds, 5)
+    test.equal(caught.status, "CAUGHT_ERROR")
+    test.equal(caught.nextState, "Recover")
+    test.equal(caught.inspectionData.errorDetails.catchIndex, 0)
+    test.equal(roto.json_decode(caught.output), {keep = true, failure = {Error = "Transient", Cause = "retry me"}})
+end)
+
+test.case("TestState States.TaskFailed does not catch timeout", function()
+    local state = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage",
+        Catch = {{ErrorEquals = {"States.TaskFailed"}, Next = "Recover"}}, End = true}
+    local result = test.call("states", "TestState", {definition = roto.json_encode(state),
+        mock = {errorOutput = {error = "States.Timeout", cause = "timeout"}}})
+    test.equal(result.status, "FAILED")
+    test.equal(result.error, "States.Timeout")
+end)
+
+test.case("TestState validates Task mock results with STRICT and PRESENT", function()
+    local state = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sqs:changeMessageVisibilityBatch", End = true}
+    local definition = roto.json_encode(state)
+    local function request(result, mode)
+        return {definition = definition, mock = {result = result, fieldValidationMode = mode}}
+    end
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{}', nil)) end)
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{}', 'STRICT')) end)
+    local present = test.call("states", "TestState", request('{}', 'PRESENT'))
+    test.equal(present.status, "SUCCEEDED")
+    local valid = test.call("states", "TestState", request('{"Successful":[],"Failed":[],"Extra":true}', 'STRICT'))
+    test.equal(valid.status, "SUCCEEDED")
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{"Successful":"wrong"}', 'PRESENT')) end)
+    local unchecked = test.call("states", "TestState", request('{"Successful":"wrong"}', 'NONE'))
+    test.equal(unchecked.status, "SUCCEEDED")
+end)
+
+test.case("TestState accepts decoded optimized Lambda payloads", function()
+    local definition = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::lambda:invoke", End = true})
+    local result = test.call("states", "TestState", {definition = definition,
+        mock = {result = '{"StatusCode":200,"Payload":{"ok":true}}'}})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output).Payload, {ok = true})
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = definition, mock = {result = '{"StatusCode":"bad"}'}})
+    end)
+    local direct = roto.json_encode({Type = "Task", Resource = "arn:aws:lambda:us-east-1:123456789012:function:demo", End = true})
+    local raw = test.call("states", "TestState", {definition = direct, mock = {result = '42'}})
+    test.equal(roto.json_decode(raw.output), 42)
+end)

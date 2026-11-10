@@ -58,6 +58,12 @@ fn main() {
         let mut model: Value = serde_json::from_str(&std::fs::read_to_string(&source).unwrap())
             .unwrap_or_else(|e| panic!("{}: {e}", source.display()));
         strip(&mut model);
+        // TestState validation needs all response shapes, before editor-operation pruning.
+        std::fs::write(
+            out.join(format!("{name}-mock.json")),
+            serde_json::to_string(&model).unwrap(),
+        )
+        .unwrap();
         // eventbridge's `roto.aws` name is `events`. A list prunes types-only models here; a
         // service typed in full ("implemented") is pruned by the generator, which can see
         // what the service implements.
