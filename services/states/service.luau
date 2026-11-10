@@ -3393,6 +3393,10 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             -- the Invoke response envelope, so there is no service response shape to check.
             if not (service == "lambda" and operation ~= "") then
                 if service == "lambda" then operation = "Invoke" end
+                -- The synchronous ECS integration returns the final DescribeTasks response.
+                if service == "ecs" and operation == "RunTask" and sync_mode(state.Resource) ~= nil then
+                    operation = "DescribeTasks"
+                end
                 local validation_error = roto.validate_mock_result(service, operation, mock_result, mock.fieldValidationMode ~= "PRESENT")
                 if validation_error ~= nil then roto.error("ValidationException", validation_error) end
             end

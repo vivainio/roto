@@ -250,3 +250,20 @@ test.case("TestState validates mocked responses from modeled bundle services", f
     test.equal(test.call("states", "TestState", request('{"AutoScalingGroups":[]}', 'STRICT')).status, "SUCCEEDED")
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{"AutoScalingGroups":"wrong"}', 'PRESENT')) end)
 end)
+
+test.case("TestState validates ECS task response mocks", function()
+    for _, resource in {"arn:aws:states:::ecs:runTask", "arn:aws:states:::ecs:runTask.sync"} do
+        local definition = roto.json_encode({Type = "Task", Resource = resource, End = true})
+        local function request(result)
+            return {definition = definition, mock = {result = result}}
+        end
+        local valid = test.call("states", "TestState", request('{"Tasks":[{"TaskArn":"arn:task","Containers":[{"Name":"app"}]}],"Extra":true}'))
+        test.equal(valid.status, "SUCCEEDED")
+        test.expect_error("ValidationException", function()
+            return test.try_call("states", "TestState", request('{"Tasks":[{"TaskArn":12}]}'))
+        end)
+        test.expect_error("ValidationException", function()
+            return test.try_call("states", "TestState", request('{"Tasks":"bad"}'))
+        end)
+    end
+end)

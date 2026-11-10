@@ -23,6 +23,10 @@ pub(crate) fn validate_operation(
                 include_str!(concat!(env!("OUT_DIR"), "/dynamodb-mock.json")),
             ),
             (
+                "ecs",
+                include_str!("../../../models/ecs/response-model.json"),
+            ),
+            (
                 "events",
                 include_str!(concat!(env!("OUT_DIR"), "/eventbridge-mock.json")),
             ),
