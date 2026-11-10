@@ -181,6 +181,7 @@ impl std::fmt::Display for PeerError {
 pub struct LuaService {
     definition: Definition,
     peers: Peers,
+    response_models: Arc<HashMap<&'static str, Value>>,
     store: Arc<Store>,
     bundle: Arc<Bundle>,
     runtime: Mutex<Option<Runtime>>,
@@ -462,10 +463,17 @@ pub fn discover(store: Arc<Store>, path: Option<PathBuf>) -> Result<Vec<LuaServi
         }
     }
     let peers = Peers::default();
+    let response_models: Arc<HashMap<&'static str, Value>> = Arc::new(
+        definitions
+            .iter()
+            .filter_map(|d| d.wire.as_ref().map(|wire| (d.service, wire.model.clone())))
+            .collect(),
+    );
     for definition in definitions {
         services.push(LuaService {
             definition,
             peers: peers.clone(),
+            response_models: response_models.clone(),
             store: store.clone(),
             bundle: bundle.clone(),
             runtime: Mutex::new(None),
@@ -798,20 +806,36 @@ impl LuaService {
         )
         .map_err(lua_error)?;
         api.set("null", lua.null()).map_err(lua_error)?;
-        api.set(
-            "validate_mock_result",
-            lua.create_function(
-                |lua, (service, operation, value, strict): (String, String, LuaValue, bool)| {
-                    let value: Value = lua.from_value(value)?;
-                    Ok(crate::mock_validation::validate_operation(
-                        &service, &operation, &value, strict,
+        let response_models = self.response_models.clone();
+        api
+            .set(
+                "validate_mock_result",
+                lua
+                    .create_function(
+                        move |lua,
+                              (service, operation, value, strict): (
+                            String,
+                            String,
+                            LuaValue,
+                            bool,
+                        )| {
+                            let value: Value = lua.from_value(value)?;
+                            let result = if let Some(model) = response_models.get(service.as_str())
+                            {
+                                crate::mock_validation::validate_model_operation(
+                                    model, &service, &operation, &value, strict,
+                                )
+                            } else {
+                                crate::mock_validation::validate_operation(
+                                    &service, &operation, &value, strict,
+                                )
+                            };
+                            Ok(result.err())
+                        },
                     )
-                    .err())
-                },
+                    .map_err(lua_error)?,
             )
-            .map_err(lua_error)?,
-        )
-        .map_err(lua_error)?;
+            .map_err(lua_error)?;
         api.set(
             "id",
             lua.create_function(|_, prefix: String| {

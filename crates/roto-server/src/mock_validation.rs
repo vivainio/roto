@@ -86,6 +86,17 @@ pub(crate) fn validate_operation(
     let model = models
         .get(service)
         .ok_or_else(|| format!("No response model available for {service}"))?;
+    validate_model_operation(model, service, operation, value, strict)
+}
+
+/// Validate an operation against a model shipped by a Luau service bundle.
+pub(crate) fn validate_model_operation(
+    model: &Value,
+    service: &str,
+    operation: &str,
+    value: &Value,
+    strict: bool,
+) -> Result<(), String> {
     let operation_model = model["operations"]
         .get(operation)
         .ok_or_else(|| format!("No response model for {service}.{operation}"))?;

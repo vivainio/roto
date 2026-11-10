@@ -625,7 +625,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] `TestState` Task mock results with `fieldValidationMode: NONE`, inline Map/Parallel
       mock results, and mock errors with Retry/Catch selection, without invoking the target or
       executing fan-out branches. Parallel result arrays must match the branch count.
-- [x] Initial `TestState` Task mock `STRICT`/`PRESENT` validation against vendored built-in
+- [x] Initial `TestState` Task mock `STRICT`/`PRESENT` validation against vendored built-in and bundle-provided
       response models, including required fields, nested types, enums and length/range constraints.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
       execution, activity long polling, plain Task timeout enforcement, `TestState` mock result

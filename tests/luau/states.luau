@@ -239,3 +239,14 @@ test.case("TestState accepts decoded optimized Lambda payloads", function()
     local raw = test.call("states", "TestState", {definition = direct, mock = {result = '42'}})
     test.equal(roto.json_decode(raw.output), 42)
 end)
+
+test.case("TestState validates mocked responses from modeled bundle services", function()
+    local definition = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::aws-sdk:autoscaling:describeAutoScalingGroups", End = true})
+    local function request(result, mode)
+        return {definition = definition, mock = {result = result, fieldValidationMode = mode}}
+    end
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{}', 'STRICT')) end)
+    test.equal(test.call("states", "TestState", request('{}', 'PRESENT')).status, "SUCCEEDED")
+    test.equal(test.call("states", "TestState", request('{"AutoScalingGroups":[]}', 'STRICT')).status, "SUCCEEDED")
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request('{"AutoScalingGroups":"wrong"}', 'PRESENT')) end)
+end)

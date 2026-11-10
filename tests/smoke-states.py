@@ -794,6 +794,9 @@ def check_update_tags_and_test_state(s):
     assert code(lambda: s.sf.test_state(definition=json.dumps(validation), mock={"result": "{}"})) == "ValidationException"
     assert s.sf.test_state(definition=json.dumps(validation), mock={"result": "{}", "fieldValidationMode": "PRESENT"})["status"] == "SUCCEEDED"
     assert code(lambda: s.sf.test_state(definition=json.dumps(validation), mock={"result": '{"Successful":"bad"}', "fieldValidationMode": "PRESENT"})) == "ValidationException"
+    scaling = {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:autoscaling:describeAutoScalingGroups", "End": True}
+    assert code(lambda: s.sf.test_state(definition=json.dumps(scaling), mock={"result": "{}"})) == "ValidationException"
+    assert s.sf.test_state(definition=json.dumps(scaling), mock={"result": "{}", "fieldValidationMode": "PRESENT"})["status"] == "SUCCEEDED"
     mocked_parallel = {"Type": "Parallel", "Branches": [
         {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}},
         {"StartAt": "Bad", "States": {"Bad": {"Type": "Fail", "Error": "must-not-run"}}}],
