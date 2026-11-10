@@ -59,9 +59,43 @@ fn main() {
             .unwrap_or_else(|e| panic!("{}: {e}", source.display()));
         strip(&mut model);
         // TestState validation needs all response shapes, before editor-operation pruning.
+        let mut mock_model = model.clone();
+        if *name == "states" {
+            // Step Functions integrations expose PascalCase fields even though the
+            // underlying States API model uses lowerCamelCase structure members.
+            if let Some(shapes) = mock_model["shapes"].as_object_mut() {
+                for shape in shapes.values_mut() {
+                    if shape["type"] != "structure" {
+                        continue;
+                    }
+                    let capitalize = |name: &str| {
+                        let mut chars = name.chars();
+                        match chars.next() {
+                            Some(first) => {
+                                first.to_uppercase().collect::<String>() + chars.as_str()
+                            }
+                            None => String::new(),
+                        }
+                    };
+                    if let Some(members) = shape["members"].as_object_mut() {
+                        *members = std::mem::take(members)
+                            .into_iter()
+                            .map(|(name, value)| (capitalize(&name), value))
+                            .collect();
+                    }
+                    if let Some(required) = shape["required"].as_array_mut() {
+                        for name in required {
+                            if let Some(text) = name.as_str() {
+                                *name = Value::String(capitalize(text));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         std::fs::write(
             out.join(format!("{name}-mock.json")),
-            serde_json::to_string(&model).unwrap(),
+            serde_json::to_string(&mock_model).unwrap(),
         )
         .unwrap();
         // eventbridge's `roto.aws` name is `events`. A list prunes types-only models here; a

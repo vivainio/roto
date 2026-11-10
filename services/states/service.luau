@@ -3397,6 +3397,9 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 if service == "ecs" and operation == "RunTask" and sync_mode(state.Resource) ~= nil then
                     operation = "DescribeTasks"
                 end
+                if service == "states" and operation == "StartExecution" and sync_mode(state.Resource) ~= nil then
+                    operation = if sync_mode(state.Resource) == "v2" then "DescribeExecutionSync2" else "DescribeExecution"
+                end
                 local validation_error = roto.validate_mock_result(service, operation, mock_result, mock.fieldValidationMode ~= "PRESENT")
                 if validation_error ~= nil then roto.error("ValidationException", validation_error) end
             end

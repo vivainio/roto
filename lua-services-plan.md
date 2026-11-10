@@ -628,6 +628,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] Initial `TestState` Task mock `STRICT`/`PRESENT` validation against vendored built-in and bundle-provided
       response models, including required fields, nested types, enums and length/range constraints.
 - [x] ECS response models for request-response and `runTask.sync` mocks, using Step Functions field casing.
+- [x] Nested execution mock validation for request-response, `.sync`, and decoded `.sync:2` outputs.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
       execution, activity long polling, plain Task timeout enforcement, `TestState` mock result
       validation of model regex patterns and service bundles without vendored response models,

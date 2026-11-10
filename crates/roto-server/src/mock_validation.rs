@@ -101,6 +101,12 @@ pub(crate) fn validate_model_operation(
     value: &Value,
     strict: bool,
 ) -> Result<(), String> {
+    let sync2 = service == "states" && operation == "DescribeExecutionSync2";
+    let operation = if sync2 {
+        "DescribeExecution"
+    } else {
+        operation
+    };
     let operation_model = model["operations"]
         .get(operation)
         .ok_or_else(|| format!("No response model for {service}.{operation}"))?;
@@ -112,11 +118,14 @@ pub(crate) fn validate_model_operation(
             Err("$: expected empty response object".into())
         };
     }
-    // The optimized Lambda integration exposes Payload as decoded JSON, although Lambda's
-    // underlying API model describes the field as a binary blob.
-    if service == "lambda" && operation == "Invoke" && value.is_object() {
+    // Optimized Lambda Payload and nested execution .sync:2 Output are decoded JSON,
+    // although the underlying API models describe them as a blob and string respectively.
+    if ((service == "lambda" && operation == "Invoke") || sync2) && value.is_object() {
         let mut shaped = value.clone();
-        shaped.as_object_mut().unwrap().remove("Payload");
+        shaped
+            .as_object_mut()
+            .unwrap()
+            .remove(if sync2 { "Output" } else { "Payload" });
         validate(model, output, &shaped, strict)
     } else {
         validate(model, output, value, strict)

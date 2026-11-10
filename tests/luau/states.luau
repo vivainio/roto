@@ -267,3 +267,18 @@ test.case("TestState validates ECS task response mocks", function()
         end)
     end
 end)
+
+test.case("TestState validates nested execution response mocks", function()
+    local function request(suffix: string, result: string)
+        return {definition = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::states:startExecution" .. suffix, End = true}),
+            mock = {result = result}}
+    end
+    local started = '{"ExecutionArn":"arn:aws:states:us-east-1:123456789012:execution:machine:name","StartDate":123}'
+    test.equal(test.call("states", "TestState", request("", started)).status, "SUCCEEDED")
+    local done = '{"ExecutionArn":"arn:aws:states:us-east-1:123456789012:execution:machine:name","StateMachineArn":"arn:aws:states:us-east-1:123456789012:stateMachine:machine","Status":"SUCCEEDED","StartDate":123,"Output":"{}"}'
+    test.equal(test.call("states", "TestState", request(".sync", done)).status, "SUCCEEDED")
+    local decoded = string.gsub(done, '"Output":"{}"', '"Output":{"ok":true}')
+    test.equal(test.call("states", "TestState", request(".sync:2", decoded)).status, "SUCCEEDED")
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request(".sync", decoded)) end)
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request("", '{}')) end)
+end)
