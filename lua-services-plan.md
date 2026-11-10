@@ -631,6 +631,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] Nested execution mock validation for request-response, `.sync`, and decoded `.sync:2` outputs.
 - [x] `TestState` mock validation for supported model regex patterns, with explicit errors for unsupported constructs.
 - [x] Supplied `TestState` context for mocked Tasks and Map/Parallel states, including callback tokens.
+- [x] `TestState` state selection by name in complete definitions, including nested Map and Parallel states.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
       execution, activity long polling, plain Task timeout enforcement, `TestState` mock result
       validation of unsupported model regex constructs and service bundles without vendored response models,

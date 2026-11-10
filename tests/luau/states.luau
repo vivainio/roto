@@ -337,3 +337,33 @@ test.case("TestState uses supplied context for mocked tasks", function()
         return test.try_call("states", "TestState", {definition = definition, context = '{}'})
     end)
 end)
+
+test.case("TestState selects named states from complete definitions", function()
+    local definition = roto.json_encode({StartAt = "Outer", States = {
+        Outer = {Type = "Map", ItemProcessor = {StartAt = "Nested", States = {
+            Nested = {Type = "Pass", Parameters = { ["name.$"] = "$$.State.Name", ["index.$"] = "$$.Map.Item.Index",
+                ["value.$"] = "$$.Map.Item.Value" }, End = true},
+        }}, End = true},
+        Other = {Type = "Pass", Result = "selected", Next = "Outer"},
+    }})
+    local nested = test.call("states", "TestState", {definition = definition, stateName = "Nested", input = '{"id":3}'})
+    test.equal(roto.json_decode(nested.output), {name = "Nested", index = 0, value = {id = 3}})
+    local other = test.call("states", "TestState", {definition = definition, stateName = "Other"})
+    test.equal(roto.json_decode(other.output), "selected")
+    test.equal(other.nextState, "Outer")
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = definition, stateName = "Missing"})
+    end)
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = '{"Type":"Succeed"}', stateName = "Missing"})
+    end)
+    local ambiguous = roto.json_encode({StartAt = "Branch", States = {
+        Branch = {Type = "Parallel", Branches = {
+            {StartAt = "Same", States = {Same = {Type = "Succeed"}}},
+            {StartAt = "Same", States = {Same = {Type = "Succeed"}}},
+        }, End = true},
+    }})
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = ambiguous, stateName = "Same"})
+    end)
+end)

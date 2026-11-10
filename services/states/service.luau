@@ -3293,6 +3293,36 @@ end
 function M.TestState(ctx: Ctx, input: any, db: Db)
     valid_json(input.definition, "definition")
     local state = roto.json_decode(input.definition)
+    local selected_name = "TestState"
+    local in_map = false
+    if input.stateName ~= nil then
+        if type(input.stateName) ~= "string" or #input.stateName < 1 or #input.stateName > 80 then
+            roto.error("ValidationException", "stateName must be between 1 and 80 characters")
+        end
+        if not is_object(state) or not is_object(state.States) or type(state.StartAt) ~= "string" then
+            roto.error("ValidationException", "stateName requires a state machine definition")
+        end
+        selected_name = input.stateName
+        local found: any = nil
+        local matches = 0
+        local function search(machine: any, map_parent: boolean, depth: number)
+            if depth > 64 or not is_object(machine) or not is_object(machine.States) then return end
+            for state_key, candidate in pairs(machine.States) do
+                if is_object(candidate) then
+                    if state_key == selected_name then found = candidate; in_map = map_parent; matches += 1 end
+                    if candidate.Type == "Map" then
+                        search(candidate.ItemProcessor or candidate.Iterator, true, depth + 1)
+                    elseif candidate.Type == "Parallel" and is_array(candidate.Branches) then
+                        for _, branch in ipairs(candidate.Branches) do search(branch, map_parent, depth + 1) end
+                    end
+                end
+            end
+        end
+        search(state, false, 0)
+        if matches == 0 then roto.error("ValidationException", "stateName was not found in the definition") end
+        if matches > 1 then roto.error("ValidationException", "stateName is ambiguous in the definition") end
+        state = found
+    end
     if not is_object(state) or not STATE_TYPES[state.Type] then
         roto.error("ValidationException", "Invalid State Machine Definition: the state needs a known Type")
     end
@@ -3308,7 +3338,10 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         stateMachineArn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":stateMachine:TestState",
         name = "TestState", roleArn = input.roleArn, startDate = os.time(),
     }
-    local context = context_object(fake, "TestState", data)
+    local context = context_object(fake, selected_name, data)
+    if in_map and input.context == nil then
+        context.Map = { Item = { Index = 0, Value = data, Source = "STATE_DATA" } }
+    end
     if input.context ~= nil then
         if type(input.context) ~= "string" or #input.context > MAX_PAYLOAD_BYTES then
             roto.error("ValidationException", "context must be a JSON object no larger than 256 KiB")
@@ -3469,7 +3502,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
     end
     local previous = active
     active = { ctx = ctx, db = db }
-    local ok, outcome = pcall(evaluate_state, "TestState", state, data, scope, { events = {}, count = 0 }, fake.executionArn)
+    local ok, outcome = pcall(evaluate_state, selected_name, state, data, scope, { events = {}, count = 0 }, fake.executionArn)
     active = previous
     if not ok then
         local code, cause = failure_of(outcome)
