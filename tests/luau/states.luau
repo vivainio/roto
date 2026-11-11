@@ -213,6 +213,25 @@ test.case("SDK ECR tasks create and inspect repositories and catch errors", func
     test.equal(roto.json_decode(caught.output).Error, "Ecr.RepositoryNotFoundException")
 end)
 
+test.case("ECS SDK tasks preserve task definition map keys", function()
+    local arn = machine("ecs-map-keys", {StartAt = "Register", States = {
+        Register = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:ecs:registerTaskDefinition",
+            Parameters = {Family = "mapkeys", ContainerDefinitions = {{Name = "main", Image = "image",
+                DockerLabels = {Owner = "Ada", lower = "value"},
+                LogConfiguration = {LogDriver = "awslogs", Options = { ["awslogs-group"] = "logs", MixedCase = "value" }}}},
+                Volumes = {{Name = "volume", DockerVolumeConfiguration = {Scope = "shared",
+                    DriverOpts = {MixedOption = "one"}, Labels = {MixedLabel = "two"}}}}}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = arn})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    local definition = roto.json_decode(result.output).TaskDefinition
+    test.equal(definition.ContainerDefinitions[1].DockerLabels, {Owner = "Ada", lower = "value"})
+    test.equal(definition.ContainerDefinitions[1].LogConfiguration.Options, { ["awslogs-group"] = "logs", MixedCase = "value" })
+    test.equal(definition.Volumes[1].DockerVolumeConfiguration.DriverOpts, {MixedOption = "one"})
+    test.equal(definition.Volumes[1].DockerVolumeConfiguration.Labels, {MixedLabel = "two"})
+end)
+
 test.case("Express definitions reject unsupported Task patterns", function()
     local resources = {"arn:aws:states:us-east-1:123456789012:activity:worker",
         "arn:aws:states:::states:startExecution.sync:2", "arn:aws:states:::sqs:sendMessage.waitForTaskToken"}

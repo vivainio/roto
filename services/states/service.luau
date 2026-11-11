@@ -1655,6 +1655,25 @@ local function recase(value: any, to_upper: boolean): any
     return out
 end
 
+-- ECS map members contain user keys rather than modeled member names.
+local ECS_MAP_FIELDS = { dockerLabels = true, driverOpts = true, labels = true, options = true }
+local function recase_ecs(value: any, to_upper: boolean): any
+    if type(value) ~= "table" then return value end
+    if is_array(value) then
+        local out = {}
+        for index, item in ipairs(value) do out[index] = recase_ecs(item, to_upper) end
+        return roto.array(out)
+    end
+    local out: Doc = {}
+    for key, item in pairs(value) do
+        local name = tostring(key)
+        local lower = string.lower(string.sub(name, 1, 1)) .. string.sub(name, 2)
+        local target = if to_upper then string.upper(string.sub(name, 1, 1)) .. string.sub(name, 2) else lower
+        out[target] = if ECS_MAP_FIELDS[lower] then item else recase_ecs(item, to_upper)
+    end
+    return out
+end
+
 -- ECS is a Luau service, which `roto.call` does not reach, so it is called as a raw request.
 local function ecs_call(operation: string, body: any, timeout: number?): any
     local options = {
@@ -1694,7 +1713,7 @@ local function poll_ecs(poll: any): (any, boolean)
             if container.exitCode ~= nil and container.exitCode ~= 0 then failed = true end
         end
     end
-    return recase(described, true), failed
+    return recase_ecs(described, true), failed
 end
 
 local LOCAL_SDK_OPERATIONS = {
@@ -1759,7 +1778,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         return recase(result, true)
     end
     if service == "ecs" then
-        local started = recase(ecs_call(operation, recase(parameters or {}, false), timeout), true)
+        local started = recase_ecs(ecs_call(operation, recase_ecs(parameters or {}, false), timeout), true)
         if sync_mode(resource) ~= nil and operation == "RunTask" then
             local arns = {}
             local tasks: { Doc } = started.Tasks or {}
