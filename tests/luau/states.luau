@@ -178,15 +178,37 @@ test.case("TestState handles mocked Parallel errors with retry and catch", funct
         Retry = {{ErrorEquals = {"Oops"}, IntervalSeconds = 3, MaxAttempts = 1}},
         Catch = {{ErrorEquals = {"Oops"}, ResultPath = "$.caught", Next = "Recover"}}, End = true}
     local request = {definition = roto.json_encode(state), input = '{"x":1}',
-        mock = {errorOutput = {error = "Oops", cause = "bad"}}, inspectionLevel = "DEBUG"}
+        mock = {errorOutput = {error = "Oops", cause = "bad"}}, inspectionLevel = "DEBUG",
+        stateConfiguration = {errorCausedByState = "S", retrierRetryCount = 0}}
     local retry = test.call("states", "TestState", request)
     test.equal(retry.status, "RETRIABLE")
     test.equal(retry.inspectionData.errorDetails.retryBackoffIntervalSeconds, 3)
-    request.stateConfiguration = {retrierRetryCount = 1}
+    request.stateConfiguration = {errorCausedByState = "S", retrierRetryCount = 1}
     local caught = test.call("states", "TestState", request)
     test.equal(caught.status, "CAUGHT_ERROR")
     test.equal(caught.nextState, "Recover")
     test.equal(roto.json_decode(caught.output), {x = 1, caught = {Error = "Oops", Cause = "bad"}})
+end)
+
+test.case("TestState validates the source of mocked fan-out errors", function()
+    local state = {Type = "Map", ItemProcessor = {StartAt = "Group", States = {
+        Group = {Type = "Parallel", Branches = {{StartAt = "Work", States = {
+            Work = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage", End = true},
+        }}}, End = true},
+    }}, Catch = {{ErrorEquals = {"States.TaskFailed"}, Next = "Recover"}}, End = true}
+    local request: any = {definition = roto.json_encode(state), input = '[1]',
+        mock = {errorOutput = {error = "SomeService.Error"}},
+        stateConfiguration = {errorCausedByState = "Work"}, inspectionLevel = "DEBUG"}
+    local result = test.call("states", "TestState", request)
+    test.equal(result.status, "CAUGHT_ERROR")
+    test.equal(result.nextState, "Recover")
+    request.stateConfiguration.errorCausedByState = "Missing"
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    request.stateConfiguration = nil
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    request.stateConfiguration = {errorCausedByState = "Work"}
+    request.mock = {result = '[]'}
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
 end)
 
 test.case("TestState mock errors respect retry limits and catch ordering", function()

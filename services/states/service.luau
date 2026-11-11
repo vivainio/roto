@@ -3598,6 +3598,34 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         local config = if input.stateConfiguration == nil then {} else roto.object(input.stateConfiguration, "ValidationException", "stateConfiguration")
         local distributed = state.Type == "Map" and is_object(state.ItemProcessor)
             and is_object(state.ItemProcessor.ProcessorConfig) and state.ItemProcessor.ProcessorConfig.Mode == "DISTRIBUTED"
+        if config.errorCausedByState ~= nil then
+            local source = config.errorCausedByState
+            if (state.Type ~= "Map" and state.Type ~= "Parallel") or mock.errorOutput == nil
+                or type(source) ~= "string" or #source < 1 or #source > 80 then
+                roto.error("ValidationException", "errorCausedByState requires a mocked Map or Parallel error and a valid state name")
+            end
+            local matches = 0
+            local function search_children(machine: any, depth: number)
+                if depth > 64 or not is_object(machine) or not is_object(machine.States) then return end
+                for child_name, child in pairs(machine.States) do
+                    if is_object(child) then
+                        if child_name == source then matches += 1 end
+                        if child.Type == "Map" then search_children(child.ItemProcessor or child.Iterator, depth + 1)
+                        elseif child.Type == "Parallel" and is_array(child.Branches) then
+                            for _, branch in ipairs(child.Branches) do search_children(branch, depth + 1) end
+                        end
+                    end
+                end
+            end
+            if state.Type == "Map" then search_children(state.ItemProcessor or state.Iterator, 0)
+            elseif is_array(state.Branches) then
+                for _, branch in ipairs(state.Branches) do search_children(branch, 0) end
+            end
+            if matches == 0 then roto.error("ValidationException", "errorCausedByState was not found inside the Map or Parallel state") end
+            if matches > 1 then roto.error("ValidationException", "errorCausedByState is ambiguous") end
+        elseif mock.errorOutput ~= nil and (state.Type == "Map" or state.Type == "Parallel") then
+            roto.error("ValidationException", "A mocked Map or Parallel error requires errorCausedByState")
+        end
         local reader: any = nil
         if config.mapItemReaderData ~= nil then
             if not distributed then roto.error("ValidationException", "mapItemReaderData requires a Distributed Map") end
@@ -3645,7 +3673,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 roto.error("ValidationException", "mock.errorOutput requires an error of at most 256 characters and an optional cause of at most 32768 characters")
             end
             for key in pairs(config) do
-                if key ~= "retrierRetryCount" and key ~= "mapIterationFailureCount" and key ~= "mapItemReaderData" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
+                if key ~= "retrierRetryCount" and key ~= "mapIterationFailureCount" and key ~= "mapItemReaderData" and key ~= "errorCausedByState" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
             end
             local used = config.retrierRetryCount or 0
             if type(used) ~= "number" or used < 0 or used % 1 ~= 0 then

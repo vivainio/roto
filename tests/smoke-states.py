@@ -805,6 +805,15 @@ def check_update_tags_and_test_state(s):
                                   mock={"result": '[1,2]'})
     assert mock_result["status"] == "SUCCEEDED" and json.loads(mock_result["output"]) == {"keep": True, "results": [1, 2]}, mock_result
     assert code(lambda: s.sf.test_state(definition=json.dumps(mocked_parallel), mock={"result": '[1]'})) == "ValidationException"
+    error_parallel = {"Type": "Parallel", "Branches": [{"StartAt": "Work", "States": {
+        "Work": {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage", "End": True}}}],
+        "Catch": [{"ErrorEquals": ["States.TaskFailed"], "Next": "Recover"}], "End": True}
+    error_args = {"definition": json.dumps(error_parallel), "mock": {"errorOutput": {"error": "SQS.Error"}},
+                  "stateConfiguration": {"errorCausedByState": "Work"}}
+    caught_child = s.sf.test_state(**error_args)
+    assert caught_child["status"] == "CAUGHT_ERROR" and caught_child["nextState"] == "Recover", caught_child
+    error_args["stateConfiguration"]["errorCausedByState"] = "Missing"
+    assert code(lambda: s.sf.test_state(**error_args)) == "ValidationException"
     distributed = {"Type": "Map", "ItemsPath": "$.items", "ItemProcessor": {
         "ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": "STANDARD"},
         "StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}},
