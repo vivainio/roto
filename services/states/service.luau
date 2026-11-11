@@ -1455,6 +1455,7 @@ end
 
 -- Cancels every timer and task token of an execution. `cursor` is the in-memory cursor when the
 -- caller has one that is newer than the stored copy.
+local stop_ecs: (any) -> () = function() end
 local function cancel_timers(ctx: Ctx, db: Db, arn: string, cursor: Cursor?): { string }
     db.cancel("timeout/" .. arn)
     db.cancel("continue/" .. arn)
@@ -1469,6 +1470,7 @@ local function cancel_timers(ctx: Ctx, db: Db, arn: string, cursor: Cursor?): { 
             if thread.waiting then
                 close_task_token(ctx, db, thread.waiting.token)
                 if thread.waiting.child then table.insert(children, thread.waiting.child) end
+                if thread.waiting.poll then stop_ecs(thread.waiting.poll) end
             end
         end
     end
@@ -1676,6 +1678,14 @@ local function ecs_call(operation: string, body: any, timeout: number?): any
     return roto.json_decode(response.body :: string)
 end
 
+-- Cancellation is best effort: a failed StopTask must not mask the original error.
+stop_ecs = function(poll: any)
+    if poll.kind ~= "ecs" or not is_array(poll.tasks) then return end
+    for _, task in ipairs(poll.tasks) do
+        pcall(ecs_call, "StopTask", { cluster = poll.cluster, task = task, reason = "Step Functions task cancelled" }, 1)
+    end
+end
+
 -- How often a `.sync` integration that has to be polled looks at its target, in virtual seconds.
 local POLL_SECONDS = 5
 local INLINE_MAP_MAX_CONCURRENCY = 40
@@ -1717,7 +1727,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         return { ExecutionArn = started.executionArn, StartDate = started.startDate }
     end
     if service == "ecs" then
-        local started = recase(ecs_call(operation, recase(parameters or {}, false), if token == nil then timeout else nil), true)
+        local started = recase(ecs_call(operation, recase(parameters or {}, false), timeout), true)
         if sync_mode(resource) ~= nil and operation == "RunTask" then
             local arns = {}
             local tasks: { Doc } = started.Tasks or {}
@@ -1881,6 +1891,7 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
     emit_task_event(execution_arn, history, resource, "Started", {
         resourceType = resource_type(resource), resource = resource, parametersValue = parameters,
     })
+    local task_started = roto.now()
     local ok, result = pcall(task_call, resource, parameters, token, timeout)
     if not ok then
         local code, cause = failure_of(result)
@@ -1903,7 +1914,7 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
     end
     if token ~= nil then
         local queued: any = if type(result) == "table" and result.Pending then { child = if result.Poll then nil else result.Pending, poll = result.Poll } else {}
-        queued.timeout = timeout
+        queued.timeout = if timeout ~= nil and sync_mode(resource) ~= nil then math.max(0, timeout - (roto.now() - task_started)) else timeout
         queued.heartbeat = heartbeat
         return data, token, queued
     end
@@ -2301,6 +2312,7 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
                 if child.waiting then
                     close_task_token(ctx, db, child.waiting.token)
                     if child.waiting.child then abort_nested(ctx, db, child.waiting.child) end
+                    if child.waiting.poll then stop_ecs(child.waiting.poll) end
                 end
                 cursor.threads[cid] = nil
             end
@@ -2531,7 +2543,7 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
             }
             local activity_wait = result.queued ~= nil and result.queued.activity ~= nil
             db.put(ns(ctx, "token"), result.waiting, { arn = arn, tid = thread.id,
-                deadline = if queued.child ~= nil and type(queued.timeout) == "number" then roto.now() + queued.timeout else nil })
+                deadline = if (queued.child ~= nil or queued.poll ~= nil) and type(queued.timeout) == "number" then roto.now() + queued.timeout else nil })
             if type(queued.timeout) == "number" and not activity_wait then
                 db.schedule(timer_key("task", arn, thread.id), { delay = queued.timeout, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
             end
@@ -3155,13 +3167,22 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     if not cursor then return {} end
     local kind = job.payload.kind
     local thread = cursor.threads[job.payload.tid or ""]
+    local poll_deadline: number? = nil
+    if kind == "poll" and thread and thread.waiting then
+        local token = db.get(ns(ctx, "token"), thread.waiting.token) :: Doc?
+        if token and type(token.deadline) == "number" then
+            poll_deadline = token.deadline
+            if roto.now() >= token.deadline then kind = "task_timeout" end
+        end
+    end
     if kind == "resume" then
         if not thread then return {} end
         thread.sleeping = nil
     elseif kind == "poll" then
         if not thread or not thread.waiting or not thread.waiting.poll then return {} end
         local ok, result, failed = pcall(poll_ecs, thread.waiting.poll)
-        if ok and result == nil then
+        local expired = poll_deadline ~= nil and roto.now() >= poll_deadline
+        if ok and result == nil and not expired then
             -- Still running: look again later.
             db.schedule(timer_key("poll", arn, thread.id), { delay = POLL_SECONDS, payload = { arn = arn, kind = "poll", tid = thread.id } })
             return {}
@@ -3169,9 +3190,12 @@ function M.__job(ctx: Ctx, job: any, db: Db)
         close_task_token(ctx, db, thread.waiting.token)
         db.cancel(timer_key("task", arn, thread.id))
         db.cancel(timer_key("heartbeat", arn, thread.id))
+        if expired then stop_ecs(thread.waiting.poll) end
         thread.waiting = nil
         thread.retrying = true
-        if not ok then
+        if expired then
+            thread.delivered = { error = "States.Timeout", cause = "The task timed out" }
+        elseif not ok then
             local code, cause = failure_of(result)
             thread.delivered = { error = code, cause = cause }
         elseif failed then
@@ -3183,6 +3207,7 @@ function M.__job(ctx: Ctx, job: any, db: Db)
         if not thread or not thread.waiting then return {} end
         close_task_token(ctx, db, thread.waiting.token)
         if thread.waiting.child then abort_nested(ctx, db, thread.waiting.child) end
+        if thread.waiting.poll then stop_ecs(thread.waiting.poll) end
         db.cancel(timer_key("task", arn, thread.id))
         db.cancel(timer_key("heartbeat", arn, thread.id))
         db.cancel(timer_key("poll", arn, thread.id))

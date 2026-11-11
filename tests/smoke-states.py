@@ -551,6 +551,35 @@ def check_ecs_run_task_sync(s):
     out = json.loads(s.status(arn)["output"])
     assert "err" in out and out["err"]["Error"] == "States.TaskFailed", out
 
+    timeout_machine = s.machine("ecs-sync-timeout", {"StartAt": "Run", "States": {
+        "Run": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync", "TimeoutSeconds": 2,
+                "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"},
+                "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    timed_arn = s.run(timeout_machine, {})
+    timed_task = only_running_task([first, second])
+    s.advance(2)
+    timed = s.status(timed_arn)
+    assert timed["status"] == "SUCCEEDED" and json.loads(timed["output"])["Error"] == "States.Timeout", timed
+    assert ecs.describe_tasks(cluster="jobs", tasks=[timed_task])["tasks"][0]["lastStatus"] == "STOPPED"
+
+    aborted_arn = s.run(machine, {})
+    aborted_task = only_running_task([first, second, timed_task])
+    s.sf.stop_execution(executionArn=aborted_arn)
+    assert ecs.describe_tasks(cluster="jobs", tasks=[aborted_task])["tasks"][0]["lastStatus"] == "STOPPED"
+
+    parallel = s.machine("ecs-sync-branch-cancel", {"StartAt": "Both", "States": {"Both": {
+        "Type": "Parallel", "End": True, "Branches": [
+            {"StartAt": "Run", "States": {"Run": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync",
+                "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"}, "End": True}}},
+            {"StartAt": "Wait", "States": {"Wait": {"Type": "Wait", "Seconds": 1, "Next": "Fail"},
+                "Fail": {"Type": "Fail", "Error": "BranchFailed"}}}]}}})
+    parallel_arn = s.run(parallel, {})
+    branch_task = only_running_task([first, second, timed_task, aborted_task])
+    s.advance(1)
+    assert s.status(parallel_arn)["status"] == "FAILED"
+    assert ecs.describe_tasks(cluster="jobs", tasks=[branch_task])["tasks"][0]["lastStatus"] == "STOPPED"
+
     # Without .sync the Task returns right after RunTask.
     plain = s.status(s.run(s.machine("ecs-plain", {"StartAt": "Run", "States": {"Run": {
         "Type": "Task", "Resource": "arn:aws:states:::ecs:runTask",
