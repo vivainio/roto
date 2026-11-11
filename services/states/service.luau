@@ -1598,7 +1598,7 @@ end
 
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
-local active: { ctx: Ctx, db: Db }? = nil
+local active: { ctx: Ctx, db: Db, deadline: number? }? = nil
 local start_execution: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?, string?) -> any
 
 local function task_target(resource: any): (string, string)
@@ -1790,7 +1790,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
     end
     if service == "glue" then
         local options = { headers = { ["x-amz-target"] = "AWSGlue." .. operation }, body = parameters or {} }
-        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("glue", "POST", "/", options, timeout)
+        local response = if timeout ~= nil then roto.try_wire_timed("glue", "POST", "/", options, timeout)
             else roto.try_wire("glue", "POST", "/", options)
         if not response.ok then
             if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
@@ -1804,7 +1804,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if type(parameters) == "table" and parameters.Tags ~= nil then body.tags = parameters.Tags end
         local options = { headers = { ["x-amz-target"] = "AmazonEC2ContainerRegistry_V20150921." .. operation },
             body = body }
-        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("ecr", "POST", "/", options, timeout)
+        local response = if timeout ~= nil then roto.try_wire_timed("ecr", "POST", "/", options, timeout)
             else roto.try_wire("ecr", "POST", "/", options)
         if not response.ok then
             if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
@@ -1827,7 +1827,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
             body = roto.json_encode(if payload == nil then {} else payload),
         }
         local path = "/2015-03-31/functions/" .. name .. "/invocations"
-        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("lambda", "POST", path, options, timeout)
+        local response = if timeout ~= nil then roto.try_wire_timed("lambda", "POST", path, options, timeout)
             else roto.try_wire("lambda", "POST", path, options)
         if not response.ok then
             if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
@@ -1844,7 +1844,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         end
         return decoded
     end
-    local response = if timeout ~= nil and token == nil then roto.try_call_timed(service, operation, parameters or {}, timeout)
+    local response = if timeout ~= nil then roto.try_call_timed(service, operation, parameters or {}, timeout)
         else roto.try_call(service, operation, parameters or {})
     if not response.ok then
         if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
@@ -1970,7 +1970,12 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
         resourceType = resource_type(resource), resource = resource, parametersValue = parameters,
     })
     local task_started = roto.now()
-    local ok, result = pcall(task_call, resource, parameters, token, timeout)
+    local call_timeout = timeout
+    if active ~= nil and active.deadline ~= nil then
+        local remaining = math.max(0, active.deadline - roto.now())
+        call_timeout = if call_timeout ~= nil then math.min(call_timeout, remaining) else remaining
+    end
+    local ok, result = pcall(task_call, resource, parameters, token, call_timeout)
     if not ok then
         local code, cause = failure_of(result)
         emit_task_event(execution_arn, history, resource, if code == "States.Timeout" then "TimedOut" else "Failed", { resourceType = resource_type(resource), resource = resource, error = code, cause = cause })
@@ -1993,7 +1998,7 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
     if token ~= nil then
         local queued: any = if type(result) == "table" and result.Pending then { child = if result.Poll then nil else result.Pending,
             poll = result.Poll, detachChild = result.DetachOnCancel == true } else {}
-        queued.timeout = if timeout ~= nil and sync_mode(resource) ~= nil then math.max(0, timeout - (roto.now() - task_started)) else timeout
+        queued.timeout = if timeout ~= nil then math.max(0, timeout - (roto.now() - task_started)) else nil
         queued.heartbeat = heartbeat
         return data, token, queued
     end
@@ -2706,7 +2711,7 @@ end
 
 local function run(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history: History)
     local previous = active
-    active = { ctx = ctx, db = db }
+    active = { ctx = ctx, db = db, deadline = exec._deadline }
     local ok, err = pcall(run_threads, ctx, db, exec, cursor, history)
     active = previous
     if not ok then error(err, 0) end

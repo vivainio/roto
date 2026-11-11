@@ -1151,8 +1151,12 @@ def check_plain_task_timeout(s):
     slow_child = s.machine("execution-deadline-child", {"StartAt": "Slow", "States": {
         "Slow": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow", "End": True}}})
     direct = s.machine("execution-deadline-direct", {"TimeoutSeconds": 1, "StartAt": "Slow", "States": {
-        "Slow": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow", "End": True}}})
+        "Slow": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow",
+                 "TimeoutSeconds": 5, "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    deadline_start = time.monotonic()
     direct_result = s.status(s.run(direct))
+    assert time.monotonic() - deadline_start < 1.8, direct_result
     assert direct_result["status"] == "TIMED_OUT" and "_deadline" not in direct_result, direct_result
     parent = s.machine("execution-deadline-parent", {"TimeoutSeconds": 1, "StartAt": "Call", "States": {
         "Call": {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.sync:2",

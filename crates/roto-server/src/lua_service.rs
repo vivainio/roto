@@ -1326,15 +1326,16 @@ impl LuaService {
         )?;
         let timed_handler = handler;
         let timed_ctx = ctx.clone();
-        roto.set("try_call_timed", scope.create_function(move |lua, (service, operation, input, seconds): (String, String, LuaValue, u64)| {
+        roto.set("try_call_timed", scope.create_function(move |lua, (service, operation, input, seconds): (String, String, LuaValue, f64)| {
             let input = input_of(lua, input)?;
+            let timeout = std::time::Duration::try_from_secs_f64(seconds).map_err(mlua::Error::external)?;
             let result = (|| {
                 let peer = timed_handler(&service)?;
                 if !crate::aws_client::supports(&service) {
                     return Err(PeerError::local("UnsupportedService", format!("Unknown service for roto.call: {service}; use roto.wire")));
                 }
                 let ctx = timed_ctx.clone();
-                timed_peer(std::time::Duration::from_secs(seconds), move || {
+                timed_peer(timeout, move || {
                     crate::aws_client::call(peer.as_ref(), &ctx, &service, &operation, &input).map_err(|message| match message.strip_prefix("AWS request failed (") {
                         Some(rest) => { let (status, body) = rest.split_once("): ").unwrap_or(("500", rest)); PeerError::from_response(status.parse().unwrap_or(500), body.as_bytes()) }
                         None => PeerError::local("InvalidRequest", message),
@@ -1367,13 +1368,15 @@ impl LuaService {
                     String,
                     String,
                     Option<Table>,
-                    u64,
+                    f64,
                 )| {
                     let (query, headers, body) = wire_args(lua, opts)?;
+                    let timeout = std::time::Duration::try_from_secs_f64(seconds)
+                        .map_err(mlua::Error::external)?;
                     let result = (|| {
                         let peer = timed_handler(&service)?;
                         let ctx = timed_ctx.clone();
-                        timed_peer(std::time::Duration::from_secs(seconds), move || {
+                        timed_peer(timeout, move || {
                             let response = peer
                                 .handle(
                                     &ctx,
