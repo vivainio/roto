@@ -920,6 +920,9 @@ def check_update_tags_and_test_state(s):
             "stateConfiguration": {"mapIterationFailureCount": 1}, "inspectionLevel": "DEBUG"}
     result = s.sf.test_state(**args)
     assert result["status"] == "SUCCEEDED" and json.loads(result["output"])["ResultWriterDetails"]["Key"] == "k", result
+    without_count = {**args, "stateConfiguration": {}}
+    result = s.sf.test_state(**without_count)
+    assert result["status"] == "SUCCEEDED" and result["inspectionData"]["toleratedFailureCount"] == 1, result
     args["stateConfiguration"]["mapIterationFailureCount"] = 2
     result = s.sf.test_state(**args)
     assert result["status"] == "FAILED" and result["error"] == "States.ExceedToleratedFailureThreshold", result

@@ -818,7 +818,7 @@ test.case("TestState mocks Distributed Map exports and failure thresholds", func
         ResultWriter = {Resource = "arn:aws:states:::s3:putObject", Parameters = {Bucket = "unused"}},
         ResultPath = "$.export", End = true}
     local definition = roto.json_encode(map)
-    local request = {definition = definition, input = '{"items":[1,2,3,4],"allowed":2}',
+    local request: any = {definition = definition, input = '{"items":[1,2,3,4],"allowed":2}',
         mock = {result = '{"MapRunArn":"arn:map","ResultWriterDetails":{"Bucket":"b","Key":"manifest"}}'},
         stateConfiguration = {mapIterationFailureCount = 2}, inspectionLevel = "DEBUG"}
     local success = test.call("states", "TestState", request)
@@ -826,6 +826,12 @@ test.case("TestState mocks Distributed Map exports and failure thresholds", func
     test.equal(roto.json_decode(success.output).export.ResultWriterDetails.Key, "manifest")
     test.equal(success.inspectionData.toleratedFailureCount, 2)
     test.equal(success.inspectionData.toleratedFailurePercentage, 50)
+    request.stateConfiguration = {}
+    local without_failure_count = test.call("states", "TestState", request)
+    test.equal(without_failure_count.status, "SUCCEEDED")
+    test.equal(without_failure_count.inspectionData.toleratedFailureCount, 2)
+    test.equal(without_failure_count.inspectionData.toleratedFailurePercentage, 50)
+    request.stateConfiguration = {mapIterationFailureCount = 2}
     request.stateConfiguration.mapIterationFailureCount = 3
     local failed = test.call("states", "TestState", request)
     test.equal(failed.status, "FAILED")

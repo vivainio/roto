@@ -3792,6 +3792,9 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             if not distributed or type(count) ~= "number" or count < 0 or count % 1 ~= 0 then
                 roto.error("ValidationException", "mapIterationFailureCount requires a Distributed Map and a nonnegative integer")
             end
+        end
+        if distributed then
+            local count = config.mapIterationFailureCount or 0
             local ok, spawns, _, item_count = pcall(spawn_map, state, data, scope, inspection, reader)
             if not ok then
                 local code, cause = failure_of(spawns)
