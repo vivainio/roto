@@ -159,6 +159,29 @@ test.case("timed request-response SDK task returns a successful result", functio
     test.equal(test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1].Body, "hello")
 end)
 
+test.case("SDK Glue tasks preserve catalog data and catch service errors", function()
+    local arn = machine("glue-sdk", {StartAt = "Create", States = {
+        Create = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:glue:createDatabase", TimeoutSeconds = 5,
+            Parameters = {DatabaseInput = {Name = "catalog", Parameters = {MixedCase = "value"}}},
+            ResultPath = roto.null, Next = "Get"},
+        Get = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:glue:getDatabase",
+            Parameters = {Name = "catalog"}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = arn})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output).Database.Parameters, {MixedCase = "value"})
+    local missing = machine("glue-sdk-missing", {StartAt = "Get", States = {
+        Get = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:glue:getDatabase", Parameters = {Name = "missing"},
+            Catch = {{ErrorEquals = {"Glue.EntityNotFoundException"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local bad = test.call("states", "StartExecution", {stateMachineArn = missing})
+    local caught = test.call("states", "DescribeExecution", {executionArn = bad.executionArn})
+    test.equal(caught.status, "SUCCEEDED")
+    test.equal(roto.json_decode(caught.output).Error, "Glue.EntityNotFoundException")
+end)
+
 test.case("Express definitions reject unsupported Task patterns", function()
     local resources = {"arn:aws:states:us-east-1:123456789012:activity:worker",
         "arn:aws:states:::states:startExecution.sync:2", "arn:aws:states:::sqs:sendMessage.waitForTaskToken"}

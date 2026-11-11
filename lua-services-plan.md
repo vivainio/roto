@@ -617,6 +617,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
       connector payload ceiling with `States.DataLimitExceeded`, and the 25 000-event limit.
 - [x] Lambda and SDK Task integrations, callback tokens and activities, modeled failures, Retry/Catch,
       nested executions, ECS `runTask.sync`, and concurrent inline Parallel/Map branches and items.
+- [x] SDK Glue catalog tasks use the bundled service and retain user-provided map keys and catchable Glue errors.
 - [x] R05 timers (Luau `db.schedule`, virtual clock): Wait, machine `TimeoutSeconds`, Task timeout/heartbeat paths for parked Tasks (Activity clocks start at `ActivityStarted`/`GetActivityTask`), stop cancels timers.
 - [x] Retry/Catch semantics, including `States.ALL` exclusions and list constraints,
       `MaxDelaySeconds` and `JitterStrategy: FULL`, and concurrent inline Parallel/Map.

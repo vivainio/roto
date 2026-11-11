@@ -1769,6 +1769,16 @@ local function task_call(resource: string, parameters: any, token: string?, time
         end
         return started
     end
+    if service == "glue" then
+        local options = { headers = { ["x-amz-target"] = "AWSGlue." .. operation }, body = parameters or {} }
+        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("glue", "POST", "/", options, timeout)
+            else roto.try_wire("glue", "POST", "/", options)
+        if not response.ok then
+            if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
+            fail("Glue." .. (response.code or "Error"), response.message or "")
+        end
+        return if response.body == "" then {} else roto.json_decode(response.body)
+    end
     if service == "lambda" then
         local name, payload = operation, parameters
         if name == "" then
