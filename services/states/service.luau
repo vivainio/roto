@@ -1779,6 +1779,20 @@ local function task_call(resource: string, parameters: any, token: string?, time
         end
         return if response.body == "" then {} else roto.json_decode(response.body)
     end
+    if service == "ecr" then
+        local body = recase(parameters or {}, false)
+        -- ECR's Tag members are already PascalCase on the wire, unlike its other fields.
+        if type(parameters) == "table" and parameters.Tags ~= nil then body.tags = parameters.Tags end
+        local options = { headers = { ["x-amz-target"] = "AmazonEC2ContainerRegistry_V20150921." .. operation },
+            body = body }
+        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("ecr", "POST", "/", options, timeout)
+            else roto.try_wire("ecr", "POST", "/", options)
+        if not response.ok then
+            if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
+            fail("Ecr." .. (response.code or "Error"), response.message or "")
+        end
+        return if response.body == "" then {} else recase(roto.json_decode(response.body), true)
+    end
     if service == "lambda" then
         local name, payload = operation, parameters
         if name == "" then

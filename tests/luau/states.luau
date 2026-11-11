@@ -182,6 +182,37 @@ test.case("SDK Glue tasks preserve catalog data and catch service errors", funct
     test.equal(roto.json_decode(caught.output).Error, "Glue.EntityNotFoundException")
 end)
 
+test.case("SDK ECR tasks create and inspect repositories and catch errors", function()
+    local arn = machine("ecr-sdk", {StartAt = "Create", States = {
+        Create = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:ecr:createRepository", TimeoutSeconds = 5,
+            Parameters = {RepositoryName = "sample", ImageScanningConfiguration = {ScanOnPush = true},
+                Tags = {{Key = "Owner", Value = "Ada"}}}, ResultPath = "$.created", Next = "Tags"},
+        Tags = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:ecr:listTagsForResource",
+            Parameters = { ["ResourceArn.$"] = "$.created.Repository.RepositoryArn" }, ResultPath = "$.tags", Next = "Describe"},
+        Describe = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:ecr:describeRepositories",
+            Parameters = {RepositoryNames = {"sample"}}, ResultPath = "$.described", End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = arn})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    if result.status ~= "SUCCEEDED" then error(roto.json_encode(result)) end
+    test.equal(result.status, "SUCCEEDED")
+    local output = roto.json_decode(result.output)
+    local repo = output.described.Repositories[1]
+    test.equal(repo.RepositoryName, "sample")
+    test.equal(repo.ImageScanningConfiguration.ScanOnPush, true)
+    test.equal(output.tags.Tags, {{Key = "Owner", Value = "Ada"}})
+    local missing = machine("ecr-sdk-missing", {StartAt = "Describe", States = {
+        Describe = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:ecr:describeRepositories",
+            Parameters = {RepositoryNames = {"missing"}},
+            Catch = {{ErrorEquals = {"Ecr.RepositoryNotFoundException"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local bad = test.call("states", "StartExecution", {stateMachineArn = missing})
+    local caught = test.call("states", "DescribeExecution", {executionArn = bad.executionArn})
+    test.equal(caught.status, "SUCCEEDED")
+    test.equal(roto.json_decode(caught.output).Error, "Ecr.RepositoryNotFoundException")
+end)
+
 test.case("Express definitions reject unsupported Task patterns", function()
     local resources = {"arn:aws:states:us-east-1:123456789012:activity:worker",
         "arn:aws:states:::states:startExecution.sync:2", "arn:aws:states:::sqs:sendMessage.waitForTaskToken"}
