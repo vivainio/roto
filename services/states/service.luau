@@ -3380,8 +3380,68 @@ function M.DescribeStateMachineForExecution(ctx: Ctx, input: any, db: Db)
     }
 end
 
--- Decode a supplied ItemReader fixture without calling S3. Formats that need binary
--- readers or a CSV parser are rejected explicitly until those readers are available.
+-- Parse text-delimited input, preserving quoted newlines, doubled quotes and escapes.
+local function test_csv(raw: string, config: any): any
+    local delimiters = { COMMA = ",", PIPE = "|", SEMICOLON = ";", SPACE = " ", TAB = "\t" }
+    local delimiter = delimiters[config.CSVDelimiter or "COMMA"]
+    if delimiter == nil then roto.error("ValidationException", "Invalid CSVDelimiter") end
+    local records: { { string } } = {}
+    local record: { string } = {}
+    local field: { string } = {}
+    local quoted, closed, started = false, false, false
+    local i = 1
+    local function end_field()
+        table.insert(record, table.concat(field)); field = {}; closed = false; started = false
+    end
+    local function end_record()
+        end_field(); table.insert(records, record); record = {}
+    end
+    while i <= #raw do
+        local c = string.sub(raw, i, i)
+        local next_c = string.sub(raw, i + 1, i + 1)
+        if c == "\\" then
+            if next_c == "" then roto.error("ValidationException", "CSV ends with an escape") end
+            table.insert(field, next_c); started = true; i += 1
+        elseif quoted then
+            if c == '"' then
+                if next_c == '"' then table.insert(field, '"'); i += 1 else quoted = false; closed = true end
+            else table.insert(field, c) end
+        elseif c == delimiter then end_field()
+        elseif c == "\n" or c == "\r" then
+            end_record()
+            if c == "\r" and next_c == "\n" then i += 1 end
+        elseif c == '"' and not started and not closed then quoted = true; started = true
+        elseif closed or c == '"' then roto.error("ValidationException", "Invalid CSV quotation")
+        else table.insert(field, c); started = true end
+        i += 1
+    end
+    if quoted then roto.error("ValidationException", "Unterminated CSV quotation") end
+    if started or closed or #record > 0 then end_record() end
+    local headers: any
+    if config.CSVHeaderLocation == "FIRST_ROW" then
+        if config.CSVHeaders ~= nil or #records == 0 then roto.error("ValidationException", "CSV requires a first-row header") end
+        headers = table.remove(records, 1)
+    elseif config.CSVHeaderLocation == "GIVEN" then
+        headers = config.CSVHeaders
+        if not is_array(headers) or #headers == 0 then roto.error("ValidationException", "CSVHeaders must be a nonempty array") end
+    else roto.error("ValidationException", "CSVHeaderLocation must be FIRST_ROW or GIVEN") end
+    local seen = {}
+    for _, header in ipairs(headers) do
+        if type(header) ~= "string" or header == "" or seen[header] then
+            roto.error("ValidationException", "CSV headers must be distinct nonempty strings")
+        end
+        seen[header] = true
+    end
+    local items = {}
+    for _, row in ipairs(records) do
+        local item = {}
+        for index, header in ipairs(headers) do item[header] = row[index] or "" end
+        table.insert(items, item)
+    end
+    return roto.array(items)
+end
+
+-- Decode a supplied ItemReader fixture without calling S3.
 local function test_reader(state: Doc, raw: any): any
     if type(raw) ~= "string" or #raw > MAX_PAYLOAD_BYTES then
         roto.error("ValidationException", "mapItemReaderData must be a string no larger than 256 KiB")
@@ -3393,8 +3453,8 @@ local function test_reader(state: Doc, raw: any): any
     local config = reader.ReaderConfig or {}
     if not is_object(config) then roto.error("ValidationException", "ReaderConfig must be an object") end
     local kind = config.InputType
-    if kind ~= "JSON" and kind ~= "JSONL" then
-        roto.error("ValidationException", "mapItemReaderData supports JSON and JSONL ItemReaders")
+    if kind ~= "JSON" and kind ~= "JSONL" and kind ~= "CSV" then
+        roto.error("ValidationException", "mapItemReaderData supports JSON, JSONL and CSV ItemReaders")
     end
     if config.ManifestType ~= nil then roto.error("ValidationException", "ItemReader manifests are not supported") end
     if state.ItemsPath ~= nil then roto.error("ValidationException", "ItemsPath cannot be combined with an S3 ItemReader") end
@@ -3423,7 +3483,7 @@ local function test_reader(state: Doc, raw: any): any
                 if items == nil then roto.error("ValidationException", "ItemsPointer does not exist in mapItemReaderData") end
             end
         end
-    else
+    elseif kind == "JSONL" then
         if config.ItemsPointer ~= nil then roto.error("ValidationException", "ItemsPointer requires JSON input") end
         local rows = {}
         for line in string.gmatch(raw .. "\n", "([^\n]*)\n") do
@@ -3434,6 +3494,9 @@ local function test_reader(state: Doc, raw: any): any
             end
         end
         items = roto.array(rows)
+    else
+        if config.ItemsPointer ~= nil then roto.error("ValidationException", "ItemsPointer requires JSON input") end
+        items = test_csv(raw, config)
     end
     if not is_array(items) then roto.error("ValidationException", "ItemReader data must select a JSON array") end
     if config.MaxItems ~= nil and config.MaxItemsPath ~= nil then

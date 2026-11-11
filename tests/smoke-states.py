@@ -834,6 +834,12 @@ def check_update_tags_and_test_state(s):
     assert json.loads(result["inspectionData"]["afterItemBatcher"]) == [
         {"Items": [7], "BatchInput": {"job": "demo"}},
         {"Items": [8], "BatchInput": {"job": "demo"}}], result
+    distributed["ItemReader"]["ReaderConfig"] = {"InputType": "CSV", "CSVHeaderLocation": "FIRST_ROW"}
+    args["definition"] = json.dumps(distributed)
+    args["stateConfiguration"]["mapItemReaderData"] = 'name,note\nAda,"hello, world"\n'
+    result = s.sf.test_state(**args)
+    assert json.loads(result["inspectionData"]["afterItemBatcher"]) == [
+        {"Items": [{"name": "Ada", "note": "hello, world"}], "BatchInput": {"job": "demo"}}], result
     mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
     mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
                              mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})

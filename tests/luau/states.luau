@@ -510,7 +510,30 @@ test.case("TestState reads supplied JSON and JSONL ItemReader data", function()
     })
     request.stateConfiguration.mapItemReaderData = '{bad}\n'
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
-    map.ItemReader.ReaderConfig.InputType = "CSV"
+    map.ItemReader.ReaderConfig.InputType = "PARQUET"
     request.definition = roto.json_encode(map)
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+end)
+
+test.case("TestState reads supplied CSV ItemReader data", function()
+    local map: any = {Type = "Map", ItemReader = {Resource = "arn:aws:states:::s3:getObject",
+        ReaderConfig = {InputType = "CSV", CSVHeaderLocation = "FIRST_ROW", CSVDelimiter = "PIPE"}},
+        ItemSelector = { ["row.$"] = "$$.Map.Item.Value", ["source.$"] = "$$.Map.Item.Source" },
+        ItemProcessor = {ProcessorConfig = {Mode = "DISTRIBUTED", ExecutionType = "STANDARD"},
+            StartAt = "Done", States = {Done = {Type = "Succeed"}}}, End = true}
+    local request: any = {definition = roto.json_encode(map), input = '{}', mock = {result = '[]'},
+        stateConfiguration = {mapItemReaderData = 'name|note|count\r\n"Ada|A"|"line 1\nline ""2"""|4\r\nBob|short\r\n'},
+        inspectionLevel = "DEBUG"}
+    local result = test.call("states", "TestState", request)
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector), {
+        {row = {name = "Ada|A", note = 'line 1\nline "2"', count = "4"}, source = "CSV"},
+        {row = {name = "Bob", note = "short", count = ""}, source = "CSV"},
+    })
+    map.ItemReader.ReaderConfig = {InputType = "CSV", CSVHeaderLocation = "GIVEN", CSVHeaders = {"a", "b"}}
+    request.definition = roto.json_encode(map)
+    request.stateConfiguration.mapItemReaderData = 'one\\,two,three,ignored\n'
+    result = test.call("states", "TestState", request)
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector)[1].row, {a = "one,two", b = "three"})
+    request.stateConfiguration.mapItemReaderData = '"unclosed'
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
 end)
