@@ -2028,7 +2028,7 @@ end
 
 -- What a Parallel or Map state starts: one child thread per branch or item. `key` locates the
 -- child's definition inside the state; `data` is its input.
-type MapItem = { Index: number, Value: any, Source: string }
+type MapItem = { Index: number, Value: any, Source: string, Key: string? }
 type Spawn = { key: { any }, data: any, map: MapItem? }
 
 local function finish_fanout(state: Doc, data: any, scope: Scope, results: any, inspection: Doc?): any
@@ -2068,15 +2068,35 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?, 
     end
     local items: any = if reader ~= nil then reader.items else effective
     if reader == nil and state.ItemsPath ~= nil then items = resolve(state.ItemsPath :: string, inner) end
-    if not is_array(items) then fail("States.Runtime", "The Map state's items must be an array") end
+    local distributed = is_object(state.ItemProcessor) and is_object(state.ItemProcessor.ProcessorConfig)
+        and state.ItemProcessor.ProcessorConfig.Mode == "DISTRIBUTED"
+    if not is_array(items) and not (distributed and is_object(items)) then
+        fail("States.Runtime", "The Map state's items must be an array or a Distributed Map object")
+    end
+    local entries: { any } = {}
+    if is_array(items) then
+        for _, value in ipairs(items) do table.insert(entries, { value = value }) end
+    else
+        local keys = {}
+        for item_key in pairs(items) do table.insert(keys, item_key) end
+        table.sort(keys)
+        for _, item_key in ipairs(keys) do table.insert(entries, { key = item_key, value = items[item_key] }) end
+    end
     if reader ~= nil and (reader.maxItems ~= nil or reader.maxItemsPath ~= nil) then
         local max_items = if reader.maxItemsPath then resolve(reader.maxItemsPath, inner) else reader.maxItems
         if type(max_items) ~= "number" or max_items < 1 or max_items % 1 ~= 0 then
             fail("States.Runtime", "MaxItems must resolve to a positive integer")
         end
-        local limited = {}
-        for index, item in ipairs(items) do if index > max_items then break end; table.insert(limited, item) end
-        items = roto.array(limited)
+        while #entries > max_items do table.remove(entries) end
+        if is_array(items) then
+            local limited = {}
+            for _, entry in ipairs(entries) do table.insert(limited, entry.value) end
+            items = roto.array(limited)
+        else
+            local limited = {}
+            for _, entry in ipairs(entries) do limited[entry.key] = entry.value end
+            items = limited
+        end
     end
     if inspection then
         if reader ~= nil and reader.pointer ~= nil then inspection.afterItemsPointer = roto.json_encode(items)
@@ -2086,11 +2106,12 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?, 
     local key = if state.ItemProcessor ~= nil then "ItemProcessor" else "Iterator"
     local selector = state.ItemSelector or state.Parameters
     local spawns: { Spawn } = {}
-    for index, item in ipairs(items :: { any }) do
-        local map: MapItem = { Index = index - 1, Value = item, Source = if reader ~= nil then reader.source else "STATE_DATA" }
+    for index, entry in ipairs(entries) do
+        local item = entry.value
+        local map: MapItem = { Index = index - 1, Value = item, Key = entry.key, Source = if reader ~= nil then reader.source else "STATE_DATA" }
         local context = table.clone(scope.context)
         context.Map = { Item = map }
-        local input = item
+        local input = if entry.key ~= nil then { [entry.key] = item } else item
         if selector ~= nil then input = apply_template(selector, { data = effective, context = context }) end
         table.insert(spawns, { key = { key }, data = input, map = map })
     end
@@ -2147,7 +2168,7 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?, 
             inspection.afterItemBatcher = roto.json_encode(roto.array(values))
         end
     end
-    return spawns, max_concurrency, #items
+    return spawns, max_concurrency, #entries
 end
 
 -- One state's effect on its input, without touching storage.
@@ -3498,7 +3519,7 @@ local function test_reader(state: Doc, raw: any): any
         if config.ItemsPointer ~= nil then roto.error("ValidationException", "ItemsPointer requires JSON input") end
         items = test_csv(raw, config)
     end
-    if not is_array(items) then roto.error("ValidationException", "ItemReader data must select a JSON array") end
+    if not is_array(items) and not is_object(items) then roto.error("ValidationException", "ItemReader data must select a JSON array or object") end
     if config.MaxItems ~= nil and config.MaxItemsPath ~= nil then
         roto.error("ValidationException", "ItemReader cannot specify both MaxItems and MaxItemsPath")
     end

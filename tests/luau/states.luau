@@ -559,3 +559,33 @@ test.case("TestState reads supplied CSV ItemReader data", function()
     request.stateConfiguration.mapItemReaderData = '"unclosed'
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
 end)
+
+test.case("TestState selects keys from Distributed Map object input", function()
+    local map: any = {Type = "Map", ItemsPath = "$.items",
+        ItemSelector = { ["key.$"] = "$$.Map.Item.Key", ["value.$"] = "$$.Map.Item.Value" },
+        ItemProcessor = {ProcessorConfig = {Mode = "DISTRIBUTED", ExecutionType = "STANDARD"},
+            StartAt = "Done", States = {Done = {Type = "Succeed"}}},
+        ToleratedFailureCount = 1, End = true}
+    local request: any = {definition = roto.json_encode(map), input = '{"items":{"beta":2,"alpha":1}}',
+        mock = {result = '["one","two"]'}, stateConfiguration = {mapIterationFailureCount = 1}, inspectionLevel = "DEBUG"}
+    local result = test.call("states", "TestState", request)
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector), {{key = "alpha", value = 1}, {key = "beta", value = 2}})
+    map.ItemsPath = nil
+    map.ItemReader = {Resource = "arn:aws:states:::s3:getObject", ReaderConfig = {InputType = "JSON", ItemsPointer = "/items", MaxItems = 1}}
+    request.definition = roto.json_encode(map)
+    request.input = '{}'
+    request.stateConfiguration = {mapItemReaderData = '{"items":{"beta":2,"alpha":1}}', mapIterationFailureCount = 1}
+    result = test.call("states", "TestState", request)
+    test.equal(roto.json_decode(result.inspectionData.afterItemsPointer), {alpha = 1})
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector), {{key = "alpha", value = 1}})
+    request.stateConfiguration.mapIterationFailureCount = 2
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    map.ItemReader = nil
+    map.ItemProcessor.ProcessorConfig.Mode = "INLINE"
+    request.definition = roto.json_encode(map)
+    request.input = '{"a":1}'
+    request.stateConfiguration = nil
+    local inline = test.call("states", "TestState", request)
+    test.equal(inline.error, "States.Runtime")
+end)

@@ -634,7 +634,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] `TestState` state selection by name in complete definitions, including nested Map and Parallel states.
 - [x] Validate named Map/Parallel error sources and apply parent Retry/Catch in `TestState`.
 - [x] `TestState` DEBUG/TRACE input, result and path inspection for Pass and Task states and inline Map/Parallel results.
-- [x] Distributed Map `TestState` mocks for array input, exported results, item batching, failure thresholds, and supplied JSON/JSONL/CSV ItemReader data.
+- [x] Distributed Map `TestState` mocks for array and object input, exported results, item batching, failure thresholds, and supplied JSON/JSONL/CSV ItemReader data.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
       execution, activity long polling, plain Task timeout enforcement, `TestState` mock result
       validation of unsupported model regex constructs and service bundles without vendored response models,
