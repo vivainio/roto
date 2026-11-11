@@ -622,6 +622,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
       `MaxDelaySeconds` and `JitterStrategy: FULL`, and concurrent inline Parallel/Map.
 - [x] Activities/task tokens, HTTP activity long polling and nested execution sync patterns; nested starts schedule the child before it runs, and synchronous parents ignore late child results after their deadline (a blocking child can delay timer processing). ECS sync enforces the initial call deadline and best-effort stops tasks on timeout, stop or branch cancellation.
 - [x] Nested workflows can use SDK `sfn:sendTaskSuccess`, `sendTaskFailure` and `sendTaskHeartbeat` to complete or maintain a parent's callback task, with service errors available to Retry/Catch.
+- [x] SDK tasks can describe and list state machines, executions and activities, and page through execution history from inside a workflow.
 - [x] Wall-clock Task timeouts for Lambda, ECS and ordinary SDK Request Response integrations; peer calls continue independently after timeout.
 - [x] Published state-machine definition versions and aliases with weighted StartExecution routing.
 - [x] HTTP and nested SDK `StartSyncExecution` for Express workflows, including waits, failures and the five-minute execution limit; Express definitions reject activities, callbacks and `.sync` integrations; both synchronous and asynchronous starts use unique execution identities; nested start validation errors retain their service prefixes for Retry/Catch; SDK synchronous Express children continue if the parent request times out or is cancelled.

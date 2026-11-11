@@ -1697,6 +1697,13 @@ local function poll_ecs(poll: any): (any, boolean)
     return recase(described, true), failed
 end
 
+local LOCAL_SDK_OPERATIONS = {
+    SendTaskSuccess = true, SendTaskFailure = true, SendTaskHeartbeat = true,
+    DescribeExecution = true, DescribeStateMachineForExecution = true, DescribeStateMachine = true,
+    ListExecutions = true, ListStateMachines = true, GetExecutionHistory = true,
+    DescribeActivity = true, ListActivities = true,
+}
+
 local function task_call(resource: string, parameters: any, token: string?, timeout: number?): any
     local service, operation = task_target(resource)
     local label = SERVICE_NAMES[service] or capitalize(service)
@@ -1740,7 +1747,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
             input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true, "Sfn")
         return { Pending = started.executionArn, DetachOnCancel = true }
     end
-    if service == "states" and string.find(resource, ":aws-sdk:", 1, true) and (operation == "SendTaskSuccess" or operation == "SendTaskFailure" or operation == "SendTaskHeartbeat" or operation == "DescribeExecution" or operation == "DescribeStateMachineForExecution") then
+    if service == "states" and string.find(resource, ":aws-sdk:", 1, true) and LOCAL_SDK_OPERATIONS[operation] then
         if active == nil then fail("States.Runtime", "Step Functions SDK calls require a running workflow") end
         local current = active :: { ctx: Ctx, db: Db }
         local ok, result = pcall(M[operation], current.ctx, recase(parameters or {}, false), current.db)

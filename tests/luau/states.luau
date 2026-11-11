@@ -357,6 +357,40 @@ test.case("SDK tasks describe executions and catch missing execution errors", fu
     test.equal(roto.json_decode(caught.output).Error, "Sfn.ExecutionDoesNotExist")
 end)
 
+test.case("SDK tasks list and inspect state machines and execution history", function()
+    local target = machine("sdk-inspect-target", {StartAt = "Done", States = {Done = {Type = "Succeed"}}})
+    local execution = test.call("states", "StartExecution", {stateMachineArn = target}).executionArn
+    local activity = test.call("states", "CreateActivity", {name = "sdk-inspect-activity"}).activityArn
+    local observer = machine("sdk-inspect-observer", {StartAt = "Machine", States = {
+        Machine = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:describeStateMachine",
+            Parameters = {StateMachineArn = target}, ResultPath = "$.machine", Next = "Executions"},
+        Executions = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:listExecutions",
+            Parameters = {StateMachineArn = target}, ResultPath = "$.executions", Next = "History"},
+        History = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:getExecutionHistory",
+            Parameters = {ExecutionArn = execution, MaxResults = 1}, ResultPath = "$.history", Next = "NextPage"},
+        NextPage = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:getExecutionHistory",
+            Parameters = {ExecutionArn = execution, MaxResults = 1, ["NextToken.$"] = "$.history.NextToken"}, ResultPath = "$.nextPage", Next = "Machines"},
+        Machines = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:listStateMachines",
+            Parameters = {}, ResultPath = "$.machines", Next = "Activity"},
+        Activity = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:describeActivity",
+            Parameters = {ActivityArn = activity}, ResultPath = "$.activity", Next = "Activities"},
+        Activities = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:listActivities",
+            Parameters = {}, ResultPath = "$.activities", End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = observer})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    local output = roto.json_decode(result.output)
+    test.equal(output.machine.StateMachineArn, target)
+    test.equal(output.executions.Executions[1].ExecutionArn, execution)
+    test.equal(output.history.Events[1].Type, "ExecutionStarted")
+    assert(output.history.NextToken ~= nil)
+    test.equal(output.nextPage.Events[1].Type, "SucceedStateEntered")
+    test.equal(#output.machines.StateMachines, 2)
+    test.equal(output.activity.ActivityArn, activity)
+    test.equal(output.activities.Activities[1].ActivityArn, activity)
+end)
+
 test.case("Express child continues after SDK request timeout or parent stop", function()
     local queue = test.call("sqs", "CreateQueue", {QueueName = "detached-child"}).QueueUrl
     local role = "arn:aws:iam::123456789012:role/test"
