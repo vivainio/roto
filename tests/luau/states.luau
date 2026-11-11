@@ -300,6 +300,7 @@ test.case("nested execution start errors are catchable service errors", function
         definition = '{"StartAt":"Done","States":{"Done":{"Type":"Succeed"}}}'}).stateMachineArn
     local cases = {
         {resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution", params = {StateMachineArn = child, Input = "{"}, error = "Sfn.InvalidExecutionInput"},
+        {resource = "arn:aws:states:::aws-sdk:sfn:startExecution", params = {StateMachineArn = child, Input = {value = 1}}, error = "Sfn.InvalidExecutionInput"},
         {resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution", params = {StateMachineArn = child, Name = "bad name"}, error = "Sfn.InvalidName"},
         {resource = "arn:aws:states:::states:startExecution", params = {StateMachineArn = "missing"}, error = "StepFunctions.StateMachineDoesNotExist"},
         {resource = "arn:aws:states:::aws-sdk:sfn:startExecution", params = {StateMachineArn = "missing"}, error = "Sfn.StateMachineDoesNotExist"},
@@ -314,6 +315,19 @@ test.case("nested execution start errors are catchable service errors", function
         test.equal(result.status, "SUCCEEDED")
         test.equal(roto.json_decode(result.output).Error, item.error)
     end
+end)
+
+test.case("SDK nested execution passes its trace header to the child", function()
+    local child = machine("sdk-trace-child", {StartAt = "Done", States = {Done = {Type = "Succeed"}}})
+    local parent = machine("sdk-trace-parent", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:startExecution",
+            Parameters = {StateMachineArn = child, Input = '{"value":1}', TraceHeader = "Root=1-test"}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+    local output = roto.json_decode(test.call("states", "DescribeExecution", {executionArn = run.executionArn}).output)
+    local child_result = test.call("states", "DescribeExecution", {executionArn = output.ExecutionArn})
+    test.equal(child_result.traceHeader, "Root=1-test")
+    test.equal(roto.json_decode(child_result.input), {value = 1})
 end)
 
 test.case("Express child continues after SDK request timeout or parent stop", function()

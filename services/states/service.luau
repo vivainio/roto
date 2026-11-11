@@ -1704,13 +1704,15 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
+        local sdk = string.find(resource, ":aws-sdk:", 1, true) ~= nil
+        if sdk and input ~= nil and type(input) ~= "string" then fail("Sfn.InvalidExecutionInput", "Input must be a JSON string") end
         local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?, string?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
-            { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
+            { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input), traceHeader = params.TraceHeader },
             (active :: { ctx: Ctx, db: Db }).db,
             if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil,
             true,
-            if string.find(resource, ":aws-sdk:", 1, true) then "Sfn" else "StepFunctions"
+            if sdk then "Sfn" else "StepFunctions"
         )
         local exec = (active :: { ctx: Ctx, db: Db }).db.get(ns((active :: { ctx: Ctx, db: Db }).ctx, "execution"), started.executionArn) :: Doc
         if token ~= nil and sync_mode(resource) ~= nil then
