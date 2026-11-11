@@ -192,6 +192,58 @@ test.case("nested synchronous task timeout stops a waiting child", function()
     test.equal(test.call("states", "DescribeExecution", {executionArn = children[1].executionArn}).status, "ABORTED")
 end)
 
+test.case("SDK StartSyncExecution waits for Express children and returns failures as data", function()
+    local role = "arn:aws:iam::123456789012:role/test"
+    local child = test.call("states", "CreateStateMachine", {name = "sdk-express-child", roleArn = role, type = "EXPRESS",
+        definition = roto.json_encode({StartAt = "Wait", States = {Wait = {Type = "Wait", Seconds = 5, End = true}}})}).stateMachineArn
+    local resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution"
+    local definition = {StartAt = "Call", States = {Call = {Type = "Task", Resource = resource,
+        Parameters = {StateMachineArn = child, Input = '{"value":7}'}, End = true}}}
+    local parent = machine("sdk-express-parent", definition)
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+    test.equal(test.call("states", "DescribeExecution", {executionArn = run.executionArn}).status, "RUNNING")
+    test.advance(0)
+    test.advance(5)
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    local output = roto.json_decode(result.output)
+    test.equal(output.Status, "SUCCEEDED")
+    test.equal(roto.json_decode(output.Output), {value = 7})
+    local bad = test.call("states", "CreateStateMachine", {name = "sdk-express-fail", roleArn = role, type = "EXPRESS",
+        definition = '{"StartAt":"Fail","States":{"Fail":{"Type":"Fail","Error":"Oops","Cause":"bad"}}}'}).stateMachineArn
+    local failing_parent = machine("sdk-express-failure-parent", {StartAt = "Call", States = {Call = {Type = "Task", Resource = resource,
+        Parameters = {StateMachineArn = bad}, End = true}}})
+    local failed_run = test.call("states", "StartExecution", {stateMachineArn = failing_parent})
+    test.advance(0)
+    local failed = test.call("states", "DescribeExecution", {executionArn = failed_run.executionArn})
+    test.equal(failed.status, "SUCCEEDED")
+    local error_result = roto.json_decode(failed.output)
+    test.equal(error_result.Status, "FAILED")
+    test.equal(error_result.Error, "Oops")
+    test.equal(error_result.Cause, "bad")
+    local express_parent = test.call("states", "CreateStateMachine", {name = "sdk-express-outer", roleArn = role,
+        type = "EXPRESS", definition = roto.json_encode(definition)}).stateMachineArn
+    local express_run = test.call("states", "StartExecution", {stateMachineArn = express_parent})
+    test.advance(0)
+    test.advance(5)
+    local express_result = test.call("states", "DescribeExecution", {executionArn = express_run.executionArn})
+    test.equal(roto.json_decode(express_result.output).Status, "SUCCEEDED")
+    local timed_parent = machine("sdk-express-timeout-parent", {StartAt = "Call", States = {Call = {Type = "Task", Resource = resource,
+        TimeoutSeconds = 2, Parameters = {StateMachineArn = child}, Catch = {{ErrorEquals = {"States.Timeout"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"}}})
+    local timed_run = test.call("states", "StartExecution", {stateMachineArn = timed_parent})
+    test.advance(0)
+    test.advance(2)
+    test.equal(roto.json_decode(test.call("states", "DescribeExecution", {executionArn = timed_run.executionArn}).output).Error, "States.Timeout")
+    local wrong_type = machine("sdk-standard-target", {StartAt = "Done", States = {Done = {Type = "Succeed"}}})
+    local bad_parent = machine("sdk-standard-target-parent", {StartAt = "Call", States = {Call = {Type = "Task", Resource = resource,
+        Parameters = {StateMachineArn = wrong_type}, Catch = {{ErrorEquals = {"Sfn.StateMachineTypeNotSupported"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"}}})
+    local bad_run = test.call("states", "StartExecution", {stateMachineArn = bad_parent})
+    test.equal(roto.json_decode(test.call("states", "DescribeExecution", {executionArn = bad_run.executionArn}).output).Error,
+        "Sfn.StateMachineTypeNotSupported")
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})
@@ -428,6 +480,12 @@ test.case("TestState validates nested execution response mocks", function()
     test.equal(test.call("states", "TestState", request(".sync:2", decoded)).status, "SUCCEEDED")
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request(".sync", decoded)) end)
     test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request("", '{}')) end)
+    local sdk = roto.json_encode({Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution", End = true})
+    local valid_sdk = '{"ExecutionArn":"arn:aws:states:us-east-1:123456789012:express:machine:name:id","StartDate":1,"StopDate":2,"Status":"SUCCEEDED","Output":"{}"}'
+    test.equal(test.call("states", "TestState", {definition = sdk, mock = {result = valid_sdk}}).status, "SUCCEEDED")
+    test.expect_error("ValidationException", function()
+        return test.try_call("states", "TestState", {definition = sdk, mock = {result = '{"Status":"BAD"}', fieldValidationMode = "PRESENT"}})
+    end)
 end)
 
 test.case("TestState checks modeled patterns in task mocks", function()

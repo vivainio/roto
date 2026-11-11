@@ -1599,7 +1599,7 @@ end
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
 local active: { ctx: Ctx, db: Db }? = nil
-local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?) -> any
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
@@ -1618,7 +1618,7 @@ local function task_target(resource: any): (string, string)
     if integration == "lambda:invoke" then return "lambda", "" end
     local service, action = string.match(integration :: string, "^([%w%-]+):(%w+)$")
     if service == nil then fail("States.Runtime", "Unsupported Task resource '" .. text .. "'") end
-    return service :: string, capitalize(action :: string)
+    return if service == "sfn" then "states" else service :: string, capitalize(action :: string)
 end
 
 local function function_name(arn: string): string
@@ -1704,7 +1704,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
-        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any)(
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
@@ -1717,6 +1717,25 @@ local function task_call(resource: string, parameters: any, token: string?, time
             return describe_doc(exec, sync_mode(resource) == "v2")
         end
         return { ExecutionArn = started.executionArn, StartDate = started.startDate }
+    end
+    if service == "states" and operation == "StartSyncExecution" then
+        if active == nil or token == nil then fail("States.Runtime", "StartSyncExecution requires a running workflow") end
+        local params: any = parameters or {}
+        if type(params.StateMachineArn) ~= "string" then fail("Sfn.InvalidArn", "StateMachineArn is required") end
+        if params.Input ~= nil and type(params.Input) ~= "string" then fail("Sfn.InvalidExecutionInput", "Input must be a JSON string") end
+        if params.IncludedData ~= nil and params.IncludedData ~= "ALL_DATA" and params.IncludedData ~= "METADATA_ONLY" then
+            fail("Sfn.ValidationException", "Invalid IncludedData")
+        end
+        local current = active :: { ctx: Ctx, db: Db }
+        local alias = current.db.get(ns(current.ctx, "alias"), params.StateMachineArn) :: Doc?
+        local version = current.db.get(ns(current.ctx, "version"), params.StateMachineArn) :: Doc?
+        local arn = if alias then alias.stateMachineArn elseif version then version.stateMachineArn else params.StateMachineArn
+        local target = current.db.get(ns(current.ctx, "machine"), arn) :: Doc?
+        if not target then fail("Sfn.StateMachineDoesNotExist", "State machine does not exist") end
+        if target.type ~= "EXPRESS" then fail("Sfn.StateMachineTypeNotSupported", "StartSyncExecution requires an EXPRESS state machine") end
+        local started = start_execution(current.ctx, { stateMachineArn = params.StateMachineArn, name = params.Name,
+            input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true)
+        return { Pending = started.executionArn }
     end
     if service == "ecs" then
         local started = recase(ecs_call(operation, recase(parameters or {}, false), timeout), true)
@@ -1776,6 +1795,7 @@ end
 
 local function waits_for_token(resource: string): boolean
     return is_activity(resource) or sync_mode(resource) ~= nil
+        or string.match(resource, "^arn:[^:]*:states:::aws%-sdk:sfn:startSyncExecution$") ~= nil
         or (string.find(resource, ":states:::", 1, true) ~= nil and string.match(resource, "%.waitForTaskToken$") ~= nil)
 end
 
@@ -3044,7 +3064,7 @@ function M.ListStateMachineAliases(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, rows, "stateMachineAliases")
 end
 
-start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?): any
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean, express: boolean? }?, defer: boolean?): any
     local requested_arn = roto.required(input, "stateMachineArn", "InvalidArn")
     local alias = db.get(ns(ctx, "alias"), requested_arn) :: Doc?
     local version = db.get(ns(ctx, "version"), requested_arn) :: Doc?
@@ -3127,7 +3147,7 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
         db.schedule("timeout/" .. arn, { delay = timeout, payload = { arn = arn, kind = "timeout" } })
     end
     db.put(ns(ctx, "execution"), arn, exec)
-    if parent then db.put(ns(ctx, "parent"), arn, { token = parent.token, v2 = parent.v2 }) end
+    if parent then db.put(ns(ctx, "parent"), arn, { token = parent.token, v2 = parent.v2, express = parent.express }) end
     local root: Thread = { id = "t0", path = {}, state = definition.StartAt, data = data, lastEventId = history.count }
     local cursor = { definition = definition_text, input = data, threads = { t0 = root }, next_tid = 1 }
     if defer then
@@ -3288,6 +3308,16 @@ notify_parent = function(ctx: Ctx, db: Db, exec: Doc)
     -- busy running the child. Do not let that late completion cancel the timeout.
     if type(token_entry.deadline) == "number" and roto.now() >= token_entry.deadline then
         deliver(ctx, db, { taskToken = token }, { error = "States.Timeout", cause = "The task timed out" })
+        return
+    end
+    if link.express then
+        deliver(ctx, db, { taskToken = token }, { output = {
+            ExecutionArn = exec.executionArn, StateMachineArn = exec.stateMachineArn, Name = exec.name,
+            Status = exec.status, StartDate = exec.startDate, StopDate = exec.stopDate,
+            Input = exec.input, InputDetails = exec.inputDetails and { Included = exec.inputDetails.included },
+            Output = exec.output, OutputDetails = exec.outputDetails and { Included = exec.outputDetails.included },
+            Error = exec.error, Cause = exec.cause, TraceHeader = exec.traceHeader,
+        } })
         return
     end
     local described = describe_doc(exec, (link :: Doc).v2 == true)
