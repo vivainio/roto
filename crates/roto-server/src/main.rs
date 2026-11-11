@@ -998,14 +998,18 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
     call.operation = operation.clone();
     let started = std::time::Instant::now();
     let long_poll = service_name == "states" && operation.as_deref() == Some("GetActivityTask");
-    let result = dispatch_activity_poll(
-        handler,
-        ctx.clone(),
-        raw.clone(),
-        long_poll,
-        std::time::Duration::from_secs(60),
-    )
-    .await;
+    let result = if service_name == "states" && operation.as_deref() == Some("StartSyncExecution") {
+        dispatch_sync_execution(handler, ctx.clone(), raw.clone()).await
+    } else {
+        dispatch_activity_poll(
+            handler,
+            ctx.clone(),
+            raw.clone(),
+            long_poll,
+            std::time::Duration::from_secs(60),
+        )
+        .await
+    };
     let unsupported = match &result {
         Ok(Ok(response)) => unsupported::response(response),
         Ok(Err(error)) => unsupported::error(error),
@@ -1062,6 +1066,55 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         Err(_) => plain_error(&AwsError::internal("handler panicked"), &request_id),
     };
     into_request_response(response, &raw)
+}
+
+/// Start once, then wait without holding the Luau service or its SQLite transaction.
+async fn dispatch_sync_execution(
+    handler: Arc<dyn ServiceHandler>,
+    context: RequestContext,
+    request: RawRequest,
+) -> Result<Result<RawResponse, AwsError>, tokio::task::JoinError> {
+    let h = handler.clone();
+    let ctx = context.clone();
+    let mut req = request.clone();
+    req.headers
+        .retain(|(key, _)| !key.eq_ignore_ascii_case("x-amz-target"));
+    req.headers.push((
+        "x-amz-target".into(),
+        "AWSStepFunctions.RotoStartSyncExecution".into(),
+    ));
+    let initial = tokio::task::spawn_blocking(move || h.handle(&ctx, &req)).await;
+    let arn = match &initial {
+        Ok(Ok(response)) if response.status < 400 => {
+            serde_json::from_slice::<serde_json::Value>(&response.body)
+                .ok()
+                .and_then(|body| body["executionArn"].as_str().map(str::to_owned))
+        }
+        _ => None,
+    };
+    let Some(arn) = arn else {
+        return initial;
+    };
+    let mut poll = request;
+    poll.headers
+        .retain(|(key, _)| !key.eq_ignore_ascii_case("x-amz-target"));
+    poll.headers.push((
+        "x-amz-target".into(),
+        "AWSStepFunctions.RotoGetSyncExecution".into(),
+    ));
+    poll.body = serde_json::to_vec(&serde_json::json!({"executionArn":arn})).expect("JSON request");
+    loop {
+        let h = handler.clone();
+        let ctx = context.clone();
+        let req = poll.clone();
+        let result = tokio::task::spawn_blocking(move || h.handle(&ctx, &req)).await;
+        let pending = matches!(&result, Ok(Ok(response)) if response.status < 400
+            && serde_json::from_slice::<serde_json::Value>(&response.body).is_ok_and(|body| body["pending"] == true));
+        if !pending {
+            return result;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Poll outside the service transaction so workers can enqueue tasks while an HTTP request waits.

@@ -1608,7 +1608,7 @@ end
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
 local active: { ctx: Ctx, db: Db }? = nil
-local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?, boolean?) -> any
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
@@ -1712,7 +1712,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
-        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any)(
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?, boolean?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
@@ -1789,6 +1789,7 @@ end
 local function lambda_arn(execution_arn: string, function_name_value: string): string
     if string.sub(function_name_value, 1, 4) == "arn:" then return function_name_value end
     local partition, region, account = string.match(execution_arn, "^arn:([^:]+):states:([^:]+):([^:]+):execution:")
+    if partition == nil then partition, region, account = string.match(execution_arn, "^arn:([^:]+):states:([^:]+):([^:]+):express:") end
     local partial_account, partial_name = string.match(function_name_value, "^(%d+):function:(.+)$")
     if partial_account then account = partial_account; function_name_value = partial_name :: string end
     return "arn:" .. (partition or "aws") .. ":lambda:" .. (region or "") .. ":" .. (account or "") .. ":function:" .. function_name_value
@@ -3050,7 +3051,7 @@ function M.ListStateMachineAliases(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, rows, "stateMachineAliases")
 end
 
-start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?): any
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?, sync_identity: boolean?): any
     local requested_arn = roto.required(input, "stateMachineArn", "InvalidArn")
     local alias = db.get(ns(ctx, "alias"), requested_arn) :: Doc?
     local version = db.get(ns(ctx, "version"), requested_arn) :: Doc?
@@ -3086,7 +3087,9 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
             end
         end
     end
-    local arn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id .. ":execution:" .. sm.name .. ":" .. name
+    local arn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id
+        .. (if sync_identity then ":express:" else ":execution:") .. sm.name .. ":" .. name
+        .. (if sync_identity then ":" .. roto.uuid() else "")
     local existing = db.get(ns(ctx, "execution"), arn) :: Doc?
     if existing then
         -- Standard executions are idempotent while running; Express names can be reused once closed.
@@ -3131,6 +3134,7 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
     local definition = roto.json_decode(definition_text)
     local data = roto.json_decode(payload)
     local timeout = definition.TimeoutSeconds
+    if sm.type == "EXPRESS" then timeout = math.min(timeout or 300, 300) end
     if type(timeout) == "number" then
         db.schedule("timeout/" .. arn, { delay = timeout, payload = { arn = arn, kind = "timeout" } })
     end
@@ -3150,6 +3154,35 @@ end
 
 function M.StartExecution(ctx: Ctx, input: any, db: Db)
     return start_execution(ctx, input, db, nil)
+end
+
+-- HTTP dispatch waits outside the service transaction for this deferred execution.
+function M.RotoStartSyncExecution(ctx: Ctx, input: any, db: Db)
+    local requested = roto.required(input, "stateMachineArn", "InvalidArn")
+    local alias = db.get(ns(ctx, "alias"), requested) :: Doc?
+    local version = db.get(ns(ctx, "version"), requested) :: Doc?
+    local arn = if alias then alias.stateMachineArn elseif version then version.stateMachineArn else requested
+    local sm = machine(ctx, db, arn)
+    if sm.type ~= "EXPRESS" then roto.error("StateMachineTypeNotSupported", "StartSyncExecution requires an EXPRESS state machine") end
+    if input.includedData ~= nil and input.includedData ~= "ALL_DATA" and input.includedData ~= "METADATA_ONLY" then
+        roto.error("ValidationException", "Invalid includedData")
+    end
+    return start_execution(ctx, input, db, nil, true, true)
+end
+
+function M.StartSyncExecution(_ctx: Ctx, _input: any, _db: Db)
+    roto.error("ValidationException", "StartSyncExecution requires HTTP dispatch")
+end
+
+function M.RotoGetSyncExecution(ctx: Ctx, input: any, db: Db)
+    local exec = execution(ctx, db, input.executionArn)
+    if exec.status == "RUNNING" then return { pending = true } end
+    return {
+        executionArn = exec.executionArn, stateMachineArn = exec.stateMachineArn, name = exec.name,
+        status = exec.status, startDate = exec.startDate, stopDate = exec.stopDate,
+        input = exec.input, inputDetails = exec.inputDetails, output = exec.output, outputDetails = exec.outputDetails,
+        error = exec.error, cause = exec.cause, traceHeader = exec.traceHeader,
+    }
 end
 
 -- Timers: a Wait that finished, a looping machine that yielded, or TimeoutSeconds expiring.

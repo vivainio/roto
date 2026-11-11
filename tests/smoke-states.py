@@ -1021,6 +1021,38 @@ def check_list_execution_filters(s):
     assert results[0]["stopDate"] > results[1]["stopDate"]
 
 
+def check_sync_express(s):
+    standard = s.machine("sync-standard", {"StartAt": "Done", "States": {"Done": {"Type": "Succeed"}}})
+    assert code(lambda: s.sf.start_sync_execution(stateMachineArn=standard)) == "StateMachineTypeNotSupported"
+    def express(name, definition):
+        return s.sf.create_state_machine(name=name, roleArn=ROLE, type="EXPRESS", definition=json.dumps(definition))["stateMachineArn"]
+    success = express("sync-success", {"StartAt": "Done", "States": {"Done": {"Type": "Pass", "Result": {"ok": True}, "End": True}}})
+    result = s.sf.start_sync_execution(stateMachineArn=success, input='{"x":1}', name="same")
+    assert result["status"] == "SUCCEEDED" and json.loads(result["output"]) == {"ok": True}, result
+    assert result["name"] == "same" and result["stateMachineArn"] == success and result["stopDate"] >= result["startDate"], result
+    failure = express("sync-failure", {"StartAt": "Fail", "States": {"Fail": {"Type": "Fail", "Error": "Oops", "Cause": "bad"}}})
+    result = s.sf.start_sync_execution(stateMachineArn=failure)
+    assert result["status"] == "FAILED" and result["error"] == "Oops" and result["cause"] == "bad", result
+    waiting = express("sync-wait", {"StartAt": "Wait", "States": {
+        "Wait": {"Type": "Wait", "Seconds": 5, "Next": "Done"}, "Done": {"Type": "Succeed"}}})
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        calls = [executor.submit(s.sf.start_sync_execution, stateMachineArn=waiting, name="same", input='{"ok":true}') for _ in range(2)]
+        time.sleep(0.4)
+        assert all(not call.done() for call in calls)
+        s.advance(5)
+        results = [call.result(timeout=5) for call in calls]
+    assert all(item["status"] == "SUCCEEDED" and json.loads(item["output"]) == {"ok": True} for item in results), results
+    assert results[0]["executionArn"] != results[1]["executionArn"]
+    too_long = express("sync-timeout", {"StartAt": "Wait", "States": {"Wait": {"Type": "Wait", "Seconds": 400, "End": True}}})
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        call = executor.submit(s.sf.start_sync_execution, stateMachineArn=too_long)
+        time.sleep(0.2)
+        assert not call.done()
+        s.advance(300)
+        result = call.result(timeout=5)
+    assert result["status"] == "TIMED_OUT", result
+
+
 def check_plain_task_timeout(s):
     machine = s.machine("plain-task-timeout", {"StartAt": "Call", "States": {
         "Call": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow",
@@ -1065,7 +1097,7 @@ def main():
                       check_retry_and_catch, check_history_pages_and_validation,
                       check_loops_fail_instead_of_hanging, check_update_tags_and_test_state,
                       check_list_pagination_tokens, check_list_execution_filters,
-                      check_plain_task_timeout, check_rust_services_follow_the_clock):
+                      check_sync_express, check_plain_task_timeout, check_rust_services_follow_the_clock):
             started = time.monotonic()
             check(server)
             print(f"{check.__name__}: ok ({time.monotonic() - started:.1f}s)")
