@@ -620,8 +620,8 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] R05 timers (Luau `db.schedule`, virtual clock): Wait, machine `TimeoutSeconds`, Task timeout/heartbeat paths for parked Tasks (Activity clocks start at `ActivityStarted`/`GetActivityTask`), stop cancels timers.
 - [x] Retry/Catch semantics, including `States.ALL` exclusions and list constraints,
       `MaxDelaySeconds` and `JitterStrategy: FULL`, and concurrent inline Parallel/Map.
-- [x] Activities/task tokens and nested execution sync patterns.
-- [x] Wall-clock Task timeouts for Lambda and ordinary SDK Request Response integrations; peer calls continue independently after timeout.
+- [x] Activities/task tokens and nested execution sync patterns; nested Request Response starts schedule the child without waiting for it.
+- [x] Wall-clock Task timeouts for Lambda, ECS and ordinary SDK Request Response integrations; peer calls continue independently after timeout.
 - [x] Published state-machine definition versions and aliases with weighted StartExecution routing.
 - [x] `TestState` Task mock results with `fieldValidationMode: NONE`, inline Map/Parallel
       mock results, and mock errors with Retry/Catch selection, without invoking the target or
@@ -637,7 +637,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] `TestState` DEBUG/TRACE input, result and path inspection for Pass and Task states and inline Map/Parallel results.
 - [x] Distributed Map `TestState` mocks for array and object input, exported results, item batching, failure thresholds, and supplied JSON/JSONL/CSV ItemReader data.
 - [ ] JSONata state execution, Distributed Map, broader `.sync` integrations, Express synchronous
-      execution, activity long polling, ECS and nested-execution Request Response timeouts, `TestState` mock result
+      execution, activity long polling, nested-execution Request Response timeouts, `TestState` mock result
       validation of unsupported model regex constructs and service bundles without vendored response models,
       Distributed Map mocks with Parquet and manifest reader data,
       and verification of history predecessor links for

@@ -471,6 +471,24 @@ def check_nested_executions(s):
         "Type": "Task", "Resource": "arn:aws:states:::states:startExecution",
         "Parameters": {"StateMachineArn": slow, "Input": {"n": 1}}, "ResultPath": "$.child", "End": True}}}), {}))
     assert started["status"] == "SUCCEEDED" and "ExecutionArn" in json.loads(started["output"])["child"], started
+    blocking_child = s.machine("child-slow-lambda", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow", "End": True}}})
+    fire = s.machine("fire-child-slow-lambda", {"StartAt": "Call", "States": {"Call": {
+        "Type": "Task", "Resource": "arn:aws:states:::states:startExecution", "TimeoutSeconds": 1,
+        "Parameters": {"StateMachineArn": blocking_child}, "End": True}}})
+    start = time.monotonic()
+    parent_arn = s.run(fire, {})
+    assert time.monotonic() - start < 1.5
+    completed_parent = s.status(parent_arn)
+    assert completed_parent["status"] == "SUCCEEDED"
+    child_arn = json.loads(completed_parent["output"])["ExecutionArn"]
+    deadline = time.monotonic() + 5
+    child_status = s.status(child_arn)
+    while child_status["status"] == "RUNNING" and time.monotonic() < deadline:
+        time.sleep(0.05)
+        child_status = s.status(child_arn)
+    assert child_status["status"] == "SUCCEEDED", child_status
+    assert s.events(child_arn)[0] == "ExecutionStarted"
 
 
 def check_ecs_run_task_sync(s):
@@ -518,7 +536,7 @@ def check_ecs_run_task_sync(s):
     # Without .sync the Task returns right after RunTask.
     plain = s.status(s.run(s.machine("ecs-plain", {"StartAt": "Run", "States": {"Run": {
         "Type": "Task", "Resource": "arn:aws:states:::ecs:runTask",
-        "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"}, "End": True}}}), {}))
+        "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"}, "TimeoutSeconds": 2, "End": True}}}), {}))
     assert plain["status"] == "SUCCEEDED" and json.loads(plain["output"])["Tasks"][0]["LastStatus"], plain
 
 

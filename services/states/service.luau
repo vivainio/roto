@@ -1606,7 +1606,7 @@ end
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
 local active: { ctx: Ctx, db: Db }? = nil
-local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?) -> any
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
@@ -1662,12 +1662,17 @@ local function recase(value: any, to_upper: boolean): any
 end
 
 -- ECS is a Luau service, which `roto.call` does not reach, so it is called as a raw request.
-local function ecs_call(operation: string, body: any): any
-    local response = roto.try_wire("ecs", "POST", "/", {
+local function ecs_call(operation: string, body: any, timeout: number?): any
+    local options = {
         headers = { ["x-amz-target"] = "AmazonEC2ContainerServiceV20141113." .. operation, ["content-type"] = "application/x-amz-json-1.1" },
         body = roto.json_encode(body),
-    })
-    if not response.ok then fail("Ecs." .. (response.code or "Error"), response.message or "") end
+    }
+    local response = if timeout ~= nil then roto.try_wire_timed("ecs", "POST", "/", options, timeout)
+        else roto.try_wire("ecs", "POST", "/", options)
+    if not response.ok then
+        if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
+        fail("Ecs." .. (response.code or "Error"), response.message or "")
+    end
     return roto.json_decode(response.body :: string)
 end
 
@@ -1697,11 +1702,12 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
-        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?) -> any)(
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
-            if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil
+            if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil,
+            token == nil
         )
         local exec = (active :: { ctx: Ctx, db: Db }).db.get(ns((active :: { ctx: Ctx, db: Db }).ctx, "execution"), started.executionArn) :: Doc
         if token ~= nil and sync_mode(resource) ~= nil then
@@ -1711,7 +1717,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         return { ExecutionArn = started.executionArn, StartDate = started.startDate }
     end
     if service == "ecs" then
-        local started = recase(ecs_call(operation, recase(parameters or {}, false)), true)
+        local started = recase(ecs_call(operation, recase(parameters or {}, false), if token == nil then timeout else nil), true)
         if sync_mode(resource) ~= nil and operation == "RunTask" then
             local arns = {}
             local tasks: { Doc } = started.Tasks or {}
@@ -3031,7 +3037,7 @@ function M.ListStateMachineAliases(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, rows, "stateMachineAliases")
 end
 
-start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?): any
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?): any
     local requested_arn = roto.required(input, "stateMachineArn", "InvalidArn")
     local alias = db.get(ns(ctx, "alias"), requested_arn) :: Doc?
     local version = db.get(ns(ctx, "version"), requested_arn) :: Doc?
@@ -3118,7 +3124,14 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
     db.put(ns(ctx, "execution"), arn, exec)
     if parent then db.put(ns(ctx, "parent"), arn, { token = parent.token, v2 = parent.v2 }) end
     local root: Thread = { id = "t0", path = {}, state = definition.StartAt, data = data, lastEventId = history.count }
-    run(ctx, db, exec, { definition = definition_text, input = data, threads = { t0 = root }, next_tid = 1 }, history)
+    local cursor = { definition = definition_text, input = data, threads = { t0 = root }, next_tid = 1 }
+    if defer then
+        db.put(ns(ctx, "cursor"), arn, cursor)
+        save_history(ctx, db, arn, history)
+        db.schedule("continue/" .. arn, { delay = 0, payload = { arn = arn, kind = "continue" } })
+    else
+        run(ctx, db, exec, cursor, history)
+    end
     return { executionArn = arn, startDate = now }
 end
 

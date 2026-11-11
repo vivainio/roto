@@ -109,6 +109,24 @@ test.case("timed request-response SDK task returns a successful result", functio
     test.equal(test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1].Body, "hello")
 end)
 
+test.case("nested request-response starts a child without waiting", function()
+    local child = machine("deferred-child", {StartAt = "Wait", States = {
+        Wait = {Type = "Wait", Seconds = 5, Next = "Done"}, Done = {Type = "Succeed"},
+    }})
+    local parent = machine("deferred-parent", {StartAt = "Start", States = {
+        Start = {Type = "Task", Resource = "arn:aws:states:::states:startExecution",
+            Parameters = {StateMachineArn = child}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    local child_arn = roto.json_decode(result.output).ExecutionArn
+    test.equal(test.call("states", "DescribeExecution", {executionArn = child_arn}).status, "RUNNING")
+    test.advance(0)
+    test.advance(5)
+    test.equal(test.call("states", "DescribeExecution", {executionArn = child_arn}).status, "SUCCEEDED")
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})
