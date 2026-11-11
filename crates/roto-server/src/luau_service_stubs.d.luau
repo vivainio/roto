@@ -67,8 +67,10 @@ declare roto: {
 	-- Typed protocols (JSON, query, rest-xml services with an AWS model) only; `wire` sends a raw request.
 	call: (service: string, operation: string, input: any?) -> any,
 	try_call: (service: string, operation: string, input: any?) -> RotoPeerResult,
+	try_call_timed: (service: string, operation: string, input: any?, timeoutSeconds: number) -> RotoPeerResult,
 	wire: (service: string, method: string, path: string, options: { headers: { [string]: string }?, query: string?, body: any? }?) -> RotoPeerResult,
 	try_wire: (service: string, method: string, path: string, options: { headers: { [string]: string }?, query: string?, body: any? }?) -> RotoPeerResult,
+	try_wire_timed: (service: string, method: string, path: string, options: { headers: { [string]: string }?, query: string?, body: any? }?, timeoutSeconds: number) -> RotoPeerResult,
 
 	-- Helpers defined by the bundle's `common.luau`.
 	required: (input: any, key: string, code: string?) -> string,

@@ -108,6 +108,34 @@ struct PeerError {
     message: String,
 }
 
+/// Run a peer call with a wall-clock deadline. The callee owns its transaction and may
+/// finish after the caller times out; the inherited call stack prevents reentrant calls.
+fn timed_peer<T: Send + 'static>(
+    timeout: std::time::Duration,
+    call: impl FnOnce() -> Result<T, PeerError> + Send + 'static,
+) -> Result<T, PeerError> {
+    let stack = CALL_STACK.with(|s| s.borrow().clone());
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("roto-timed-peer".into())
+        .spawn(move || {
+            CALL_STACK.with(|s| *s.borrow_mut() = stack);
+            let _ = tx.send(call());
+        })
+        .map_err(|e| PeerError::local("ServiceUnavailable", e.to_string()))?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(PeerError::local(
+            "States.Timeout",
+            "The task timed out".into(),
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(PeerError::local(
+            "ServiceUnavailable",
+            "Peer call terminated unexpectedly".into(),
+        )),
+    }
+}
+
 impl PeerError {
     fn local(code: &str, message: String) -> Self {
         PeerError {
@@ -1122,7 +1150,7 @@ impl LuaService {
                 let roto: Table = lua.globals().get("roto")?;
                 self.install_peer_calls(&roto, scope, ctx)?;
                 let output = function.call::<LuaValue>((context, lua.to_value(&input)?, db));
-                for name in ["call", "try_call", "wire", "try_wire"] {
+                for name in ["call", "try_call", "wire", "try_wire", "try_call_timed", "try_wire_timed"] {
                     roto.set(name, LuaValue::Nil)?;
                 }
                 lua.from_value::<Value>(output?)
@@ -1282,6 +1310,25 @@ impl LuaService {
                 },
             )?,
         )?;
+        let timed_handler = handler;
+        let timed_ctx = ctx.clone();
+        roto.set("try_call_timed", scope.create_function(move |lua, (service, operation, input, seconds): (String, String, LuaValue, u64)| {
+            let input = input_of(lua, input)?;
+            let result = (|| {
+                let peer = timed_handler(&service)?;
+                if !crate::aws_client::supports(&service) {
+                    return Err(PeerError::local("UnsupportedService", format!("Unknown service for roto.call: {service}; use roto.wire")));
+                }
+                let ctx = timed_ctx.clone();
+                timed_peer(std::time::Duration::from_secs(seconds), move || {
+                    crate::aws_client::call(peer.as_ref(), &ctx, &service, &operation, &input).map_err(|message| match message.strip_prefix("AWS request failed (") {
+                        Some(rest) => { let (status, body) = rest.split_once("): ").unwrap_or(("500", rest)); PeerError::from_response(status.parse().unwrap_or(500), body.as_bytes()) }
+                        None => PeerError::local("InvalidRequest", message),
+                    })
+                })
+            })();
+            match result { Ok(value) => lua.to_value(&json!({"ok":true,"value":value})), Err(e) => Ok(LuaValue::Table(e.into_table(lua)?)) }
+        })?)?;
         let w = wire.clone();
         roto.set("wire", scope.create_function(move |lua, (service, method, path, opts): (String, String, String, Option<Table>)| {
             let (query, headers, body) = wire_args(lua, opts)?;
@@ -1296,6 +1343,51 @@ impl LuaService {
                 Err(e) => Ok(LuaValue::Table(e.into_table(lua)?)),
             }
         })?)?;
+        let timed_ctx = ctx.clone();
+        roto.set(
+            "try_wire_timed",
+            scope.create_function(
+                move |lua,
+                      (service, method, path, opts, seconds): (
+                    String,
+                    String,
+                    String,
+                    Option<Table>,
+                    u64,
+                )| {
+                    let (query, headers, body) = wire_args(lua, opts)?;
+                    let result = (|| {
+                        let peer = timed_handler(&service)?;
+                        let ctx = timed_ctx.clone();
+                        timed_peer(std::time::Duration::from_secs(seconds), move || {
+                            let response = peer
+                                .handle(
+                                    &ctx,
+                                    &RawRequest {
+                                        method,
+                                        path,
+                                        query,
+                                        headers,
+                                        body,
+                                    },
+                                )
+                                .map_err(|e| PeerError::from_aws(&e))?;
+                            if response.status >= 400 {
+                                return Err(PeerError::from_response(
+                                    response.status,
+                                    &response.body,
+                                ));
+                            }
+                            Ok((response.status, response.headers, response.body))
+                        })
+                    })();
+                    match result {
+                        Ok(out) => wire_result(lua, out),
+                        Err(e) => Ok(LuaValue::Table(e.into_table(lua)?)),
+                    }
+                },
+            )?,
+        )?;
         Ok(())
     }
 
@@ -1510,6 +1602,24 @@ pub(crate) fn test_service(store: Arc<Store>, name: &str, path: Option<PathBuf>)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timed_peer_preserves_call_stack_and_does_not_cancel_callee() {
+        use super::*;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let guard = StackGuard::enter("states").unwrap();
+        let result = timed_peer(std::time::Duration::from_millis(20), move || {
+            let inherited = CALL_STACK.with(|stack| stack.borrow().clone());
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            tx.send(inherited).unwrap();
+            Ok(())
+        });
+        assert_eq!(result.err().unwrap().code, "States.Timeout");
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),
+            vec!["states"]
+        );
+        drop(guard);
+    }
     use super::*;
 
     #[test]

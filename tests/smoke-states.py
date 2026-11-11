@@ -41,6 +41,7 @@ def code(call):
 SETUP = """
 roto.lambda.fn("echo", { timeout = 5, executor = { command = { "sh", "-c", "cat" } } })
 roto.lambda.fn("boom", { timeout = 5, executor = { command = { "sh", "-c", "echo oops >&2; exit 1" } } })
+roto.lambda.fn("slow", { timeout = 5, executor = { command = { "sh", "-c", "sleep 2; cat" } } })
 roto.aws.sqs.CreateQueue({ QueueName = "jobs" })
 """
 
@@ -941,6 +942,20 @@ def check_list_execution_filters(s):
     assert results[0]["stopDate"] > results[1]["stopDate"]
 
 
+def check_plain_task_timeout(s):
+    machine = s.machine("plain-task-timeout", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow",
+                 "TimeoutSecondsPath": "$.timeout", "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Recovered"}], "End": True},
+        "Recovered": {"Type": "Succeed"}}})
+    start = time.monotonic()
+    arn = s.run(machine, {"timeout": 1})
+    elapsed = time.monotonic() - start
+    result = s.status(arn)
+    assert elapsed < 1.8, elapsed
+    assert result["status"] == "SUCCEEDED" and json.loads(result["output"])["Error"] == "States.Timeout", result
+    assert "LambdaFunctionTimedOut" in s.events(arn), s.events(arn)
+
+
 def check_rust_services_follow_the_clock(s):
     sqs = boto3.client("sqs", endpoint_url=s.url, aws_access_key_id="test", aws_secret_access_key="x",
                        region_name="us-east-1", config=Config(retries={"max_attempts": 1}))
@@ -971,7 +986,7 @@ def main():
                       check_retry_and_catch, check_history_pages_and_validation,
                       check_loops_fail_instead_of_hanging, check_update_tags_and_test_state,
                       check_list_pagination_tokens, check_list_execution_filters,
-                      check_rust_services_follow_the_clock):
+                      check_plain_task_timeout, check_rust_services_follow_the_clock):
             started = time.monotonic()
             check(server)
             print(f"{check.__name__}: ok ({time.monotonic() - started:.1f}s)")

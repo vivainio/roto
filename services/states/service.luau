@@ -1690,7 +1690,7 @@ local function poll_ecs(poll: any): (any, boolean)
     return recase(described, true), failed
 end
 
-local function task_call(resource: string, parameters: any, token: string?): any
+local function task_call(resource: string, parameters: any, token: string?, timeout: number?): any
     local service, operation = task_target(resource)
     local label = SERVICE_NAMES[service] or capitalize(service)
     if service == "states" and operation == "StartExecution" then
@@ -1731,11 +1731,15 @@ local function task_call(resource: string, parameters: any, token: string?): any
         else
             name = function_name(name)
         end
-        local response = roto.try_wire("lambda", "POST", "/2015-03-31/functions/" .. name .. "/invocations", {
+        local options = {
             headers = { ["x-amz-invocation-type"] = "RequestResponse", ["content-type"] = "application/json" },
             body = roto.json_encode(if payload == nil then {} else payload),
-        })
+        }
+        local path = "/2015-03-31/functions/" .. name .. "/invocations"
+        local response = if timeout ~= nil and token == nil then roto.try_wire_timed("lambda", "POST", path, options, timeout)
+            else roto.try_wire("lambda", "POST", path, options)
         if not response.ok then
+            if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
             fail("Lambda." .. (if response.code == "ResourceNotFoundException" then "ResourceNotFoundException" else "ServiceException"), (response.message or ""))
         end
         local text = response.body :: string
@@ -1749,8 +1753,10 @@ local function task_call(resource: string, parameters: any, token: string?): any
         end
         return decoded
     end
-    local response = roto.try_call(service, operation, parameters or {})
+    local response = if timeout ~= nil and token == nil then roto.try_call_timed(service, operation, parameters or {}, timeout)
+        else roto.try_call(service, operation, parameters or {})
     if not response.ok then
+        if response.code == "States.Timeout" then fail("States.Timeout", response.message or "The task timed out") end
         fail(label .. "." .. (response.code or "Error"), response.message or "")
     end
     return response.value
@@ -1776,11 +1782,11 @@ local function emit_task_event(execution_arn: string, history: History, resource
     if resource_type(resource) == "lambda" and not waits_for_token(resource) then
         local event_names = {
             Scheduled = "LambdaFunctionScheduled", Started = "LambdaFunctionStarted",
-            Succeeded = "LambdaFunctionSucceeded", Failed = "LambdaFunctionFailed",
+            Succeeded = "LambdaFunctionSucceeded", Failed = "LambdaFunctionFailed", TimedOut = "LambdaFunctionTimedOut",
         }
         local detail_keys = {
             Scheduled = "lambdaFunctionScheduledEventDetails", Started = "lambdaFunctionStartedEventDetails",
-            Succeeded = "lambdaFunctionSucceededEventDetails", Failed = "lambdaFunctionFailedEventDetails",
+            Succeeded = "lambdaFunctionSucceededEventDetails", Failed = "lambdaFunctionFailedEventDetails", TimedOut = "lambdaFunctionTimedOutEventDetails",
         }
         local lambda_details: Doc = {}
         local parameters: any = details.parametersValue or {}
@@ -1869,10 +1875,10 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
     emit_task_event(execution_arn, history, resource, "Started", {
         resourceType = resource_type(resource), resource = resource, parametersValue = parameters,
     })
-    local ok, result = pcall(task_call, resource, parameters, token)
+    local ok, result = pcall(task_call, resource, parameters, token, timeout)
     if not ok then
         local code, cause = failure_of(result)
-        emit_task_event(execution_arn, history, resource, "Failed", { resourceType = resource_type(resource), resource = resource, error = code, cause = cause })
+        emit_task_event(execution_arn, history, resource, if code == "States.Timeout" then "TimedOut" else "Failed", { resourceType = resource_type(resource), resource = resource, error = code, cause = cause })
         error(result, 0)
     end
     if #roto.json_encode(result) > MAX_PAYLOAD_BYTES then

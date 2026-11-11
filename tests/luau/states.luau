@@ -97,6 +97,18 @@ test.case("sqs task token callback completes execution", function()
     end)
 end)
 
+test.case("timed request-response SDK task returns a successful result", function()
+    local queue = test.call("sqs", "CreateQueue", {QueueName = "timed"}).QueueUrl
+    local arn = machine("timed-sdk", {StartAt = "Send", States = {
+        Send = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sqs:sendMessage",
+            TimeoutSeconds = 2, Parameters = {QueueUrl = queue, MessageBody = "hello"}, End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = arn})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1].Body, "hello")
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})
