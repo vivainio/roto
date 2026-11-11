@@ -2623,7 +2623,8 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
             }
             local activity_wait = result.queued ~= nil and result.queued.activity ~= nil
             db.put(ns(ctx, "token"), result.waiting, { arn = arn, tid = thread.id,
-                deadline = if (queued.child ~= nil or queued.poll ~= nil) and type(queued.timeout) == "number" then roto.now() + queued.timeout else nil })
+                deadline = if not activity_wait and type(queued.timeout) == "number" then roto.now() + queued.timeout else nil,
+                heartbeatDeadline = if not activity_wait and heartbeat ~= nil then roto.now() + heartbeat else nil })
             if type(queued.timeout) == "number" and not activity_wait then
                 db.schedule(timer_key("task", arn, thread.id), { delay = queued.timeout, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
             end
@@ -3335,13 +3336,17 @@ function M.__job(ctx: Ctx, job: any, db: Db)
 end
 
 -- The execution, cursor, history and thread a task token belongs to, or the AWS error for a bad token.
-local function waiting_task(ctx: Ctx, db: Db, token: any): (Doc, Cursor, History, Thread)
+local function waiting_task(ctx: Ctx, db: Db, token: any, allow_expired: boolean?): (Doc, Cursor, History, Thread)
     if type(token) ~= "string" or token == "" or #token > 2048 then
         roto.error("InvalidToken", "Invalid Token: 'Invalid token'")
     end
     local entry = db.get(ns(ctx, "token"), token) :: Doc?
     if not entry then roto.error("InvalidToken", "Invalid Token: '" .. token .. "'") end
     if (entry :: Doc).closed then roto.error("TaskTimedOut", "Task Timed Out: '" .. token .. "'") end
+    if not allow_expired and ((type(entry.deadline) == "number" and roto.now() >= entry.deadline)
+        or (type(entry.heartbeatDeadline) == "number" and roto.now() >= entry.heartbeatDeadline)) then
+        roto.error("TaskTimedOut", "Task Timed Out: '" .. token .. "'")
+    end
     local arn: string = (entry :: Doc).arn
     local exec = db.get(ns(ctx, "execution"), arn) :: Doc?
     local cursor = db.get(ns(ctx, "cursor"), arn) :: Cursor?
@@ -3356,8 +3361,8 @@ local function waiting_task(ctx: Ctx, db: Db, token: any): (Doc, Cursor, History
     return exec :: Doc, cursor :: Cursor, load_history(ctx, db, arn), thread :: Thread
 end
 
-local function deliver(ctx: Ctx, db: Db, input: any, delivered: { output: any?, error: string?, cause: string? })
-    local exec, cursor, history, thread = waiting_task(ctx, db, input.taskToken)
+local function deliver(ctx: Ctx, db: Db, input: any, delivered: { output: any?, error: string?, cause: string? }, allow_expired: boolean?)
+    local exec, cursor, history, thread = waiting_task(ctx, db, input.taskToken, allow_expired)
     local arn: string = exec.executionArn
     close_task_token(ctx, db, (thread.waiting :: { token: string, heartbeat: number?, child: string?, poll: any? }).token)
     db.cancel(timer_key("task", arn, thread.id))
@@ -3380,8 +3385,9 @@ notify_parent = function(ctx: Ctx, db: Db, exec: Doc)
     if not token_entry or token_entry.closed then return end -- the parent has not parked, or it has closed
     -- A child may finish after its parent's timer became due while this service was
     -- busy running the child. Do not let that late completion cancel the timeout.
-    if type(token_entry.deadline) == "number" and roto.now() >= token_entry.deadline then
-        deliver(ctx, db, { taskToken = token }, { error = "States.Timeout", cause = "The task timed out" })
+    if (type(token_entry.deadline) == "number" and roto.now() >= token_entry.deadline)
+        or (type(token_entry.heartbeatDeadline) == "number" and roto.now() >= token_entry.heartbeatDeadline) then
+        deliver(ctx, db, { taskToken = token }, { error = "States.Timeout", cause = "The task timed out" }, true)
         return
     end
     if link.express then
@@ -3435,6 +3441,9 @@ function M.SendTaskHeartbeat(ctx: Ctx, input: any, db: Db)
     local heartbeat = (thread.waiting :: { token: string, heartbeat: number?, child: string?, poll: any? }).heartbeat
     if heartbeat ~= nil then
         local arn: string = exec.executionArn
+        local entry = db.get(ns(ctx, "token"), input.taskToken) :: Doc
+        entry.heartbeatDeadline = roto.now() + heartbeat
+        db.put(ns(ctx, "token"), input.taskToken, entry)
         db.schedule(timer_key("heartbeat", arn, thread.id), { delay = heartbeat, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
     end
     return {}
@@ -3513,6 +3522,9 @@ function M.GetActivityTask(ctx: Ctx, input: any, db: Db)
                 emit(history, "ActivityStarted", "activityStartedEventDetails", { workerName = input.workerName })
                 history.current = nil
                 if thread and thread.waiting then
+                    if thread.waiting.timeout ~= nil then token_entry.deadline = roto.now() + thread.waiting.timeout end
+                    if thread.waiting.heartbeat ~= nil then token_entry.heartbeatDeadline = roto.now() + thread.waiting.heartbeat end
+                    db.put(ns(ctx, "token"), task.token, token_entry)
                     if thread.waiting.timeout ~= nil then
                         db.schedule(timer_key("task", task.arn, thread.id), { delay = thread.waiting.timeout, payload = { arn = task.arn, kind = "task_timeout", tid = thread.id } })
                     end

@@ -411,6 +411,28 @@ def check_map_max_concurrency_and_distributed(s):
 
 
 def check_nested_executions(s):
+    late_child = s.machine("late-callback-child", {"StartAt": "Slow", "States": {
+        "Slow": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke",
+                 "Parameters": {"FunctionName": "slow", "Payload": {}}, "ResultPath": None, "Next": "Reply"},
+        "Reply": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+                  "Parameters": {"TaskToken.$": "$.token", "Output": "{}"},
+                  "Catch": [{"ErrorEquals": ["Sfn.TaskTimedOut"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    late_parent = s.machine("late-callback-parent", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+                 "TimeoutSeconds": 5, "HeartbeatSeconds": 1,
+                 "Parameters": {"StateMachineArn": late_child, "Input": {"token.$": "$$.Task.Token"}},
+                 "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    late_arn = s.run(late_parent)
+    s.advance(0)
+    s.advance(0)
+    late_result = s.status(late_arn)
+    assert late_result["status"] == "SUCCEEDED" and json.loads(late_result["output"])["Error"] == "States.Timeout", late_result
+    late_runs = s.sf.list_executions(stateMachineArn=late_child)["executions"]
+    late_child_result = s.status(late_runs[0]["executionArn"])
+    assert late_child_result["status"] == "SUCCEEDED" and json.loads(late_child_result["output"])["Error"] == "Sfn.TaskTimedOut", late_child_result
+
     callback_child = s.machine("callback-sdk-child", {"StartAt": "Heartbeat", "States": {
         "Heartbeat": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskHeartbeat",
                       "Parameters": {"TaskToken.$": "$.token"}, "ResultPath": None, "Next": "Success"},
