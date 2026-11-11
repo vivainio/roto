@@ -2659,6 +2659,11 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
 
     local steps = 0
     while failure == nil and not cursor.done do
+        if type(exec._deadline) == "number" and roto.now() >= exec._deadline then
+            settle(ctx, db, exec, history, "TIMED_OUT", nil, "States.Timeout", nil, cursor)
+            save_history(ctx, db, arn, history)
+            return
+        end
         local progressed = false
         for _, tid in ipairs(thread_ids(cursor)) do
             local thread = cursor.threads[tid]
@@ -2677,6 +2682,11 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
                 history.current = thread
                 advance(thread)
                 history.current = nil
+                if type(exec._deadline) == "number" and roto.now() >= exec._deadline then
+                    settle(ctx, db, exec, history, "TIMED_OUT", nil, "States.Timeout", nil, cursor)
+                    save_history(ctx, db, arn, history)
+                    return
+                end
                 progressed = true
                 if failure ~= nil or cursor.done then break end
             end
@@ -3219,6 +3229,7 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
     local timeout = definition.TimeoutSeconds
     if sm.type == "EXPRESS" then timeout = math.min(timeout or 300, 300) end
     if type(timeout) == "number" then
+        exec._deadline = now + timeout
         db.schedule("timeout/" .. arn, { delay = timeout, payload = { arn = arn, kind = "timeout" } })
     end
     db.put(ns(ctx, "execution"), arn, exec)
@@ -3274,7 +3285,7 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     local exec = db.get(ns(ctx, "execution"), arn) :: Doc?
     if not exec or exec.status ~= "RUNNING" then return {} end
     local history = load_history(ctx, db, arn)
-    if job.payload.kind == "timeout" then
+    if job.payload.kind == "timeout" or (type(exec._deadline) == "number" and roto.now() >= exec._deadline) then
         settle(ctx, db, exec, history, "TIMED_OUT", nil, "States.Timeout", nil)
         save_history(ctx, db, arn, history)
         return {}
@@ -3286,9 +3297,12 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     local poll_deadline: number? = nil
     if kind == "poll" and thread and thread.waiting then
         local token = db.get(ns(ctx, "token"), thread.waiting.token) :: Doc?
-        if token and type(token.deadline) == "number" then
-            poll_deadline = token.deadline
-            if roto.now() >= token.deadline then kind = "task_timeout" end
+        if token then
+            if type(token.deadline) == "number" then poll_deadline = token.deadline end
+            if type(token.heartbeatDeadline) == "number" then
+                poll_deadline = if poll_deadline ~= nil then math.min(poll_deadline, token.heartbeatDeadline) else token.heartbeatDeadline
+            end
+            if poll_deadline ~= nil and roto.now() >= poll_deadline then kind = "task_timeout" end
         end
     end
     if kind == "resume" then
@@ -3349,6 +3363,9 @@ local function waiting_task(ctx: Ctx, db: Db, token: any, allow_expired: boolean
     end
     local arn: string = (entry :: Doc).arn
     local exec = db.get(ns(ctx, "execution"), arn) :: Doc?
+    if exec and type(exec._deadline) == "number" and roto.now() >= exec._deadline and not allow_expired then
+        roto.error("TaskTimedOut", "Task Timed Out: '" .. token .. "'")
+    end
     local cursor = db.get(ns(ctx, "cursor"), arn) :: Cursor?
     local thread = if cursor then cursor.threads[(entry :: Doc).tid or ""] else nil
     if thread and thread.waiting and thread.waiting.activity ~= nil
@@ -3383,6 +3400,13 @@ notify_parent = function(ctx: Ctx, db: Db, exec: Doc)
     local token = (link :: Doc).token
     local token_entry = db.get(ns(ctx, "token"), token) :: Doc?
     if not token_entry or token_entry.closed then return end -- the parent has not parked, or it has closed
+    local parent = db.get(ns(ctx, "execution"), token_entry.arn) :: Doc?
+    if parent and parent.status == "RUNNING" and type(parent._deadline) == "number" and roto.now() >= parent._deadline then
+        local history = load_history(ctx, db, parent.executionArn)
+        settle(ctx, db, parent, history, "TIMED_OUT", nil, "States.Timeout", nil)
+        save_history(ctx, db, parent.executionArn, history)
+        return
+    end
     -- A child may finish after its parent's timer became due while this service was
     -- busy running the child. Do not let that late completion cancel the timeout.
     if (type(token_entry.deadline) == "number" and roto.now() >= token_entry.deadline)
@@ -3557,6 +3581,7 @@ function M.DescribeExecution(ctx: Ctx, input: any, db: Db)
     for key, value in pairs(doc) do out[key] = value end
     out.roleArn = nil -- kept for the history only; DescribeExecution does not return it
     out.stateMachineSnapshot = nil -- internal pinned definition/configuration
+    out._deadline = nil
     if doc.status ~= "RUNNING" then out.stopDate = doc.stopDate end
     return out
 end

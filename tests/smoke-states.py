@@ -602,8 +602,21 @@ def check_ecs_run_task_sync(s):
     assert timed["status"] == "SUCCEEDED" and json.loads(timed["output"])["Error"] == "States.Timeout", timed
     assert ecs.describe_tasks(cluster="jobs", tasks=[timed_task])["tasks"][0]["lastStatus"] == "STOPPED"
 
+    heartbeat_machine = s.machine("ecs-sync-heartbeat", {"StartAt": "Run", "States": {
+        "Run": {"Type": "Task", "Resource": "arn:aws:states:::ecs:runTask.sync",
+                "TimeoutSeconds": 10, "HeartbeatSeconds": 1,
+                "Parameters": {"Cluster": "jobs", "TaskDefinition": "work"},
+                "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    heartbeat_arn = s.run(heartbeat_machine)
+    heartbeat_task = only_running_task([first, second, timed_task])
+    s.advance(1)
+    heartbeat_result = s.status(heartbeat_arn)
+    assert json.loads(heartbeat_result["output"])["Error"] == "States.Timeout", heartbeat_result
+    assert ecs.describe_tasks(cluster="jobs", tasks=[heartbeat_task])["tasks"][0]["lastStatus"] == "STOPPED"
+
     aborted_arn = s.run(machine, {})
-    aborted_task = only_running_task([first, second, timed_task])
+    aborted_task = only_running_task([first, second, timed_task, heartbeat_task])
     s.sf.stop_execution(executionArn=aborted_arn)
     assert ecs.describe_tasks(cluster="jobs", tasks=[aborted_task])["tasks"][0]["lastStatus"] == "STOPPED"
 
@@ -614,7 +627,7 @@ def check_ecs_run_task_sync(s):
             {"StartAt": "Wait", "States": {"Wait": {"Type": "Wait", "Seconds": 1, "Next": "Fail"},
                 "Fail": {"Type": "Fail", "Error": "BranchFailed"}}}]}}})
     parallel_arn = s.run(parallel, {})
-    branch_task = only_running_task([first, second, timed_task, aborted_task])
+    branch_task = only_running_task([first, second, timed_task, heartbeat_task, aborted_task])
     s.advance(1)
     assert s.status(parallel_arn)["status"] == "FAILED"
     assert ecs.describe_tasks(cluster="jobs", tasks=[branch_task])["tasks"][0]["lastStatus"] == "STOPPED"
@@ -1135,6 +1148,20 @@ def check_sync_express(s):
 
 
 def check_plain_task_timeout(s):
+    slow_child = s.machine("execution-deadline-child", {"StartAt": "Slow", "States": {
+        "Slow": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow", "End": True}}})
+    direct = s.machine("execution-deadline-direct", {"TimeoutSeconds": 1, "StartAt": "Slow", "States": {
+        "Slow": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow", "End": True}}})
+    direct_result = s.status(s.run(direct))
+    assert direct_result["status"] == "TIMED_OUT" and "_deadline" not in direct_result, direct_result
+    parent = s.machine("execution-deadline-parent", {"TimeoutSeconds": 1, "StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.sync:2",
+                 "Parameters": {"StateMachineArn": slow_child}, "End": True}}})
+    parent_arn = s.run(parent)
+    s.advance(0)
+    parent_result = s.status(parent_arn)
+    assert parent_result["status"] == "TIMED_OUT", parent_result
+
     machine = s.machine("plain-task-timeout", {"StartAt": "Call", "States": {
         "Call": {"Type": "Task", "Resource": "arn:aws:lambda:us-east-1:123456789012:function:slow",
                  "TimeoutSecondsPath": "$.timeout", "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Recovered"}], "End": True},
