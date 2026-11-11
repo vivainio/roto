@@ -845,7 +845,7 @@ end
 
 local STATE_TYPES: { [string]: boolean } = { Pass = true, Task = true, Choice = true, Wait = true, Succeed = true, Fail = true, Parallel = true, Map = true }
 
-local function validate_definition(text: any, diagnostics: boolean?, collected: { any }?): string
+local function validate_definition(text: any, diagnostics: boolean?, collected: { any }?, workflow_type: string?): string
     valid_json(text, "definition")
     local current_location: string? = nil
     local function invalid(message: string, location: string?, diagnostic_code: string?): never
@@ -1144,6 +1144,13 @@ local function validate_definition(text: any, diagnostics: boolean?, collected: 
                     invalid("Task state '" .. name .. "' needs a Resource", state_location .. "/Resource", "INVALID_RESOURCE")
                 end
                 if kind == "Task" then
+                    if workflow_type == "EXPRESS" and type(state.Resource) == "string" then
+                        local resource: string = state.Resource
+                        local integration = string.find(resource, ":states:::", 1, true) ~= nil
+                        if is_activity(resource) or (integration and (string.match(resource, "%.sync:?2?$") or string.match(resource, "%.waitForTaskToken$"))) then
+                            invalid("Express workflows do not support activity, .sync, or .waitForTaskToken Tasks", state_location .. "/Resource", "INVALID_RESOURCE")
+                        end
+                    end
                     for _, field in ipairs({ "TimeoutSeconds", "HeartbeatSeconds" }) do
                         local value = state[field]
                         if value ~= nil and (type(value) ~= "number" or value <= 0 or value % 1 ~= 0) then
@@ -1377,7 +1384,7 @@ function M.ValidateStateMachineDefinition(_ctx: Ctx, input: any, _db: Db)
             message = tostring(parse_error),
         })
     else
-        local valid, validation_error = pcall(validate_definition, definition, true, diagnostics)
+        local valid, validation_error = pcall(validate_definition, definition, true, diagnostics, input.type)
         if not valid then
             local detail: any = validation_error
             local message = if type(detail) == "table" and type(detail.validationMessage) == "string" then detail.validationMessage else tostring(validation_error)
@@ -1600,6 +1607,7 @@ end
 -- for a function (a bare function ARN, or `arn:aws:states:::lambda:invoke`).
 -- "v1" for `.sync`, "v2" for `.sync:2` (the child's output parsed as JSON), nil otherwise.
 local function sync_mode(resource: string): string?
+    if not string.find(resource, ":states:::", 1, true) then return nil end
     if string.match(resource, "%.sync:2$") then return "v2" end
     if string.match(resource, "%.sync$") then return "v1" end
     return nil
@@ -1612,8 +1620,9 @@ local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?,
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
-    local text: string = string.gsub(resource, "%.waitForTaskToken$", "")
-    local synchronous = string.match(text, "%.sync:?2?$") ~= nil
+    local is_integration = string.find(resource, ":states:::", 1, true) ~= nil
+    local text: string = if is_integration then string.gsub(resource, "%.waitForTaskToken$", "") else resource
+    local synchronous = is_integration and string.match(text, "%.sync:?2?$") ~= nil
     if synchronous then text = string.gsub(text, "%.sync:?2?$", "") end
     if synchronous and not (string.match(text, ":states:::states:startExecution$") or string.match(text, ":states:::ecs:runTask$")) then
         fail("States.Runtime", "The service integration pattern of '" .. resource .. "' is not supported; .sync works only for states:startExecution and ecs:runTask")
@@ -1783,7 +1792,8 @@ local function resource_type(resource: string): string
 end
 
 local function waits_for_token(resource: string): boolean
-    return is_activity(resource) or sync_mode(resource) ~= nil or string.find(resource, ".waitForTaskToken", 1, true) ~= nil
+    return is_activity(resource) or sync_mode(resource) ~= nil
+        or (string.find(resource, ":states:::", 1, true) ~= nil and string.match(resource, "%.waitForTaskToken$") ~= nil)
 end
 
 local function lambda_arn(execution_arn: string, function_name_value: string): string
@@ -2756,7 +2766,7 @@ function M.CreateStateMachine(ctx: Ctx, input: any, db: Db)
     if input.type ~= nil and input.type ~= "STANDARD" and input.type ~= "EXPRESS" then
         roto.error("StateMachineTypeNotSupported", "State machine type must be STANDARD or EXPRESS")
     end
-    validate_definition(input.definition)
+    validate_definition(input.definition, nil, nil, input.type)
     local arn = machine_arn(ctx, name)
     local state_type = input.type or "STANDARD"
     local logging, tracing = state_machine_config(input.loggingConfiguration, input.tracingConfiguration)
@@ -2815,7 +2825,7 @@ function M.UpdateStateMachine(ctx: Ctx, input: any, db: Db)
         doc.loggingConfiguration = logging
         doc.tracingConfiguration = tracing
     end
-    if input.definition ~= nil then doc.definition = validate_definition(input.definition) end
+    if input.definition ~= nil then doc.definition = validate_definition(input.definition, nil, nil, doc.type) end
     doc.roleArn = input.roleArn or doc.roleArn
     doc.updateDate = os.time()
     doc.revisionId = roto.uuid()

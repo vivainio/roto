@@ -1030,6 +1030,10 @@ def check_sync_express(s):
     result = s.sf.start_sync_execution(stateMachineArn=success, input='{"x":1}', name="same")
     assert result["status"] == "SUCCEEDED" and json.loads(result["output"]) == {"ok": True}, result
     assert result["name"] == "same" and result["stateMachineArn"] == success and result["stopDate"] >= result["startDate"], result
+    invalid_definition = json.dumps({"StartAt": "Call", "States": {"Call": {"Type": "Task",
+        "Resource": "arn:aws:states:::states:startExecution.sync:2", "End": True}}})
+    assert s.sf.validate_state_machine_definition(definition=invalid_definition, type="EXPRESS")["result"] == "FAIL"
+    assert code(lambda: s.sf.create_state_machine(name="bad-express", roleArn=ROLE, type="EXPRESS", definition=invalid_definition)) == "InvalidDefinition"
     failure = express("sync-failure", {"StartAt": "Fail", "States": {"Fail": {"Type": "Fail", "Error": "Oops", "Cause": "bad"}}})
     result = s.sf.start_sync_execution(stateMachineArn=failure)
     assert result["status"] == "FAILED" and result["error"] == "Oops" and result["cause"] == "bad", result

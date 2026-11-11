@@ -109,6 +109,32 @@ test.case("timed request-response SDK task returns a successful result", functio
     test.equal(test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1].Body, "hello")
 end)
 
+test.case("Express definitions reject unsupported Task patterns", function()
+    local resources = {"arn:aws:states:us-east-1:123456789012:activity:worker",
+        "arn:aws:states:::states:startExecution.sync:2", "arn:aws:states:::sqs:sendMessage.waitForTaskToken"}
+    for _, resource in resources do
+        local definition = roto.json_encode({StartAt = "Both", States = {Both = {Type = "Parallel", End = true, Branches = {
+            {StartAt = "Task", States = {Task = {Type = "Task", Resource = resource, End = true}}},
+        }}}})
+        local express = test.call("states", "ValidateStateMachineDefinition", {definition = definition, type = "EXPRESS"})
+        test.equal(express.result, "FAIL")
+        test.equal(express.diagnostics[1].code, "INVALID_RESOURCE")
+        test.equal(test.call("states", "ValidateStateMachineDefinition", {definition = definition, type = "STANDARD"}).result, "OK")
+        test.expect_error("InvalidDefinition", function()
+            return test.try_call("states", "CreateStateMachine", {name = "invalid-express", roleArn = "arn:aws:iam::123456789012:role/test", type = "EXPRESS", definition = definition})
+        end)
+    end
+    local arn = test.call("states", "CreateStateMachine", {name = "express-update", roleArn = "arn:aws:iam::123456789012:role/test", type = "EXPRESS",
+        definition = '{"StartAt":"Done","States":{"Done":{"Type":"Succeed"}}}'}).stateMachineArn
+    local invalid = roto.json_encode({StartAt = "Task", States = {Task = {Type = "Task", Resource = resources[1], End = true}}})
+    test.expect_error("InvalidDefinition", function() return test.try_call("states", "UpdateStateMachine", {stateMachineArn = arn, definition = invalid}) end)
+    test.equal(test.call("states", "DescribeStateMachine", {stateMachineArn = arn}).definition,
+        '{"StartAt":"Done","States":{"Done":{"Type":"Succeed"}}}')
+    local direct = roto.json_encode({StartAt = "Task", States = {Task = {Type = "Task",
+        Resource = "arn:aws:lambda:us-east-1:123456789012:function:worker.sync", End = true}}})
+    test.equal(test.call("states", "ValidateStateMachineDefinition", {definition = direct, type = "EXPRESS"}).result, "OK")
+end)
+
 test.case("nested request-response starts a child without waiting", function()
     local child = machine("deferred-child", {StartAt = "Wait", States = {
         Wait = {Type = "Wait", Seconds = 5, Next = "Done"}, Done = {Type = "Succeed"},
