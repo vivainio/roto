@@ -330,6 +330,33 @@ test.case("SDK nested execution passes its trace header to the child", function(
     test.equal(roto.json_decode(child_result.input), {value = 1})
 end)
 
+test.case("SDK tasks describe executions and catch missing execution errors", function()
+    local target = machine("describe-target", {StartAt = "Done", States = {Done = {Type = "Succeed"}}})
+    local execution = test.call("states", "StartExecution", {stateMachineArn = target, input = '{"value":3}'}).executionArn
+    local observer = machine("describe-observer", {StartAt = "Describe", States = {
+        Describe = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:describeExecution",
+            Parameters = {ExecutionArn = execution}, ResultPath = "$.execution", Next = "Machine"},
+        Machine = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:describeStateMachineForExecution",
+            Parameters = {ExecutionArn = execution}, ResultPath = "$.machine", End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = observer})
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    local output = roto.json_decode(result.output)
+    test.equal(output.execution.Status, "SUCCEEDED")
+    test.equal(roto.json_decode(output.execution.Output), {value = 3})
+    test.equal(output.machine.StateMachineArn, target)
+    local missing = machine("describe-missing", {StartAt = "Describe", States = {
+        Describe = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:describeExecution",
+            Parameters = {ExecutionArn = "missing"}, Catch = {{ErrorEquals = {"Sfn.ExecutionDoesNotExist"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local bad = test.call("states", "StartExecution", {stateMachineArn = missing})
+    local caught = test.call("states", "DescribeExecution", {executionArn = bad.executionArn})
+    test.equal(caught.status, "SUCCEEDED")
+    test.equal(roto.json_decode(caught.output).Error, "Sfn.ExecutionDoesNotExist")
+end)
+
 test.case("Express child continues after SDK request timeout or parent stop", function()
     local queue = test.call("sqs", "CreateQueue", {QueueName = "detached-child"}).QueueUrl
     local role = "arn:aws:iam::123456789012:role/test"
