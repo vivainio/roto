@@ -825,6 +825,15 @@ def check_update_tags_and_test_state(s):
     batches = json.loads(result["inspectionData"]["afterItemBatcher"])
     assert batches == [{"Items": [1], "BatchInput": {"job": "demo"}},
                        {"Items": [2], "BatchInput": {"job": "demo"}}], result
+    distributed.pop("ItemsPath")
+    distributed["ItemReader"] = {"Resource": "arn:aws:states:::s3:getObject",
+                                 "ReaderConfig": {"InputType": "JSON", "ItemsPointer": "/items"}}
+    args["definition"] = json.dumps(distributed)
+    args["stateConfiguration"]["mapItemReaderData"] = '{"items":[7,8]}'
+    result = s.sf.test_state(**args)
+    assert json.loads(result["inspectionData"]["afterItemBatcher"]) == [
+        {"Items": [7], "BatchInput": {"job": "demo"}},
+        {"Items": [8], "BatchInput": {"job": "demo"}}], result
     mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
     mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
                              mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})

@@ -2057,7 +2057,7 @@ local function spawn_parallel(state: Doc, data: any, scope: Scope, inspection: D
     return spawns
 end
 
-local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?): ({ Spawn }, number?, number)
+local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?, reader: any?): ({ Spawn }, number?, number)
     local effective = apply_input_path(state, data, scope.context)
     if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local inner: Scope = { data = effective, context = scope.context }
@@ -2066,15 +2066,28 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?):
     if max_concurrency ~= nil and (type(max_concurrency) ~= "number" or max_concurrency < 0 or max_concurrency % 1 ~= 0) then
         fail("States.Runtime", "MaxConcurrencyPath must resolve to a non-negative integer")
     end
-    local items: any = effective
-    if state.ItemsPath ~= nil then items = resolve(state.ItemsPath, inner) end
+    local items: any = if reader ~= nil then reader.items else effective
+    if reader == nil and state.ItemsPath ~= nil then items = resolve(state.ItemsPath :: string, inner) end
     if not is_array(items) then fail("States.Runtime", "The Map state's items must be an array") end
-    if inspection then inspection.afterItemsPath = roto.json_encode(items); inspection.maxConcurrency = max_concurrency end
+    if reader ~= nil and (reader.maxItems ~= nil or reader.maxItemsPath ~= nil) then
+        local max_items = if reader.maxItemsPath then resolve(reader.maxItemsPath, inner) else reader.maxItems
+        if type(max_items) ~= "number" or max_items < 1 or max_items % 1 ~= 0 then
+            fail("States.Runtime", "MaxItems must resolve to a positive integer")
+        end
+        local limited = {}
+        for index, item in ipairs(items) do if index > max_items then break end; table.insert(limited, item) end
+        items = roto.array(limited)
+    end
+    if inspection then
+        if reader ~= nil and reader.pointer ~= nil then inspection.afterItemsPointer = roto.json_encode(items)
+        else inspection.afterItemsPath = roto.json_encode(items) end
+        inspection.maxConcurrency = max_concurrency
+    end
     local key = if state.ItemProcessor ~= nil then "ItemProcessor" else "Iterator"
     local selector = state.ItemSelector or state.Parameters
     local spawns: { Spawn } = {}
     for index, item in ipairs(items :: { any }) do
-        local map: MapItem = { Index = index - 1, Value = item, Source = "STATE_DATA" }
+        local map: MapItem = { Index = index - 1, Value = item, Source = if reader ~= nil then reader.source else "STATE_DATA" }
         local context = table.clone(scope.context)
         context.Map = { Item = map }
         local input = item
@@ -3367,6 +3380,69 @@ function M.DescribeStateMachineForExecution(ctx: Ctx, input: any, db: Db)
     }
 end
 
+-- Decode a supplied ItemReader fixture without calling S3. Formats that need binary
+-- readers or a CSV parser are rejected explicitly until those readers are available.
+local function test_reader(state: Doc, raw: any): any
+    if type(raw) ~= "string" or #raw > MAX_PAYLOAD_BYTES then
+        roto.error("ValidationException", "mapItemReaderData must be a string no larger than 256 KiB")
+    end
+    local reader = state.ItemReader
+    if not is_object(reader) or type(reader.Resource) ~= "string" or not string.match(reader.Resource, ":s3:getObject$") then
+        roto.error("ValidationException", "mapItemReaderData requires an S3 GetObject ItemReader")
+    end
+    local config = reader.ReaderConfig or {}
+    if not is_object(config) then roto.error("ValidationException", "ReaderConfig must be an object") end
+    local kind = config.InputType
+    if kind ~= "JSON" and kind ~= "JSONL" then
+        roto.error("ValidationException", "mapItemReaderData supports JSON and JSONL ItemReaders")
+    end
+    if config.ManifestType ~= nil then roto.error("ValidationException", "ItemReader manifests are not supported") end
+    if state.ItemsPath ~= nil then roto.error("ValidationException", "ItemsPath cannot be combined with an S3 ItemReader") end
+    local items: any
+    if kind == "JSON" then
+        local ok, decoded = pcall(roto.json_decode, raw)
+        if not ok then roto.error("ValidationException", "mapItemReaderData must contain valid JSON") end
+        items = decoded
+        local pointer = config.ItemsPointer
+        if pointer ~= nil then
+            if type(pointer) ~= "string" or (pointer ~= "" and string.sub(pointer, 1, 1) ~= "/") then
+                roto.error("ValidationException", "ItemsPointer must be a JSON pointer")
+            end
+            for token in string.gmatch(pointer, "/([^/]*)") do
+                if string.find(token, "~[^01]") or string.sub(token, -1) == "~" then
+                    roto.error("ValidationException", "ItemsPointer contains an invalid escape")
+                end
+                token = string.gsub(string.gsub(token, "~1", "/"), "~0", "~")
+                if is_array(items) then
+                    if not string.match(token, "^%d+$") or (#token > 1 and string.sub(token, 1, 1) == "0") then
+                        roto.error("ValidationException", "ItemsPointer has an invalid array index")
+                    end
+                    items = items[(tonumber(token) :: number) + 1]
+                elseif is_object(items) then items = items[token]
+                else items = nil end
+                if items == nil then roto.error("ValidationException", "ItemsPointer does not exist in mapItemReaderData") end
+            end
+        end
+    else
+        if config.ItemsPointer ~= nil then roto.error("ValidationException", "ItemsPointer requires JSON input") end
+        local rows = {}
+        for line in string.gmatch(raw .. "\n", "([^\n]*)\n") do
+            if string.match(line, "%S") then
+                local ok, value = pcall(roto.json_decode, line, "ValidationException")
+                if not ok then roto.error("ValidationException", "mapItemReaderData contains invalid JSONL") end
+                table.insert(rows, value)
+            end
+        end
+        items = roto.array(rows)
+    end
+    if not is_array(items) then roto.error("ValidationException", "ItemReader data must select a JSON array") end
+    if config.MaxItems ~= nil and config.MaxItemsPath ~= nil then
+        roto.error("ValidationException", "ItemReader cannot specify both MaxItems and MaxItemsPath")
+    end
+    return { items = items, source = kind, pointer = config.ItemsPointer,
+        maxItems = config.MaxItems, maxItemsPath = config.MaxItemsPath }
+end
+
 -- Runs one state definition against an input, without creating an execution. Wait does not wait.
 function M.TestState(ctx: Ctx, input: any, db: Db)
     if input.inspectionLevel ~= nil and input.inspectionLevel ~= "INFO" and input.inspectionLevel ~= "DEBUG" and input.inspectionLevel ~= "TRACE" then
@@ -3459,15 +3535,17 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         local config = if input.stateConfiguration == nil then {} else roto.object(input.stateConfiguration, "ValidationException", "stateConfiguration")
         local distributed = state.Type == "Map" and is_object(state.ItemProcessor)
             and is_object(state.ItemProcessor.ProcessorConfig) and state.ItemProcessor.ProcessorConfig.Mode == "DISTRIBUTED"
+        local reader: any = nil
         if config.mapItemReaderData ~= nil then
-            roto.error("ValidationException", "mapItemReaderData is not supported; provide the read items in input")
+            if not distributed then roto.error("ValidationException", "mapItemReaderData requires a Distributed Map") end
+            reader = test_reader(state, config.mapItemReaderData)
         end
         if config.mapIterationFailureCount ~= nil then
             local count = config.mapIterationFailureCount
             if not distributed or type(count) ~= "number" or count < 0 or count % 1 ~= 0 then
                 roto.error("ValidationException", "mapIterationFailureCount requires a Distributed Map and a nonnegative integer")
             end
-            local ok, spawns, _, item_count = pcall(spawn_map, state, data, scope, inspection)
+            local ok, spawns, _, item_count = pcall(spawn_map, state, data, scope, inspection, reader)
             if not ok then
                 local code, cause = failure_of(spawns)
                 return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
@@ -3504,7 +3582,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 roto.error("ValidationException", "mock.errorOutput requires an error of at most 256 characters and an optional cause of at most 32768 characters")
             end
             for key in pairs(config) do
-                if key ~= "retrierRetryCount" and key ~= "mapIterationFailureCount" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
+                if key ~= "retrierRetryCount" and key ~= "mapIterationFailureCount" and key ~= "mapItemReaderData" then roto.error("ValidationException", "Unsupported stateConfiguration field: " .. tostring(key)) end
             end
             local used = config.retrierRetryCount or 0
             if type(used) ~= "number" or used < 0 or used % 1 ~= 0 then
@@ -3514,7 +3592,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             local cause: string = error_output.cause or ""
             local prepared, preparation_error = pcall(function()
                 if state.Type == "Parallel" then spawn_parallel(state, data, scope); return end
-                if state.Type == "Map" then spawn_map(state, data, scope); return end
+                if state.Type == "Map" then spawn_map(state, data, scope, nil, reader); return end
                 local effective = apply_input_path(state, data, scope.context)
                 local context = scope.context
                 if type(state.Resource) == "string" and waits_for_token(state.Resource) then
@@ -3595,7 +3673,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 roto.error("ValidationException", "mock.result must contain one element for each Parallel branch")
             end
             local ok, result = pcall(function()
-                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection) else spawn_map(state, data, scope, inspection) end
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection) else spawn_map(state, data, scope, inspection, reader) end
                 return finish_fanout(state, data, scope, mock_result, inspection)
             end)
             if not ok then

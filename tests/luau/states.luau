@@ -484,3 +484,33 @@ test.case("TestState inspects Distributed Map item batches", function()
     local too_large = test.call("states", "TestState", request)
     test.equal(too_large.error, "States.DataLimitExceeded")
 end)
+
+test.case("TestState reads supplied JSON and JSONL ItemReader data", function()
+    local map: any = {Type = "Map", ItemReader = {Resource = "arn:aws:states:::s3:getObject",
+        ReaderConfig = {InputType = "JSON", ItemsPointer = "/orders/a~1b", MaxItemsPath = "$.limit"}},
+        ItemSelector = { ["value.$"] = "$$.Map.Item.Value", ["source.$"] = "$$.Map.Item.Source" },
+        ItemBatcher = {MaxItemsPerBatch = 2}, ItemProcessor = {
+            ProcessorConfig = {Mode = "DISTRIBUTED", ExecutionType = "STANDARD"},
+            StartAt = "Done", States = {Done = {Type = "Succeed"}}}, End = true}
+    local request: any = {definition = roto.json_encode(map), input = '{"limit":2}',
+        stateConfiguration = {mapItemReaderData = '{"orders":{"a/b":[1,2,3]}}', mapIterationFailureCount = 0},
+        mock = {result = '["done"]'}, inspectionLevel = "DEBUG"}
+    local result = test.call("states", "TestState", request)
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.inspectionData.afterItemsPointer), {1, 2})
+    test.equal(roto.json_decode(result.inspectionData.afterItemBatcher), {
+        {Items = {{value = 1, source = "JSON"}, {value = 2, source = "JSON"}}},
+    })
+    map.ItemReader.ReaderConfig = {InputType = "JSONL"}
+    request.definition = roto.json_encode(map)
+    request.stateConfiguration.mapItemReaderData = '{"n":1}\n{"n":2}\n'
+    result = test.call("states", "TestState", request)
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector), {
+        {value = {n = 1}, source = "JSONL"}, {value = {n = 2}, source = "JSONL"},
+    })
+    request.stateConfiguration.mapItemReaderData = '{bad}\n'
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+    map.ItemReader.ReaderConfig.InputType = "CSV"
+    request.definition = roto.json_encode(map)
+    test.expect_error("ValidationException", function() return test.try_call("states", "TestState", request) end)
+end)
