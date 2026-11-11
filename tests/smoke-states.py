@@ -428,21 +428,27 @@ def check_nested_executions(s):
                 "Done": {"Type": "Succeed"}}})
 
     sync = "arn:aws:states:::states:startExecution.sync:2"
-    out = json.loads(s.status(s.run(parent(quick, sync), {"n": 4}))["output"])
+    quick_arn = s.run(parent(quick, sync), {"n": 4})
+    s.advance(0)
+    out = json.loads(s.status(quick_arn)["output"])
     assert out["child"] == {"out": {"doubled": 8}, "status": "SUCCEEDED"}, out  # finished inside the call
 
     slow_parent = parent(slow, sync)
     arn = s.run(slow_parent, {"n": 7})
+    s.advance(0)
     assert s.status(arn)["status"] == "RUNNING"  # waiting on the child's Wait
     s.advance(30)
     out = json.loads(s.status(arn)["output"])
     assert out["child"] == {"out": {"slept": 7}, "status": "SUCCEEDED"}, out
 
-    out = json.loads(s.status(s.run(parent(bad, sync), {"n": 1}))["output"])
+    bad_arn = s.run(parent(bad, sync), {"n": 1})
+    s.advance(0)
+    out = json.loads(s.status(bad_arn)["output"])
     assert json.loads(out["err"]["Cause"])["Status"] == "FAILED", out
 
     # Stopping the parent stops the child it is waiting for.
     arn = s.run(slow_parent, {"n": 2})
+    s.advance(0)
     child = s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"]
     assert len(child) == 1, child  # the first child finished when the clock advanced
     s.sf.stop_execution(executionArn=arn)
@@ -459,6 +465,7 @@ def check_nested_executions(s):
             {"StartAt": "Nope", "States": {"Nope": {"Type": "Wait", "Seconds": 1, "Next": "Boom"},
                                            "Boom": {"Type": "Fail", "Error": "Boom", "Cause": "x"}}}]}}})
     arn = s.run(both, {})
+    s.advance(0)
     assert s.status(arn)["status"] == "RUNNING"
     started = s.sf.list_executions(stateMachineArn=slow, statusFilter="RUNNING")["executions"]
     assert len(started) == running_before + 1, started
@@ -489,6 +496,17 @@ def check_nested_executions(s):
         child_status = s.status(child_arn)
     assert child_status["status"] == "SUCCEEDED", child_status
     assert s.events(child_arn)[0] == "ExecutionStarted"
+    timed_parent = s.machine("sync-slow-lambda", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": sync, "TimeoutSeconds": 1,
+                 "Parameters": {"StateMachineArn": blocking_child},
+                 "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Recovered"}], "End": True},
+        "Recovered": {"Type": "Succeed"}}})
+    start = time.monotonic()
+    timed_arn = s.run(timed_parent, {})
+    assert time.monotonic() - start < 1.5
+    s.advance(0)
+    timed_result = s.status(timed_arn)
+    assert timed_result["status"] == "SUCCEEDED" and json.loads(timed_result["output"])["Error"] == "States.Timeout", timed_result
 
 
 def check_ecs_run_task_sync(s):

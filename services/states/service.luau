@@ -1707,7 +1707,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
             if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil,
-            token == nil
+            true
         )
         local exec = (active :: { ctx: Ctx, db: Db }).db.get(ns((active :: { ctx: Ctx, db: Db }).ctx, "execution"), started.executionArn) :: Doc
         if token ~= nil and sync_mode(resource) ~= nil then
@@ -2529,8 +2529,9 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
                 poll = if result.queued then result.queued.poll else nil,
                 activity = if result.queued then result.queued.activity else nil,
             }
-            db.put(ns(ctx, "token"), result.waiting, { arn = arn, tid = thread.id })
             local activity_wait = result.queued ~= nil and result.queued.activity ~= nil
+            db.put(ns(ctx, "token"), result.waiting, { arn = arn, tid = thread.id,
+                deadline = if queued.child ~= nil and type(queued.timeout) == "number" then roto.now() + queued.timeout else nil })
             if type(queued.timeout) == "number" and not activity_wait then
                 db.schedule(timer_key("task", arn, thread.id), { delay = queued.timeout, payload = { arn = arn, kind = "task_timeout", tid = thread.id } })
             end
@@ -3181,6 +3182,7 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     elseif kind == "task_timeout" then
         if not thread or not thread.waiting then return {} end
         close_task_token(ctx, db, thread.waiting.token)
+        if thread.waiting.child then abort_nested(ctx, db, thread.waiting.child) end
         db.cancel(timer_key("task", arn, thread.id))
         db.cancel(timer_key("heartbeat", arn, thread.id))
         db.cancel(timer_key("poll", arn, thread.id))
@@ -3236,6 +3238,12 @@ notify_parent = function(ctx: Ctx, db: Db, exec: Doc)
     local token = (link :: Doc).token
     local token_entry = db.get(ns(ctx, "token"), token) :: Doc?
     if not token_entry or token_entry.closed then return end -- the parent has not parked, or it has closed
+    -- A child may finish after its parent's timer became due while this service was
+    -- busy running the child. Do not let that late completion cancel the timeout.
+    if type(token_entry.deadline) == "number" and roto.now() >= token_entry.deadline then
+        deliver(ctx, db, { taskToken = token }, { error = "States.Timeout", cause = "The task timed out" })
+        return
+    end
     local described = describe_doc(exec, (link :: Doc).v2 == true)
     if exec.status == "SUCCEEDED" then
         deliver(ctx, db, { taskToken = token }, { output = described })

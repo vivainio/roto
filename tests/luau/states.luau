@@ -127,6 +127,27 @@ test.case("nested request-response starts a child without waiting", function()
     test.equal(test.call("states", "DescribeExecution", {executionArn = child_arn}).status, "SUCCEEDED")
 end)
 
+test.case("nested synchronous task timeout stops a waiting child", function()
+    local child = machine("sync-timeout-child", {StartAt = "Wait", States = {
+        Wait = {Type = "Wait", Seconds = 30, End = true},
+    }})
+    local parent = machine("sync-timeout-parent", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::states:startExecution.sync:2", TimeoutSeconds = 2,
+            Parameters = {StateMachineArn = child}, Catch = {{ErrorEquals = {"States.Timeout"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+    test.advance(0)
+    local children = test.call("states", "ListExecutions", {stateMachineArn = child}).executions
+    test.equal(#children, 1)
+    test.equal(children[1].status, "RUNNING")
+    test.advance(2)
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output).Error, "States.Timeout")
+    test.equal(test.call("states", "DescribeExecution", {executionArn = children[1].executionArn}).status, "ABORTED")
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})
