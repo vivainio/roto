@@ -623,7 +623,7 @@ MiniStack: `stepfunctions.py`, `test_stepfunctions.py`.
 - [x] Activities/task tokens, HTTP activity long polling and nested execution sync patterns; nested starts schedule the child before it runs, and synchronous parents ignore late child results after their deadline (a blocking child can delay timer processing). ECS sync enforces the initial call deadline and best-effort stops tasks on timeout, stop or branch cancellation.
 - [x] Wall-clock Task timeouts for Lambda, ECS and ordinary SDK Request Response integrations; peer calls continue independently after timeout.
 - [x] Published state-machine definition versions and aliases with weighted StartExecution routing.
-- [x] HTTP and nested SDK `StartSyncExecution` for Express workflows, including waits, failures and the five-minute execution limit; Express definitions reject activities, callbacks and `.sync` integrations; both synchronous and asynchronous starts use unique execution identities.
+- [x] HTTP and nested SDK `StartSyncExecution` for Express workflows, including waits, failures and the five-minute execution limit; Express definitions reject activities, callbacks and `.sync` integrations; both synchronous and asynchronous starts use unique execution identities; nested start validation errors retain their service prefixes for Retry/Catch.
 - [x] `TestState` Task mock results with `fieldValidationMode: NONE`, inline Map/Parallel
       mock results, and mock errors with Retry/Catch selection, without invoking the target or
       executing fan-out branches. Parallel result arrays must match the branch count.

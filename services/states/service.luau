@@ -1599,7 +1599,7 @@ end
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
 local active: { ctx: Ctx, db: Db }? = nil
-local start_execution: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?) -> any
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?, string?) -> any
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
@@ -1704,12 +1704,13 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
-        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?) -> any)(
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean, express: boolean? }?, boolean?, string?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
             if token ~= nil and sync_mode(resource) ~= nil then { token = token, v2 = sync_mode(resource) == "v2" } else nil,
-            true
+            true,
+            if string.find(resource, ":aws-sdk:", 1, true) then "Sfn" else "StepFunctions"
         )
         local exec = (active :: { ctx: Ctx, db: Db }).db.get(ns((active :: { ctx: Ctx, db: Db }).ctx, "execution"), started.executionArn) :: Doc
         if token ~= nil and sync_mode(resource) ~= nil then
@@ -1734,7 +1735,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if not target then fail("Sfn.StateMachineDoesNotExist", "State machine does not exist") end
         if target.type ~= "EXPRESS" then fail("Sfn.StateMachineTypeNotSupported", "StartSyncExecution requires an EXPRESS state machine") end
         local started = start_execution(current.ctx, { stateMachineArn = params.StateMachineArn, name = params.Name,
-            input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true)
+            input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true, "Sfn")
         return { Pending = started.executionArn }
     end
     if service == "ecs" then
@@ -3064,8 +3065,13 @@ function M.ListStateMachineAliases(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, rows, "stateMachineAliases")
 end
 
-start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean, express: boolean? }?, defer: boolean?): any
-    local requested_arn = roto.required(input, "stateMachineArn", "InvalidArn")
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean, express: boolean? }?, defer: boolean?, error_prefix: string?): any
+    local function reject(code: string, message: string): never
+        if error_prefix ~= nil then fail(error_prefix .. "." .. code, message) end
+        return roto.error(code, message)
+    end
+    local requested_arn = input.stateMachineArn
+    if type(requested_arn) ~= "string" or requested_arn == "" then reject("InvalidArn", "stateMachineArn is required") end
     local alias = db.get(ns(ctx, "alias"), requested_arn) :: Doc?
     local version = db.get(ns(ctx, "version"), requested_arn) :: Doc?
     if alias then
@@ -3076,27 +3082,30 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
             if point <= total then version = db.get(ns(ctx, "version"), target.stateMachineVersionArn) :: Doc?; break end
         end
     end
-    local sm = if version then machine(ctx, db, version.stateMachineArn) else machine(ctx, db, requested_arn)
+    local machine_arn_value = if version then version.stateMachineArn else requested_arn
+    local found = db.get(ns(ctx, "machine"), machine_arn_value) :: Doc?
+    if not found then reject("StateMachineDoesNotExist", "State Machine Does Not Exist: '" .. machine_arn_value .. "'") end
+    local sm: Doc = found :: Doc
     local definition_text = if version then version.definition else sm.definition
     local execution_role = if version then version.roleArn else sm.roleArn
     local payload = if input.input == nil then "{}" else input.input
     if type(payload) ~= "string" or #payload > MAX_PAYLOAD_BYTES then
-        roto.error("InvalidExecutionInput", "Execution input must be a JSON string no larger than 256 KiB")
+        reject("InvalidExecutionInput", "Execution input must be a JSON string no larger than 256 KiB")
     end
     local valid_input = pcall(roto.json_decode, payload)
-    if not valid_input then roto.error("InvalidExecutionInput", "Execution input must be valid JSON") end
+    if not valid_input then reject("InvalidExecutionInput", "Execution input must be valid JSON") end
     local name = if input.name == nil then roto.uuid() else input.name
     if type(name) ~= "string" or #name < 1 or #name > 80 or string.find(name, "[%s<>{}%[%]%?%*\"#%%\\%^|~`$&,;:/]") then
-        roto.error("InvalidName", "Execution name is invalid")
+        reject("InvalidName", "Execution name is invalid")
     end
     if input.traceHeader ~= nil then
         if type(input.traceHeader) ~= "string" or #input.traceHeader > 256 then
-            roto.error("ValidationException", "traceHeader must be an ASCII string no longer than 256 characters")
+            reject("ValidationException", "traceHeader must be an ASCII string no longer than 256 characters")
         end
         for index = 1, #input.traceHeader do
             local byte = string.byte(input.traceHeader, index)
             if byte > 0x7f then
-                roto.error("ValidationException", "traceHeader must contain only ASCII characters")
+                reject("ValidationException", "traceHeader must contain only ASCII characters")
             end
         end
     end
@@ -3109,7 +3118,7 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
         if sm.type == "STANDARD" and existing.status == "RUNNING" and existing.input == payload then
             return { executionArn = arn, startDate = existing.startDate }
         end
-        roto.error("ExecutionAlreadyExists", "Execution Already Exists: '" .. arn .. "'")
+        reject("ExecutionAlreadyExists", "Execution Already Exists: '" .. arn .. "'")
     end
     local now = roto.now()
     local exec: Doc = {

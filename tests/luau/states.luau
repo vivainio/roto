@@ -244,6 +244,28 @@ test.case("SDK StartSyncExecution waits for Express children and returns failure
         "Sfn.StateMachineTypeNotSupported")
 end)
 
+test.case("nested execution start errors are catchable service errors", function()
+    local role = "arn:aws:iam::123456789012:role/test"
+    local child = test.call("states", "CreateStateMachine", {name = "nested-invalid-child", roleArn = role, type = "EXPRESS",
+        definition = '{"StartAt":"Done","States":{"Done":{"Type":"Succeed"}}}'}).stateMachineArn
+    local cases = {
+        {resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution", params = {StateMachineArn = child, Input = "{"}, error = "Sfn.InvalidExecutionInput"},
+        {resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution", params = {StateMachineArn = child, Name = "bad name"}, error = "Sfn.InvalidName"},
+        {resource = "arn:aws:states:::states:startExecution", params = {StateMachineArn = "missing"}, error = "StepFunctions.StateMachineDoesNotExist"},
+        {resource = "arn:aws:states:::aws-sdk:sfn:startExecution", params = {StateMachineArn = "missing"}, error = "Sfn.StateMachineDoesNotExist"},
+    }
+    for index, item in ipairs(cases) do
+        local parent = machine("nested-invalid-" .. tostring(index), {StartAt = "Call", States = {
+            Call = {Type = "Task", Resource = item.resource, Parameters = item.params,
+                Catch = {{ErrorEquals = {item.error}, Next = "Done"}}, End = true}, Done = {Type = "Succeed"},
+        }})
+        local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+        local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+        test.equal(result.status, "SUCCEEDED")
+        test.equal(roto.json_decode(result.output).Error, item.error)
+    end
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})

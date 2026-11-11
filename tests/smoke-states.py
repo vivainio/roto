@@ -1045,6 +1045,13 @@ def check_sync_express(s):
     nested_result = s.status(parent_arn)
     nested_output = json.loads(nested_result["output"])
     assert nested_result["status"] == "SUCCEEDED" and nested_output["Status"] == "FAILED" and nested_output["Error"] == "Oops", nested_result
+    invalid_nested = s.machine("sdk-sync-invalid-input", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+                 "Parameters": {"StateMachineArn": success, "Input": "{"},
+                 "Catch": [{"ErrorEquals": ["Sfn.InvalidExecutionInput"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    invalid_result = s.status(s.run(invalid_nested, {}))
+    assert invalid_result["status"] == "SUCCEEDED" and json.loads(invalid_result["output"])["Error"] == "Sfn.InvalidExecutionInput", invalid_result
     waiting = express("sync-wait", {"StartAt": "Wait", "States": {
         "Wait": {"Type": "Wait", "Seconds": 5, "Next": "Done"}, "Done": {"Type": "Succeed"}}})
     with ThreadPoolExecutor(max_workers=2) as executor:
