@@ -97,6 +97,56 @@ test.case("sqs task token callback completes execution", function()
     end)
 end)
 
+test.case("nested workflow sends heartbeat and success to its parent", function()
+    local child = machine("callback-child", {StartAt = "Heartbeat", States = {
+        Heartbeat = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:sendTaskHeartbeat",
+            Parameters = { ["TaskToken.$"] = "$.token" }, ResultPath = roto.null, Next = "Success"},
+        Success = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            Parameters = { ["TaskToken.$"] = "$.token", Output = '{"ok":true}' }, End = true},
+    }})
+    local parent = machine("callback-parent", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::states:startExecution.waitForTaskToken",
+            Parameters = {StateMachineArn = child, Input = { ["token.$"] = "$$.Task.Token" }},
+            ResultPath = "$.answer", End = true},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent, input = '{"id":1}'})
+    test.equal(test.call("states", "DescribeExecution", {executionArn = run.executionArn}).status, "RUNNING")
+    test.advance(0)
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output), {id = 1, answer = {ok = true}})
+    local children = test.call("states", "ListExecutions", {stateMachineArn = child}).executions
+    test.equal(children[1].status, "SUCCEEDED")
+end)
+
+test.case("nested workflow reports failure and SDK callback errors are catchable", function()
+    local child = machine("callback-failure-child", {StartAt = "Fail", States = {
+        Fail = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:sendTaskFailure",
+            Parameters = { ["TaskToken.$"] = "$.token", Error = "ChildError", Cause = "failure" }, End = true},
+    }})
+    local parent = machine("callback-failure-parent", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::states:startExecution.waitForTaskToken",
+            Parameters = {StateMachineArn = child, Input = { ["token.$"] = "$$.Task.Token" }},
+            Catch = {{ErrorEquals = {"ChildError"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local run = test.call("states", "StartExecution", {stateMachineArn = parent})
+    test.advance(0)
+    local result = test.call("states", "DescribeExecution", {executionArn = run.executionArn})
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.output), {Error = "ChildError", Cause = "failure"})
+    local invalid = machine("callback-invalid", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+            Parameters = {TaskToken = "missing", Output = "{}"},
+            Catch = {{ErrorEquals = {"Sfn.InvalidToken"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local bad = test.call("states", "StartExecution", {stateMachineArn = invalid})
+    local caught = test.call("states", "DescribeExecution", {executionArn = bad.executionArn})
+    test.equal(caught.status, "SUCCEEDED")
+    test.equal(roto.json_decode(caught.output).Error, "Sfn.InvalidToken")
+end)
+
 test.case("timed request-response SDK task returns a successful result", function()
     local queue = test.call("sqs", "CreateQueue", {QueueName = "timed"}).QueueUrl
     local arn = machine("timed-sdk", {StartAt = "Send", States = {

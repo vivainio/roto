@@ -411,6 +411,22 @@ def check_map_max_concurrency_and_distributed(s):
 
 
 def check_nested_executions(s):
+    callback_child = s.machine("callback-sdk-child", {"StartAt": "Heartbeat", "States": {
+        "Heartbeat": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskHeartbeat",
+                      "Parameters": {"TaskToken.$": "$.token"}, "ResultPath": None, "Next": "Success"},
+        "Success": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:sendTaskSuccess",
+                    "Parameters": {"TaskToken.$": "$.token", "Output": '{"ok":true}'}, "End": True}}})
+    callback_parent = s.machine("callback-sdk-parent", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:states:::states:startExecution.waitForTaskToken",
+                 "Parameters": {"StateMachineArn": callback_child, "Input": {"token.$": "$$.Task.Token"}},
+                 "ResultPath": "$.answer", "End": True}}})
+    callback_arn = s.run(callback_parent, {"id": 1})
+    assert s.status(callback_arn)["status"] == "RUNNING"
+    s.advance(0)
+    callback_result = s.status(callback_arn)
+    assert callback_result["status"] == "SUCCEEDED" and json.loads(callback_result["output"]) == {
+        "id": 1, "answer": {"ok": True}}, callback_result
+
     quick = s.machine("child-quick", {"StartAt": "P", "States": {
         "P": {"Type": "Pass", "Parameters": {"doubled.$": "States.MathAdd($.n, $.n)"}, "End": True}}})
     slow = s.machine("child-slow", {"StartAt": "W", "States": {

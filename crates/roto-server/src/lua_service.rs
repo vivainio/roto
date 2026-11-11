@@ -799,17 +799,17 @@ struct Claimed {
     run_at: i64,
 }
 
-fn lua_error(error: mlua::Error) -> AwsError {
+fn embedded_aws_error(error: &mlua::Error) -> Option<AwsError> {
     match &error {
-        mlua::Error::ExternalError(e) => {
-            if let Some(e) = e.downcast_ref::<AwsError>() {
-                return e.clone();
-            }
-        }
-        mlua::Error::CallbackError { cause, .. } => return lua_error((**cause).clone()),
-        _ => {}
+        mlua::Error::ExternalError(e) => e.downcast_ref::<AwsError>().cloned(),
+        mlua::Error::CallbackError { cause, .. } => embedded_aws_error(cause),
+        _ => None,
     }
-    AwsError::internal(format!("Lua service: {error}"))
+}
+
+fn lua_error(error: mlua::Error) -> AwsError {
+    embedded_aws_error(&error)
+        .unwrap_or_else(|| AwsError::internal(format!("Lua service: {error}")))
 }
 
 impl LuaService {
@@ -886,6 +886,20 @@ impl LuaService {
                     )))
                 },
             )
+            .map_err(lua_error)?,
+        )
+        .map_err(lua_error)?;
+        api.set(
+            "error_info",
+            lua.create_function(|lua, value: LuaValue| match value {
+                LuaValue::Error(error) => match embedded_aws_error(&error) {
+                    Some(error) => lua.to_value(
+                        &json!({"code":error.code,"message":error.message,"status":error.status}),
+                    ),
+                    None => Ok(LuaValue::Nil),
+                },
+                _ => Ok(LuaValue::Nil),
+            })
             .map_err(lua_error)?,
         )
         .map_err(lua_error)?;

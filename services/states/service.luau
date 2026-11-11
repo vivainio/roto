@@ -1738,6 +1738,17 @@ local function task_call(resource: string, parameters: any, token: string?, time
             input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true, "Sfn")
         return { Pending = started.executionArn, DetachOnCancel = true }
     end
+    if service == "states" and (operation == "SendTaskSuccess" or operation == "SendTaskFailure" or operation == "SendTaskHeartbeat") then
+        if active == nil then fail("States.Runtime", "Step Functions callbacks require a running workflow") end
+        local current = active :: { ctx: Ctx, db: Db }
+        local ok, result = pcall(M[operation], current.ctx, recase(parameters or {}, false), current.db)
+        if not ok then
+            local detail = roto.error_info(result)
+            if detail ~= nil then fail("Sfn." .. detail.code, detail.message) end
+            error(result, 0)
+        end
+        return recase(result, true)
+    end
     if service == "ecs" then
         local started = recase(ecs_call(operation, recase(parameters or {}, false), timeout), true)
         if sync_mode(resource) ~= nil and operation == "RunTask" then

@@ -45,6 +45,7 @@ declare roto: {
 	null: RotoNull,
 	-- Raises a modeled AWS client error and rolls the request back. `status` defaults to 400.
 	error: (code: string, message: string, status: number?) -> never,
+	error_info: (value: any) -> { code: string, message: string, status: number }?,
 	id: (prefix: string) -> string,
 	uuid: () -> string,
 	-- Seconds since the Unix epoch on the virtual clock (fractional); `os.time()` uses it too.
