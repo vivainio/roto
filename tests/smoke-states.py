@@ -1047,6 +1047,12 @@ def check_sync_express(s):
         results = [call.result(timeout=5) for call in calls]
     assert all(item["status"] == "SUCCEEDED" and json.loads(item["output"]) == {"ok": True} for item in results), results
     assert results[0]["executionArn"] != results[1]["executionArn"]
+    async_first = s.sf.start_execution(stateMachineArn=waiting, name="reused", input='{"n":1}')["executionArn"]
+    async_second = s.sf.start_execution(stateMachineArn=waiting, name="reused", input='{"n":2}')["executionArn"]
+    assert async_first != async_second
+    s.advance(5)
+    assert json.loads(s.status(async_first)["output"]) == {"n": 1}
+    assert json.loads(s.status(async_second)["output"]) == {"n": 2}
     too_long = express("sync-timeout", {"StartAt": "Wait", "States": {"Wait": {"Type": "Wait", "Seconds": 400, "End": True}}})
     with ThreadPoolExecutor(max_workers=1) as executor:
         call = executor.submit(s.sf.start_sync_execution, stateMachineArn=too_long)

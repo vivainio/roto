@@ -135,6 +135,24 @@ test.case("Express definitions reject unsupported Task patterns", function()
     test.equal(test.call("states", "ValidateStateMachineDefinition", {definition = direct, type = "EXPRESS"}).result, "OK")
 end)
 
+test.case("Express starts with the same name are independent", function()
+    local definition = roto.json_encode({StartAt = "Wait", States = {
+        Wait = {Type = "Wait", Seconds = 5, End = true},
+    }})
+    local arn = test.call("states", "CreateStateMachine", {name = "express-reused-name", type = "EXPRESS",
+        roleArn = "arn:aws:iam::123456789012:role/test", definition = definition}).stateMachineArn
+    local first = test.call("states", "StartExecution", {stateMachineArn = arn, name = "same", input = '{"n":1}'}).executionArn
+    local second = test.call("states", "StartExecution", {stateMachineArn = arn, name = "same", input = '{"n":2}'}).executionArn
+    assert(first ~= second)
+    test.equal(test.call("states", "DescribeExecution", {executionArn = first}).status, "RUNNING")
+    test.equal(test.call("states", "DescribeExecution", {executionArn = second}).status, "RUNNING")
+    test.advance(5)
+    test.equal(roto.json_decode(test.call("states", "DescribeExecution", {executionArn = first}).output), {n = 1})
+    test.equal(roto.json_decode(test.call("states", "DescribeExecution", {executionArn = second}).output), {n = 2})
+    local third = test.call("states", "StartExecution", {stateMachineArn = arn, name = "same"}).executionArn
+    assert(third ~= first and third ~= second)
+end)
+
 test.case("nested request-response starts a child without waiting", function()
     local child = machine("deferred-child", {StartAt = "Wait", States = {
         Wait = {Type = "Wait", Seconds = 5, Next = "Done"}, Done = {Type = "Succeed"},

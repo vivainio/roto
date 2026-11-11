@@ -1443,23 +1443,6 @@ local function save_history(ctx: Ctx, db: Db, arn: string, history: History)
     db.put(ns(ctx, "history-count"), arn, { count = history.count })
 end
 
-local function clear_execution_history(ctx: Ctx, db: Db, arn: string)
-    local space = history_space(ctx, arn)
-    for _, event in ipairs(db.list(space) :: { Doc }) do
-        db.delete(space, string.format("%08d", event.id))
-    end
-    db.delete(ns(ctx, "history-count"), arn)
-    local token_space = ns(ctx, "history-token")
-    for _, token in ipairs(db.list(token_space) :: { Doc }) do
-        local token_arn = token.executionArn
-        if token_arn == nil and type(token.request) == "string" then
-            local ok, request = pcall(roto.json_decode, token.request)
-            if ok and type(request) == "table" then token_arn = request.executionArn end
-        end
-        if token_arn == arn then db.delete(token_space, token.id) end
-    end
-end
-
 -- Cancels every timer and task token of an execution. `cursor` is the in-memory cursor when the
 -- caller has one that is newer than the stored copy.
 local stop_ecs: (any) -> () = function() end
@@ -1616,7 +1599,7 @@ end
 -- Set by `run` for the duration of a run: Task states reach the execution's own service (nested
 -- executions) through it, because a service cannot call itself through `roto.call`.
 local active: { ctx: Ctx, db: Db }? = nil
-local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?, boolean?) -> any
+local start_execution: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any
 
 local function task_target(resource: any): (string, string)
     if type(resource) ~= "string" then fail("States.Runtime", "A Task state needs a Resource") end
@@ -1721,7 +1704,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if active == nil then fail("States.Runtime", "states:startExecution is not available here") end
         local params: any = parameters or {}
         local input: any = params.Input
-        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?, boolean?) -> any)(
+        local started = (start_execution :: (Ctx, any, Db, { token: string, v2: boolean }?, boolean?) -> any)(
             (active :: { ctx: Ctx, db: Db }).ctx,
             { stateMachineArn = params.StateMachineArn, name = params.Name, input = if type(input) == "string" then input else roto.json_encode(if input == nil then {} else input) },
             (active :: { ctx: Ctx, db: Db }).db,
@@ -3061,7 +3044,7 @@ function M.ListStateMachineAliases(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, rows, "stateMachineAliases")
 end
 
-start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?, sync_identity: boolean?): any
+start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string, v2: boolean }?, defer: boolean?): any
     local requested_arn = roto.required(input, "stateMachineArn", "InvalidArn")
     local alias = db.get(ns(ctx, "alias"), requested_arn) :: Doc?
     local version = db.get(ns(ctx, "version"), requested_arn) :: Doc?
@@ -3098,20 +3081,15 @@ start_execution = function(ctx: Ctx, input: any, db: Db, parent: { token: string
         end
     end
     local arn = "arn:aws:states:" .. ctx.region .. ":" .. ctx.account_id
-        .. (if sync_identity then ":express:" else ":execution:") .. sm.name .. ":" .. name
-        .. (if sync_identity then ":" .. roto.uuid() else "")
+        .. (if sm.type == "EXPRESS" then ":express:" else ":execution:") .. sm.name .. ":" .. name
+        .. (if sm.type == "EXPRESS" then ":" .. roto.uuid() else "")
     local existing = db.get(ns(ctx, "execution"), arn) :: Doc?
     if existing then
-        -- Standard executions are idempotent while running; Express names can be reused once closed.
+        -- Standard executions are idempotent while running. Express executions use unique ARNs.
         if sm.type == "STANDARD" and existing.status == "RUNNING" and existing.input == payload then
             return { executionArn = arn, startDate = existing.startDate }
         end
-        if sm.type == "EXPRESS" and existing.status ~= "RUNNING" then
-            db.delete(ns(ctx, "execution"), arn)
-            clear_execution_history(ctx, db, arn)
-        else
-            roto.error("ExecutionAlreadyExists", "Execution Already Exists: '" .. arn .. "'")
-        end
+        roto.error("ExecutionAlreadyExists", "Execution Already Exists: '" .. arn .. "'")
     end
     local now = roto.now()
     local exec: Doc = {
@@ -3177,7 +3155,7 @@ function M.RotoStartSyncExecution(ctx: Ctx, input: any, db: Db)
     if input.includedData ~= nil and input.includedData ~= "ALL_DATA" and input.includedData ~= "METADATA_ONLY" then
         roto.error("ValidationException", "Invalid includedData")
     end
-    return start_execution(ctx, input, db, nil, true, true)
+    return start_execution(ctx, input, db, nil, true)
 end
 
 function M.StartSyncExecution(_ctx: Ctx, _input: any, _db: Db)
