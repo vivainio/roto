@@ -266,6 +266,50 @@ test.case("nested execution start errors are catchable service errors", function
     end
 end)
 
+test.case("Express child continues after SDK request timeout or parent stop", function()
+    local queue = test.call("sqs", "CreateQueue", {QueueName = "detached-child"}).QueueUrl
+    local role = "arn:aws:iam::123456789012:role/test"
+    local child = test.call("states", "CreateStateMachine", {name = "detached-express", roleArn = role, type = "EXPRESS",
+        definition = roto.json_encode({StartAt = "Wait", States = {
+            Wait = {Type = "Wait", Seconds = 5, Next = "Send"},
+            Send = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage",
+                Parameters = {QueueUrl = queue, MessageBody = "finished"}, End = true},
+        }})}).stateMachineArn
+    local parent = machine("detached-parent", {StartAt = "Call", States = {
+        Call = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+            TimeoutSeconds = 2, Parameters = {StateMachineArn = child},
+            Catch = {{ErrorEquals = {"States.Timeout"}, Next = "Done"}}, End = true},
+        Done = {Type = "Succeed"},
+    }})
+    local timed = test.call("states", "StartExecution", {stateMachineArn = parent})
+    test.advance(0)
+    test.advance(2)
+    test.equal(roto.json_decode(test.call("states", "DescribeExecution", {executionArn = timed.executionArn}).output).Error, "States.Timeout")
+    test.advance(3)
+    local first = test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1]
+    test.equal(first.Body, "finished")
+    test.call("sqs", "DeleteMessage", {QueueUrl = queue, ReceiptHandle = first.ReceiptHandle})
+    local stopped = test.call("states", "StartExecution", {stateMachineArn = parent})
+    test.advance(0)
+    test.call("states", "StopExecution", {executionArn = stopped.executionArn})
+    test.advance(5)
+    local second = test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1]
+    test.equal(second.Body, "finished")
+    test.call("sqs", "DeleteMessage", {QueueUrl = queue, ReceiptHandle = second.ReceiptHandle})
+    local parallel = machine("detached-parallel", {StartAt = "Both", States = {Both = {Type = "Parallel", End = true, Branches = {
+        {StartAt = "Call", States = {Call = {Type = "Task", Resource = "arn:aws:states:::aws-sdk:sfn:startSyncExecution",
+            Parameters = {StateMachineArn = child}, End = true}}},
+        {StartAt = "Wait", States = {Wait = {Type = "Wait", Seconds = 1, Next = "Fail"},
+            Fail = {Type = "Fail", Error = "SiblingFailed"}}},
+    }}}})
+    local interrupted = test.call("states", "StartExecution", {stateMachineArn = parallel})
+    test.advance(0)
+    test.advance(1)
+    test.equal(test.call("states", "DescribeExecution", {executionArn = interrupted.executionArn}).status, "FAILED")
+    test.advance(4)
+    test.equal(test.call("sqs", "ReceiveMessage", {QueueUrl = queue}).Messages[1].Body, "finished")
+end)
+
 test.case("built in service errors have structured codes", function()
     test.expect_error("AWS.SimpleQueueService.NonExistentQueue", function()
         return test.try_call("sqs", "GetQueueUrl", {QueueName = "missing"})

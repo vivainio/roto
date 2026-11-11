@@ -1052,6 +1052,21 @@ def check_sync_express(s):
         "Done": {"Type": "Succeed"}}})
     invalid_result = s.status(s.run(invalid_nested, {}))
     assert invalid_result["status"] == "SUCCEEDED" and json.loads(invalid_result["output"])["Error"] == "Sfn.InvalidExecutionInput", invalid_result
+    queue = s.sqs.create_queue(QueueName="express-detached")["QueueUrl"]
+    detached = express("sdk-detached-child", {"StartAt": "Wait", "States": {
+        "Wait": {"Type": "Wait", "Seconds": 5, "Next": "Send"},
+        "Send": {"Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage",
+                 "Parameters": {"QueueUrl": queue, "MessageBody": "done"}, "End": True}}})
+    parent = s.machine("sdk-detached-parent", {"StartAt": "Call", "States": {
+        "Call": {"Type": "Task", "Resource": "arn:aws:states:::aws-sdk:sfn:startSyncExecution", "TimeoutSeconds": 2,
+                 "Parameters": {"StateMachineArn": detached}, "Catch": [{"ErrorEquals": ["States.Timeout"], "Next": "Done"}], "End": True},
+        "Done": {"Type": "Succeed"}}})
+    parent_arn = s.run(parent, {})
+    s.advance(0)
+    s.advance(2)
+    assert json.loads(s.status(parent_arn)["output"])["Error"] == "States.Timeout"
+    s.advance(3)
+    assert s.sqs.receive_message(QueueUrl=queue)["Messages"][0]["Body"] == "done"
     waiting = express("sync-wait", {"StartAt": "Wait", "States": {
         "Wait": {"Type": "Wait", "Seconds": 5, "Next": "Done"}, "Done": {"Type": "Succeed"}}})
     with ThreadPoolExecutor(max_workers=2) as executor:

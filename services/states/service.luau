@@ -1459,7 +1459,7 @@ local function cancel_timers(ctx: Ctx, db: Db, arn: string, cursor: Cursor?): { 
             db.cancel(timer_key("poll", arn, tid))
             if thread.waiting then
                 close_task_token(ctx, db, thread.waiting.token)
-                if thread.waiting.child then table.insert(children, thread.waiting.child) end
+                if thread.waiting.child and not thread.waiting.detachChild then table.insert(children, thread.waiting.child) end
                 if thread.waiting.poll then stop_ecs(thread.waiting.poll) end
             end
         end
@@ -1736,7 +1736,7 @@ local function task_call(resource: string, parameters: any, token: string?, time
         if target.type ~= "EXPRESS" then fail("Sfn.StateMachineTypeNotSupported", "StartSyncExecution requires an EXPRESS state machine") end
         local started = start_execution(current.ctx, { stateMachineArn = params.StateMachineArn, name = params.Name,
             input = params.Input, traceHeader = params.TraceHeader }, current.db, { token = token, v2 = false, express = true }, true, "Sfn")
-        return { Pending = started.executionArn }
+        return { Pending = started.executionArn, DetachOnCancel = true }
     end
     if service == "ecs" then
         local started = recase(ecs_call(operation, recase(parameters or {}, false), timeout), true)
@@ -1928,7 +1928,8 @@ local function step_task(state: Doc, data: any, scope: Scope, history: History, 
         end
     end
     if token ~= nil then
-        local queued: any = if type(result) == "table" and result.Pending then { child = if result.Poll then nil else result.Pending, poll = result.Poll } else {}
+        local queued: any = if type(result) == "table" and result.Pending then { child = if result.Poll then nil else result.Pending,
+            poll = result.Poll, detachChild = result.DetachOnCancel == true } else {}
         queued.timeout = if timeout ~= nil and sync_mode(resource) ~= nil then math.max(0, timeout - (roto.now() - task_started)) else timeout
         queued.heartbeat = heartbeat
         return data, token, queued
@@ -2001,7 +2002,7 @@ type Thread = {
     retries: { [string]: number }?, retrying: boolean?,
     -- A callback or activity Task waiting for its token, and a result or failure delivered for it
     -- that the next step applies to the Task state instead of calling the service.
-    waiting: { token: string, timeout: number?, heartbeat: number?, child: string?, poll: any?, activity: string? }?,
+    waiting: { token: string, timeout: number?, heartbeat: number?, child: string?, detachChild: boolean?, poll: any?, activity: string? }?,
     delivered: { output: any?, error: string?, cause: string? }?,
     -- Results are keyed by branch/item number (a sparse list would not survive JSON).
     -- `pending` counts children not yet finished, including ones still queued behind MaxConcurrency.
@@ -2326,7 +2327,7 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
                 db.cancel(timer_key("poll", arn, cid))
                 if child.waiting then
                     close_task_token(ctx, db, child.waiting.token)
-                    if child.waiting.child then abort_nested(ctx, db, child.waiting.child) end
+                    if child.waiting.child and not child.waiting.detachChild then abort_nested(ctx, db, child.waiting.child) end
                     if child.waiting.poll then stop_ecs(child.waiting.poll) end
                 end
                 cursor.threads[cid] = nil
@@ -2553,6 +2554,7 @@ local function run_threads(ctx: Ctx, db: Db, exec: Doc, cursor: Cursor, history:
             thread.waiting = {
                 token = result.waiting, timeout = queued.timeout, heartbeat = heartbeat,
                 child = if result.queued then result.queued.child else nil,
+                detachChild = if result.queued then result.queued.detachChild else nil,
                 poll = if result.queued then result.queued.poll else nil,
                 activity = if result.queued then result.queued.activity else nil,
             }
@@ -3256,7 +3258,7 @@ function M.__job(ctx: Ctx, job: any, db: Db)
     elseif kind == "task_timeout" then
         if not thread or not thread.waiting then return {} end
         close_task_token(ctx, db, thread.waiting.token)
-        if thread.waiting.child then abort_nested(ctx, db, thread.waiting.child) end
+        if thread.waiting.child and not thread.waiting.detachChild then abort_nested(ctx, db, thread.waiting.child) end
         if thread.waiting.poll then stop_ecs(thread.waiting.poll) end
         db.cancel(timer_key("task", arn, thread.id))
         db.cancel(timer_key("heartbeat", arn, thread.id))
