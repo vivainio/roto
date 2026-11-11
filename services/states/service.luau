@@ -3366,8 +3366,8 @@ function M.ListActivities(ctx: Ctx, input: any, db: Db)
     return states_page(ctx, db, input, out, "activities")
 end
 
--- Hands the oldest queued task to a worker. AWS holds the request open for up to 60 seconds; with
--- nothing queued this answers at once with no task token, which is what a poller sees on timeout.
+-- Hands the oldest queued task to a worker. HTTP long polling repeats this short transaction
+-- outside the Luau runtime; in-process calls and the test runner perform one immediate poll.
 function M.GetActivityTask(ctx: Ctx, input: any, db: Db)
     local doc = activity(ctx, db, input.activityArn)
     if input.workerName ~= nil and (type(input.workerName) ~= "string" or #input.workerName < 1 or #input.workerName > 80) then

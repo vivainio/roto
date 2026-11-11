@@ -6,6 +6,7 @@ machines through the AWS SDK, and moves the virtual clock with POST /roto-api/cl
 states and execution timeouts finish without waiting.
 """
 import json
+from concurrent.futures import ThreadPoolExecutor
 import socket
 import subprocess
 import tempfile
@@ -671,10 +672,13 @@ def check_activities_and_heartbeats(s):
                  "Catch": [{"ErrorEquals": ["States.Timeout"], "ResultPath": "$.err", "Next": "Done"}],
                  "Next": "Done"},
         "Done": {"Type": "Succeed"}}})
-    assert not s.sf.get_activity_task(activityArn=activity).get("taskToken")  # nothing queued yet
-    first = s.run(machine, {"job": 1})
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(s.sf.get_activity_task, activityArn=activity, workerName="w1")
+        time.sleep(0.2)
+        assert not pending.done(), "empty activity poll returned immediately"
+        first = s.run(machine, {"job": 1})
+        task = pending.result(timeout=5)
     second = s.run(machine, {"job": 2})
-    task = s.sf.get_activity_task(activityArn=activity, workerName="w1")
     assert json.loads(task["input"]) == {"job": 1}, task
     s.advance(20)
     s.sf.send_task_heartbeat(taskToken=task["taskToken"])
@@ -695,9 +699,19 @@ def check_activities_and_heartbeats(s):
     s.advance(31)
     out = json.loads(s.status(second)["output"])
     assert out["err"]["Error"] == "States.Timeout", out
-    assert not s.sf.get_activity_task(activityArn=activity).get("taskToken")
     third = s.run(machine, {"job": 3})
     third_task = s.sf.get_activity_task(activityArn=activity)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = [executor.submit(s.sf.get_activity_task, activityArn=activity) for _ in range(2)]
+        time.sleep(0.2)
+        assert all(not poll.done() for poll in pending)
+        fourth, fifth = s.run(machine, {"job": 4}), s.run(machine, {"job": 5})
+        tasks = [poll.result(timeout=5) for poll in pending]
+    assert {json.loads(item["input"])["job"] for item in tasks} == {4, 5}, tasks
+    assert tasks[0]["taskToken"] != tasks[1]["taskToken"]
+    for item in tasks:
+        s.sf.send_task_success(taskToken=item["taskToken"], output='"done"')
+    assert s.status(fourth)["status"] == s.status(fifth)["status"] == "SUCCEEDED"
     s.sf.delete_activity(activityArn=activity)
     assert code(lambda: s.sf.send_task_heartbeat(taskToken=third_task["taskToken"])) == "TaskDoesNotExist"
     s.sf.stop_execution(executionArn=third)

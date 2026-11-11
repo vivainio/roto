@@ -997,9 +997,15 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         .or_else(|| trace::operation(Some(service_name), &raw));
     call.operation = operation.clone();
     let started = std::time::Instant::now();
-    let request = raw.clone();
-    let context = ctx.clone();
-    let result = tokio::task::spawn_blocking(move || handler.handle(&context, &request)).await;
+    let long_poll = service_name == "states" && operation.as_deref() == Some("GetActivityTask");
+    let result = dispatch_activity_poll(
+        handler,
+        ctx.clone(),
+        raw.clone(),
+        long_poll,
+        std::time::Duration::from_secs(60),
+    )
+    .await;
     let unsupported = match &result {
         Ok(Ok(response)) => unsupported::response(response),
         Ok(Err(error)) => unsupported::error(error),
@@ -1056,6 +1062,34 @@ async fn handle(State(app): State<Arc<App>>, req: Request<Body>) -> Response {
         Err(_) => plain_error(&AwsError::internal("handler panicked"), &request_id),
     };
     into_request_response(response, &raw)
+}
+
+/// Poll outside the service transaction so workers can enqueue tasks while an HTTP request waits.
+async fn dispatch_activity_poll(
+    handler: Arc<dyn ServiceHandler>,
+    context: RequestContext,
+    request: RawRequest,
+    long_poll: bool,
+    wait: std::time::Duration,
+) -> Result<Result<RawResponse, AwsError>, tokio::task::JoinError> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let handler = handler.clone();
+        let context = context.clone();
+        let request = request.clone();
+        let result = tokio::task::spawn_blocking(move || handler.handle(&context, &request)).await;
+        let empty = long_poll
+            && matches!(&result, Ok(Ok(response)) if response.status < 400
+            && serde_json::from_slice::<serde_json::Value>(&response.body)
+                .is_ok_and(|body| body.get("taskToken").is_none_or(|token| token.is_null() || token.as_str() == Some(""))));
+        if !empty || tokio::time::Instant::now() >= deadline {
+            return result;
+        }
+        tokio::time::sleep_until(
+            (tokio::time::Instant::now() + std::time::Duration::from_millis(100)).min(deadline),
+        )
+        .await;
+    }
 }
 
 /// SigV4 scope from the `Authorization` header or a presigned URL's `X-Amz-Credential`.
@@ -1147,6 +1181,99 @@ fn region_from_user_agent(req: &RawRequest) -> Option<String> {
 mod discovery_tests {
     use super::*;
     use serde_json::json;
+
+    struct ActivityPollStub {
+        calls: std::sync::atomic::AtomicUsize,
+        ready_after: usize,
+        status: u16,
+    }
+
+    impl ServiceHandler for ActivityPollStub {
+        fn service(&self) -> &'static str {
+            "states"
+        }
+        fn handle(
+            &self,
+            _ctx: &RequestContext,
+            _req: &RawRequest,
+        ) -> Result<RawResponse, AwsError> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = if n >= self.ready_after {
+                br#"{"taskToken":"ready"}"#.to_vec()
+            } else {
+                b"{}".to_vec()
+            };
+            Ok(RawResponse {
+                status: self.status,
+                headers: vec![],
+                body,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_poll_waits_for_a_task_or_timeout_and_returns_errors_immediately() {
+        let ctx = RequestContext {
+            account_id: "123".into(),
+            region: "test".into(),
+            access_key: None,
+            request_id: "request".into(),
+            base_url: "http://localhost".into(),
+        };
+        let request = RawRequest::default();
+        let ready = Arc::new(ActivityPollStub {
+            calls: 0.into(),
+            ready_after: 1,
+            status: 200,
+        });
+        let response = dispatch_activity_poll(
+            ready.clone(),
+            ctx.clone(),
+            request.clone(),
+            true,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(String::from_utf8(response.body).unwrap().contains("ready"));
+        assert_eq!(ready.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let empty = Arc::new(ActivityPollStub {
+            calls: 0.into(),
+            ready_after: usize::MAX,
+            status: 200,
+        });
+        let started = std::time::Instant::now();
+        let response = dispatch_activity_poll(
+            empty,
+            ctx.clone(),
+            request.clone(),
+            true,
+            std::time::Duration::from_millis(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.body, b"{}");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+        let error = Arc::new(ActivityPollStub {
+            calls: 0.into(),
+            ready_after: usize::MAX,
+            status: 400,
+        });
+        let response = dispatch_activity_poll(
+            error.clone(),
+            ctx,
+            request,
+            true,
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status, 400);
+        assert_eq!(error.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     fn app() -> Arc<App> {
         let store = Arc::new(Store::ephemeral());
