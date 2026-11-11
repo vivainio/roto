@@ -3648,6 +3648,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             roto.error("ValidationException", "A mocked Map or Parallel error requires errorCausedByState")
         end
         local reader: any = nil
+        local map_prepared = false
         if config.mapItemReaderData ~= nil then
             if not distributed then roto.error("ValidationException", "mapItemReaderData requires a Distributed Map") end
             reader = test_reader(state, config.mapItemReaderData)
@@ -3662,6 +3663,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 local code, cause = failure_of(spawns)
                 return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
             end
+            map_prepared = true
             if count > item_count then roto.error("ValidationException", "mapIterationFailureCount exceeds the item count") end
             local effective = apply_input_path(state, data, scope.context)
             local inner = { data = effective, context = scope.context }
@@ -3703,9 +3705,13 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             local code: string = error_output.error
             local cause: string = error_output.cause or ""
             local prepared, preparation_error = pcall(function()
-                if state.Type == "Parallel" then spawn_parallel(state, data, scope); return end
-                if state.Type == "Map" then spawn_map(state, data, scope, nil, reader); return end
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection); return end
+                if state.Type == "Map" then
+                    if not map_prepared then spawn_map(state, data, scope, inspection, reader) end
+                    return
+                end
                 local effective = apply_input_path(state, data, scope.context)
+                if inspection then inspection.afterInputPath = roto.json_encode(effective) end
                 local context = scope.context
                 if type(state.Resource) == "string" and waits_for_token(state.Resource) then
                     context = table.clone(context)
@@ -3715,21 +3721,21 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                         context.Task = task
                     end
                 end
-                if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) end
+                local parameters = if state.Parameters ~= nil then apply_template(state.Parameters, { data = effective, context = context }) else effective
+                if inspection then inspection.afterParameters = roto.json_encode(parameters) end
             end)
             if not prepared then
                 local prepare_code, prepare_cause = failure_of(preparation_error)
-                return { status = "FAILED", error = prepare_code, cause = prepare_cause }
+                return { status = "FAILED", error = prepare_code, cause = prepare_cause, inspectionData = inspection }
             end
-            local debug = input.inspectionLevel == "DEBUG" or input.inspectionLevel == "TRACE"
             for index, rule in ipairs(state.Retry or {}) do
                 if error_matches(rule.ErrorEquals, code) then
                     if used < (rule.MaxAttempts or 3) then
                         local delay = (rule.IntervalSeconds or 1) * (rule.BackoffRate or 2) ^ used
                         if rule.MaxDelaySeconds ~= nil then delay = math.min(delay, rule.MaxDelaySeconds) end
                         if rule.JitterStrategy == "FULL" then delay *= math.random() end
-                        return { status = "RETRIABLE", error = code, cause = cause,
-                            inspectionData = if debug then { errorDetails = { retryIndex = index - 1, retryBackoffIntervalSeconds = delay } } else nil }
+                        if inspection then inspection.errorDetails = { retryIndex = index - 1, retryBackoffIntervalSeconds = delay } end
+                        return { status = "RETRIABLE", error = code, cause = cause, inspectionData = inspection }
                     end
                     break
                 end
@@ -3739,13 +3745,14 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                     local ok, caught = pcall(apply_result_path, catcher, data, { Error = code, Cause = cause })
                     if not ok then
                         local path_code, path_cause = failure_of(caught)
-                        return { status = "FAILED", error = path_code, cause = path_cause }
+                        return { status = "FAILED", error = path_code, cause = path_cause, inspectionData = inspection }
                     end
+                    if inspection then inspection.errorDetails = { catchIndex = index - 1 } end
                     return { status = "CAUGHT_ERROR", error = code, cause = cause, nextState = catcher.Next,
-                        output = roto.json_encode(caught), inspectionData = if debug then { errorDetails = { catchIndex = index - 1 } } else nil }
+                        output = roto.json_encode(caught), inspectionData = inspection }
                 end
             end
-            return { status = "FAILED", error = code, cause = cause }
+            return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
         end
         if type(mock.result) ~= "string" or #mock.result > MAX_PAYLOAD_BYTES then
             roto.error("ValidationException", "mock.result must be a JSON string no larger than 256 KiB")
@@ -3785,7 +3792,8 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
                 roto.error("ValidationException", "mock.result must contain one element for each Parallel branch")
             end
             local ok, result = pcall(function()
-                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection) else spawn_map(state, data, scope, inspection, reader) end
+                if state.Type == "Parallel" then spawn_parallel(state, data, scope, inspection)
+                elseif not map_prepared then spawn_map(state, data, scope, inspection, reader) end
                 return finish_fanout(state, data, scope, mock_result, inspection)
             end)
             if not ok then

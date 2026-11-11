@@ -868,6 +868,8 @@ def check_update_tags_and_test_state(s):
     retried = s.sf.test_state(definition=json.dumps(retrying), input='{"x":1}', mock=mock_error,
                               stateConfiguration={"retrierRetryCount": 1}, inspectionLevel="DEBUG")
     assert retried["status"] == "RETRIABLE" and retried["inspectionData"]["errorDetails"] == {"retryIndex": 0, "retryBackoffIntervalSeconds": 4}, retried
+    assert json.loads(retried["inspectionData"]["input"]) == {"x": 1}, retried
+    assert "afterParameters" in retried["inspectionData"], retried
     caught = s.sf.test_state(definition=json.dumps(retrying), input='{"x":1}', mock=mock_error,
                              stateConfiguration={"retrierRetryCount": 2}, inspectionLevel="DEBUG")
     assert caught["status"] == "CAUGHT_ERROR" and caught["nextState"] == "Recover", caught

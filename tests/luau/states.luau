@@ -231,6 +231,27 @@ test.case("TestState mock errors respect retry limits and catch ordering", funct
     test.equal(roto.json_decode(caught.output), {keep = true, failure = {Error = "Transient", Cause = "retry me"}})
 end)
 
+test.case("TestState retains inspection data for mocked failures", function()
+    local state = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage", InputPath = "$.item",
+        Parameters = { ["MessageBody.$"] = "$.text" }, Catch = {{ErrorEquals = {"Oops"}, Next = "Recover"}}, End = true}
+    local request: any = {definition = roto.json_encode(state), input = '{"item":{"text":"hello"}}',
+        mock = {errorOutput = {error = "Oops"}}, inspectionLevel = "DEBUG"}
+    local caught = test.call("states", "TestState", request)
+    test.equal(caught.status, "CAUGHT_ERROR")
+    test.equal(roto.json_decode(caught.inspectionData.input), {item = {text = "hello"}})
+    test.equal(roto.json_decode(caught.inspectionData.afterInputPath), {text = "hello"})
+    test.equal(roto.json_decode(caught.inspectionData.afterParameters), {MessageBody = "hello"})
+    test.equal(caught.inspectionData.errorDetails.catchIndex, 0)
+    request.mock.errorOutput.error = "Other"
+    local failed = test.call("states", "TestState", request)
+    test.equal(failed.status, "FAILED")
+    test.equal(roto.json_decode(failed.inspectionData.afterParameters), {MessageBody = "hello"})
+    request.input = '{}'
+    local invalid = test.call("states", "TestState", request)
+    test.equal(invalid.error, "States.Runtime")
+    test.equal(roto.json_decode(invalid.inspectionData.input), {})
+end)
+
 test.case("TestState States.TaskFailed does not catch timeout", function()
     local state = {Type = "Task", Resource = "arn:aws:states:::sqs:sendMessage",
         Catch = {{ErrorEquals = {"States.TaskFailed"}, Next = "Recover"}}, End = true}
