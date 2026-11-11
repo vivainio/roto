@@ -459,3 +459,28 @@ test.case("TestState mocks Distributed Map exports and failure thresholds", func
     test.equal(array.status, "SUCCEEDED")
     test.equal(roto.json_decode(array.output).export, {})
 end)
+
+test.case("TestState inspects Distributed Map item batches", function()
+    local map: any = {Type = "Map", ItemsPath = "$.items", ItemSelector = { ["value.$"] = "$$.Map.Item.Value" },
+        ItemBatcher = {MaxItemsPerBatchPath = "$.limit", BatchInput = { ["job.$"] = "$.job" }},
+        ItemProcessor = {ProcessorConfig = {Mode = "DISTRIBUTED", ExecutionType = "STANDARD"},
+            StartAt = "Done", States = {Done = {Type = "Succeed"}}},
+        ToleratedFailureCount = 2, End = true}
+    local request = {definition = roto.json_encode(map), input = '{"items":[1,2,3],"limit":2,"job":"job1"}',
+        mock = {result = '["a","b"]'}, stateConfiguration = {mapIterationFailureCount = 2}, inspectionLevel = "DEBUG"}
+    local result = test.call("states", "TestState", request)
+    test.equal(result.status, "SUCCEEDED")
+    test.equal(roto.json_decode(result.inspectionData.afterItemSelector), {{value = 1}, {value = 2}, {value = 3}})
+    test.equal(roto.json_decode(result.inspectionData.afterItemBatcher), {
+        {Items = {{value = 1}, {value = 2}}, BatchInput = {job = "job1"}},
+        {Items = {{value = 3}}, BatchInput = {job = "job1"}},
+    })
+    map.ItemBatcher = {MaxInputBytesPerBatch = 25}
+    request.definition = roto.json_encode(map)
+    local bounded = test.call("states", "TestState", request)
+    test.equal(#roto.json_decode(bounded.inspectionData.afterItemBatcher), 3)
+    map.ItemBatcher = {MaxInputBytesPerBatch = 5}
+    request.definition = roto.json_encode(map)
+    local too_large = test.call("states", "TestState", request)
+    test.equal(too_large.error, "States.DataLimitExceeded")
+end)

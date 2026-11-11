@@ -2057,7 +2057,7 @@ local function spawn_parallel(state: Doc, data: any, scope: Scope, inspection: D
     return spawns
 end
 
-local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?): ({ Spawn }, number?)
+local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?): ({ Spawn }, number?, number)
     local effective = apply_input_path(state, data, scope.context)
     if inspection then inspection.afterInputPath = roto.json_encode(effective) end
     local inner: Scope = { data = effective, context = scope.context }
@@ -2086,7 +2086,55 @@ local function spawn_map(state: Doc, data: any, scope: Scope, inspection: Doc?):
         for _, spawn in ipairs(spawns) do table.insert(inputs, spawn.data) end
         inspection.afterItemSelector = roto.json_encode(roto.array(inputs))
     end
-    return spawns, max_concurrency
+    if state.ItemBatcher ~= nil then
+        local batcher = state.ItemBatcher
+        if not is_object(batcher) then fail("States.Runtime", "ItemBatcher must be an object") end
+        if (batcher.MaxItemsPerBatch ~= nil and batcher.MaxItemsPerBatchPath ~= nil)
+            or (batcher.MaxInputBytesPerBatch ~= nil and batcher.MaxInputBytesPerBatchPath ~= nil) then
+            fail("States.Runtime", "ItemBatcher limits cannot specify both a value and a path")
+        end
+        local max_items = if batcher.MaxItemsPerBatchPath ~= nil then resolve(batcher.MaxItemsPerBatchPath, inner) else batcher.MaxItemsPerBatch
+        local max_bytes = if batcher.MaxInputBytesPerBatchPath ~= nil then resolve(batcher.MaxInputBytesPerBatchPath, inner) else batcher.MaxInputBytesPerBatch
+        if max_items == nil and max_bytes == nil then fail("States.Runtime", "ItemBatcher needs a batch limit") end
+        if max_items ~= nil and (type(max_items) ~= "number" or max_items < 1 or max_items % 1 ~= 0) then
+            fail("States.Runtime", "MaxItemsPerBatch must resolve to a positive integer")
+        end
+        if max_bytes ~= nil and (type(max_bytes) ~= "number" or max_bytes < 1 or max_bytes > MAX_PAYLOAD_BYTES or max_bytes % 1 ~= 0) then
+            fail("States.Runtime", "MaxInputBytesPerBatch must resolve to an integer from 1 to 262144")
+        end
+        max_bytes = max_bytes or MAX_PAYLOAD_BYTES
+        local batch_input = if batcher.BatchInput ~= nil then apply_template(batcher.BatchInput, inner) else nil
+        local batches: { Spawn } = {}
+        local batch_items: { any } = {}
+        local function batch_value(): any
+            return { Items = roto.array(table.clone(batch_items)), BatchInput = batch_input }
+        end
+        local function flush()
+            if #batch_items == 0 then return end
+            table.insert(batches, { key = { key }, data = batch_value() })
+            batch_items = {}
+        end
+        for _, spawn in ipairs(spawns) do
+            if max_items ~= nil and #batch_items >= max_items then flush() end
+            table.insert(batch_items, spawn.data)
+            if #roto.json_encode(batch_value()) > max_bytes then
+                table.remove(batch_items)
+                flush()
+                table.insert(batch_items, spawn.data)
+                if #roto.json_encode(batch_value()) > max_bytes then
+                    fail("States.DataLimitExceeded", "An item exceeds MaxInputBytesPerBatch")
+                end
+            end
+        end
+        flush()
+        spawns = batches
+        if inspection then
+            local values = {}
+            for _, batch in ipairs(batches) do table.insert(values, batch.data) end
+            inspection.afterItemBatcher = roto.json_encode(roto.array(values))
+        end
+    end
+    return spawns, max_concurrency, #items
 end
 
 -- One state's effect on its input, without touching storage.
@@ -3414,20 +3462,17 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
         if config.mapItemReaderData ~= nil then
             roto.error("ValidationException", "mapItemReaderData is not supported; provide the read items in input")
         end
-        if distributed and state.ItemBatcher ~= nil then
-            roto.error("ValidationException", "TestState Distributed Map ItemBatcher is not supported")
-        end
         if config.mapIterationFailureCount ~= nil then
             local count = config.mapIterationFailureCount
             if not distributed or type(count) ~= "number" or count < 0 or count % 1 ~= 0 then
                 roto.error("ValidationException", "mapIterationFailureCount requires a Distributed Map and a nonnegative integer")
             end
-            local ok, spawns = pcall(spawn_map, state, data, scope, inspection)
+            local ok, spawns, _, item_count = pcall(spawn_map, state, data, scope, inspection)
             if not ok then
                 local code, cause = failure_of(spawns)
                 return { status = "FAILED", error = code, cause = cause, inspectionData = inspection }
             end
-            if count > #spawns then roto.error("ValidationException", "mapIterationFailureCount exceeds the item count") end
+            if count > item_count then roto.error("ValidationException", "mapIterationFailureCount exceeds the item count") end
             local effective = apply_input_path(state, data, scope.context)
             local inner = { data = effective, context = scope.context }
             local limit_count = if state.ToleratedFailureCountPath ~= nil then resolve(state.ToleratedFailureCountPath, inner) else state.ToleratedFailureCount
@@ -3440,7 +3485,7 @@ function M.TestState(ctx: Ctx, input: any, db: Db)
             end
             if inspection then inspection.toleratedFailureCount = limit_count; inspection.toleratedFailurePercentage = limit_percent end
             local exceeded = (limit_count ~= nil and count > limit_count)
-                or (limit_percent ~= nil and #spawns > 0 and count * 100 / #spawns > limit_percent)
+                or (limit_percent ~= nil and item_count > 0 and count * 100 / item_count > limit_percent)
                 or (limit_count == nil and limit_percent == nil and count > 0)
             if exceeded and mock.result ~= nil then
                 if type(mock.result) ~= "string" or #mock.result > MAX_PAYLOAD_BYTES or not pcall(roto.json_decode, mock.result) then

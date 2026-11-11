@@ -818,6 +818,13 @@ def check_update_tags_and_test_state(s):
     args["stateConfiguration"]["mapIterationFailureCount"] = 2
     result = s.sf.test_state(**args)
     assert result["status"] == "FAILED" and result["error"] == "States.ExceedToleratedFailureThreshold", result
+    distributed["ItemBatcher"] = {"MaxItemsPerBatch": 1, "BatchInput": {"job": "demo"}}
+    args["definition"] = json.dumps(distributed)
+    args["stateConfiguration"]["mapIterationFailureCount"] = 0
+    result = s.sf.test_state(**args)
+    batches = json.loads(result["inspectionData"]["afterItemBatcher"])
+    assert batches == [{"Items": [1], "BatchInput": {"job": "demo"}},
+                       {"Items": [2], "BatchInput": {"job": "demo"}}], result
     mocked_callback = {**callback, "ResultSelector": {"answer.$": "$.value"}, "ResultPath": "$.result"}
     mocked = s.sf.test_state(definition=json.dumps(mocked_callback), input='{"before":1}',
                              mock={"fieldValidationMode": "NONE", "result": '{"value":42}'})
